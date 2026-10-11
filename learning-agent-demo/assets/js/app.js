@@ -1636,9 +1636,17 @@
     reportTab(v) { State.filters.report = v; render(); },
     kpModule(v) { State.filters.kpModule = v; render(); },
     kpCell(v) {
+      // 修复：render() 全量重建 main 区会令 .main-body 的 scrollTop 归零，
+      // 表现为点击图谱卡片后内容区自动滚回顶部；渲染前记录位置、渲染后恢复。
+      const keepMain = document.querySelector('.main-body');
+      const keepTop = keepMain ? keepMain.scrollTop : 0;
       State.activeKp = v;
       State.rightTab = 'knowledge'; State.rightOpen = true;
       render();
+      if (keepMain) {
+        const nb = document.querySelector('.main-body');
+        if (nb) nb.scrollTop = keepTop;
+      }
     },
     focusHw(v) {
       State.filters.hw = 'all';
