@@ -732,3 +732,19 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   background: linear-gradient(90deg, var(--brand-2), var(--brand));
   transition: width .2s ease;
 }
+
+/* ---------- 作业卡片「更多」下拉菜单 ---------- */
+.as-menu {
+  position: absolute; z-index: 60; min-width: 132px; padding: 5px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(15, 23, 42, .14);
+}
+.as-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border: 0; background: none; border-radius: 7px;
+  font-size: 13px; color: var(--text); cursor: pointer; text-align: left;
+  transition: background .12s;
+}
+.as-menu-item:hover { background: var(--brand-soft); }
+.as-menu-item.danger { color: var(--danger); }
+.as-menu-item.danger:hover { background: var(--danger-soft); }

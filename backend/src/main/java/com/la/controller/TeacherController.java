@@ -88,6 +88,13 @@ public class TeacherController {
                 req.getStatus(), req.getRubric()));
     }
 
+    @Operation(summary = "删除作业（级联删除其 Rubric 与学生提交）")
+    @DeleteMapping("/assignments/{id}")
+    public ApiResponse<Void> deleteAssignment(@PathVariable Long id) {
+        assignmentService.deleteAssignment(CurrentUser.id(), id);
+        return ApiResponse.ok();
+    }
+
     @Operation(summary = "作业的提交列表（含相似度/AI初评）")
     @GetMapping("/assignments/{id}/submissions")
     public ApiResponse<List<Map<String, Object>>> submissions(@PathVariable Long id) {

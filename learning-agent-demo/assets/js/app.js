@@ -914,7 +914,8 @@
       const stBadge = a.status === 'draft' ? '<span class="badge">草稿</span>'
         : a.status === 'ongoing' ? '<span class="badge info">进行中</span>' : '<span class="badge ok">已截止</span>';
       return `<div class="card">
-        <div class="card-head">${icon('clipboard', 15)}<h3>${h(a.title)}</h3><div class="spacer"></div>${stBadge}</div>
+        <div class="card-head">${icon('clipboard', 15)}<h3>${h(a.title)}</h3><div class="spacer"></div>
+          <button class="btn sm ghost" data-act="asMore" data-val="${a.id}" title="更多操作">${icon('dots', 14)} 更多</button>${stBadge}</div>
         <div class="card-body">
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
             ${a.kp.map(k => '<span class="badge brand">' + kpName(k) + '</span>').join('')}
@@ -1267,13 +1268,14 @@
         <button class="btn primary" data-act="doSubmitHw">${icon('send', 15)} 确认提交</button>`;
 
     } else if (m.type === 'publish') {
-      title = '发布新作业';
+      title = d.id ? '修改作业' : '发布新作业';
       const tpls = {
         coding: [{ name: '功能正确性', max: 40, desc: '核心逻辑与结果正确' }, { name: '边界与异常处理', max: 20, desc: '非法入参与异常场景' }, { name: '复杂度与设计', max: 20, desc: '时间与空间复杂度合理' }, { name: '代码规范与注释', max: 20, desc: '命名、注释、结构' }],
         algo: [{ name: '算法正确性', max: 45, desc: '通过全部测试用例' }, { name: '复杂度分析', max: 25, desc: '给出并证明复杂度' }, { name: '边界处理', max: 15, desc: '空输入、极大值' }, { name: '代码可读性', max: 15, desc: '命名与注释' }],
         test: [{ name: '用例完整性', max: 40, desc: '分支覆盖充分' }, { name: 'Mock 合理性', max: 25, desc: '依赖隔离正确' }, { name: '断言质量', max: 20, desc: '断言具体可读' }, { name: '代码规范', max: 15, desc: '命名与组织' }]
       };
-      const cur = tpls[d.tpl || 'coding'];
+      // 修改模式沿用原作业 Rubric；新建模式按所选模板预览
+      const cur = d.rubric || tpls[d.tpl || 'coding'];
       body = `<div class="form-row"><label>作业标题</label>
           <input class="input" placeholder="例：并发编程实战：线程池参数调优" value="${h(d.title || '')}" data-bind="modal" data-key="title"></div>
         <div class="form-row"><label>关联知识点</label>
@@ -1283,20 +1285,29 @@
         <div class="row-2">
           <div class="form-row"><label>截止时间</label>
             <input class="input" placeholder="2026-10-10 23:59" value="${h(d.due || '')}" data-bind="modal" data-key="due"></div>
-          <div class="form-row"><label>Rubric 模板</label>
+          ${d.id ? '' : `<div class="form-row"><label>Rubric 模板</label>
             <select class="select" data-bind="modal" data-key="tpl">
               <option value="coding" ${d.tpl === 'coding' ? 'selected' : ''}>综合编程（默认）</option>
               <option value="algo" ${d.tpl === 'algo' ? 'selected' : ''}>算法题</option>
               <option value="test" ${d.tpl === 'test' ? 'selected' : ''}>测试题</option>
-            </select></div>
+            </select></div>`}
         </div>
         <div class="form-row"><label>作业要求</label>
           <textarea class="textarea" placeholder="描述任务目标、交付形式与评分说明…" data-bind="modal" data-key="desc">${h(d.desc || '')}</textarea></div>
-        <div class="form-row"><label>Rubric 预览（满分 100）</label>
-          ${cur.map(r => `<div class="rubric-row"><div class="rn"><b>${r.name}</b><span>${r.desc}</span></div><span class="badge">${r.max} 分</span></div>`).join('')}
+        <div class="form-row"><label>${d.id ? 'Rubric（沿用原评分标准）' : 'Rubric 预览（满分 100）'}</label>
+          ${cur.map(r => `<div class="rubric-row"><div class="rn"><b>${h(r.name)}</b><span>${h(r.desc)}</span></div><span class="badge">${r.max} 分</span></div>`).join('')}
         </div>`;
       foot = `<button class="btn" data-act="closeModal">取消</button>
-        <button class="btn primary" data-act="doPublish">${icon('send', 15)} 发布给学生</button>`;
+        <button class="btn primary" data-act="doPublish">${icon('send', 15)} ${d.id ? '保存修改' : '发布给学生'}</button>`;
+
+    } else if (m.type === 'delAs') {
+      title = '删除作业';
+      body = `<div class="note warn" style="margin-bottom:12px">确定要删除作业 <b>${h(d.title)}</b> 吗？<b style="color:var(--danger)">操作不可恢复</b>。</div>
+        <div class="hint">${d.submitted
+          ? '该作业已有 <b>' + d.submitted + '</b> 份学生提交，删除后提交记录与评分将一并移除。'
+          : '该作业暂无学生提交。'}</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn danger" data-act="doDelAs" ${d.busy ? 'disabled' : ''}>${icon('trash', 15)} ${d.busy ? '删除中…' : '确认删除'}</button>`;
 
     } else if (m.type === 'importClass') {
       title = '添加班级 · 上传名单';
@@ -1401,6 +1412,20 @@
   /* ===========================================================
    *  交互动作
    * =========================================================== */
+  /* --- 作业卡片「更多」下拉菜单（绝对定位浮层，不触发整页重渲染） --- */
+  let asMenuEl = null;
+  function closeAsMenu() {
+    if (asMenuEl) {
+      asMenuEl.remove();
+      asMenuEl = null;
+      document.removeEventListener('click', asMenuOutside, true);
+      window.removeEventListener('scroll', closeAsMenu, true);
+    }
+  }
+  function asMenuOutside(e) {
+    if (asMenuEl && !asMenuEl.contains(e.target)) closeAsMenu();
+  }
+
   const Actions = {
     section(v) { State.section = v; State.drawer = null; loadWithSkeleton(); },
     async session(v) {
@@ -1807,6 +1832,57 @@
       }
     },
     publishModal() { State.modal = { type: 'publish', data: { kp: [], tpl: 'coding' } }; renderOverlays(); },
+    asMore(v, id, t) {
+      closeAsMenu();
+      if (!t) return;
+      const menu = document.createElement('div');
+      menu.className = 'as-menu';
+      menu.innerHTML =
+        `<button class="as-menu-item" data-act="editAs" data-val="${v}">${icon('edit', 14)} 修改</button>` +
+        `<button class="as-menu-item danger" data-act="delAs" data-val="${v}">${icon('trash', 14)} 删除</button>`;
+      const r = t.getBoundingClientRect();
+      menu.style.top = (r.bottom + window.scrollY + 5) + 'px';
+      menu.style.right = (document.documentElement.clientWidth - r.right) + 'px';
+      document.body.appendChild(menu);
+      asMenuEl = menu;
+      // 注册全局关闭（点击菜单外 / 滚动页面时收起）；延迟注册避免本次点击立即触发
+      setTimeout(() => {
+        document.addEventListener('click', asMenuOutside, true);
+        window.addEventListener('scroll', closeAsMenu, true);
+      }, 0);
+    },
+    editAs(v) {
+      closeAsMenu();
+      const a = DB.assignments.find(x => String(x.id) === String(v));
+      if (!a) { toast('作业不存在或已删除'); return; }
+      State.modal = { type: 'publish', data: {
+        id: a.id, title: a.title, kp: [...(a.kp || [])], due: a.due || '',
+        desc: a.desc || '', status: (a.status || 'ongoing').toUpperCase(), rubric: a.rubric
+      } };
+      renderOverlays();
+    },
+    delAs(v) {
+      closeAsMenu();
+      const a = DB.assignments.find(x => String(x.id) === String(v));
+      if (!a) { toast('作业不存在或已删除'); return; }
+      State.modal = { type: 'delAs', data: { asId: a.id, title: a.title, submitted: a.submitted, busy: false } };
+      renderOverlays();
+    },
+    async doDelAs() {
+      const d = State.modal.data;
+      if (d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        await API.del('/teacher/assignments/' + d.asId);
+        State.modal = null; renderOverlays();
+        DB.assignments = await API.get('/teacher/assignments');
+        render();
+        toast('作业《' + d.title + '》已删除', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('删除失败：' + e.message);
+      }
+    },
     pubKp(v, id, t) {
       const d = State.modal.data; d.kp = d.kp || [];
       const i = d.kp.indexOf(v);
@@ -1825,14 +1901,15 @@
       if (!d.title || !d.title.trim()) { toast('请填写作业标题'); return; }
       try {
         await API.post('/teacher/assignments', {
+          id: d.id != null ? Number(d.id) : null,
           title: d.title, desc: d.desc || '', kp: d.kp || [],
-          due: d.due || '', status: 'ONGOING',
-          rubric: tpls[d.tpl || 'coding']
+          due: d.due || '', status: d.status || 'ONGOING',
+          rubric: d.rubric || tpls[d.tpl || 'coding']
         });
         State.modal = null; renderOverlays();
         DB.assignments = await API.get('/teacher/assignments');
         render();
-        toast('作业已发布，学生侧已同步收到', 'ok');
+        toast(d.id ? '作业已修改，学生侧已同步更新' : '作业已发布，学生侧已同步收到', 'ok');
       } catch (e) { toast(e.message); }
     },
     async publishDraft(v) {

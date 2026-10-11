@@ -25,6 +25,7 @@ public class AssignmentService {
     private final RubricMapper rubricMapper;
     private final SubmissionMapper submissionMapper;
     private final RubricScoreMapper rubricScoreMapper;
+    private final ClassMapper classMapper;
     private final UserMapper userMapper;
     private final NotificationService notificationService;
     private final ObjectMapper objectMapper;
@@ -102,11 +103,13 @@ public class AssignmentService {
                                               String description, List<String> kpCodes, String dueAt,
                                               String status, List<Map<String, Object>> rubric) {
         Assignment as;
+        String oldStatus = null;
         if (assignmentId != null) {
             as = assignmentMapper.selectById(assignmentId);
             if (as == null) {
                 throw new BizException("作业不存在");
             }
+            oldStatus = as.getStatus();
         } else {
             as = new Assignment();
             as.setTeacherId(teacherId);
@@ -139,8 +142,8 @@ public class AssignmentService {
                 rubricMapper.insert(rb);
             }
         }
-        // 正式发布时通知全班
-        if ("ONGOING".equals(as.getStatus())) {
+        // 正式发布时通知全班（仅首次发布：修改已发布的作业不重复推送通知）
+        if ("ONGOING".equals(as.getStatus()) && !"ONGOING".equals(oldStatus)) {
             List<User> students = userMapper.selectList(new LambdaQueryWrapper<User>()
                     .eq(User::getClassId, classId).eq(User::getRole, "STUDENT"));
             for (User stu : students) {
@@ -149,6 +152,35 @@ public class AssignmentService {
             }
         }
         return toAssignmentDto(as);
+    }
+
+    /**
+     * 教师删除作业（级联删除其 Rubric、学生提交与提交评分）
+     * 权限约束：作业须属于当前教师授课班级（教师无授课班级时回退兼容演示账号）
+     */
+    @Transactional
+    public void deleteAssignment(Long teacherId, Long assignmentId) {
+        Assignment as = assignmentMapper.selectById(assignmentId);
+        if (as == null) {
+            throw new BizException("作业不存在");
+        }
+        List<Long> ownClassIds = classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
+                        .eq(ClassEntity::getTeacherId, teacherId))
+                .stream().map(ClassEntity::getId).toList();
+        if (!ownClassIds.isEmpty() && !ownClassIds.contains(as.getClassId())) {
+            throw new BizException("无权操作该作业");
+        }
+        // 级联清理：提交评分 → 学生提交 → Rubric → 作业
+        List<Submission> subs = submissionMapper.selectList(new LambdaQueryWrapper<Submission>()
+                .eq(Submission::getAssignmentId, assignmentId));
+        if (!subs.isEmpty()) {
+            rubricScoreMapper.delete(new LambdaQueryWrapper<RubricScore>()
+                    .in(RubricScore::getSubmissionId, subs.stream().map(Submission::getId).toList()));
+            submissionMapper.delete(new LambdaQueryWrapper<Submission>()
+                    .eq(Submission::getAssignmentId, assignmentId));
+        }
+        rubricMapper.delete(new LambdaQueryWrapper<Rubric>().eq(Rubric::getAssignmentId, assignmentId));
+        assignmentMapper.deleteById(assignmentId);
     }
 
     public Map<String, Object> toAssignmentDto(Assignment as) {
