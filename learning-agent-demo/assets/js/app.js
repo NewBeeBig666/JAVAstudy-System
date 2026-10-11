@@ -1206,20 +1206,27 @@
     box.innerHTML = html;
   }
 
+  // newSession 弹窗的知识点列表（按 d.q 过滤）：初始渲染与搜索输入的局部刷新共用，
+  // 避免搜索时整窗 innerHTML 重建重放弹窗入场动画（闪屏）并丢失输入焦点。
+  function newSessionPickList() {
+    const d = (State.modal && State.modal.data) || {};
+    const list = DB.knowledgePoints.filter(k => !d.q || k.name.indexOf(d.q) >= 0);
+    return list.map(k => `<div class="pick ${d.kp === k.id ? 'on' : ''}" data-act="pickKp" data-val="${k.id}">
+      <div class="pm"><div class="pn">${k.name}</div><div class="pd">${h(k.desc.slice(0, 34))}…</div></div>
+      <div style="text-align:right">
+        <div style="font-size:16px;font-weight:700;color:${k.mastery >= 60 ? 'var(--ok)' : 'var(--danger)'}">${k.mastery}</div>
+        <div style="font-size:11px;color:var(--text-3)">${mtext(k.mastery)}</div></div>
+    </div>`).join('') || '<div class="empty"><div class="empty-title">没有匹配的知识点</div></div>';
+  }
+
   function renderModal() {
     const m = State.modal, d = m.data || {};
     let title = '', body = '', foot = '';
     if (m.type === 'newSession') {
       title = '新建学习会话 · 选择知识点';
-      const list = DB.knowledgePoints.filter(k => !m.q || k.name.indexOf(m.q) >= 0);
       body = `<div class="field" style="margin-bottom:12px">${icon('search', 15)}
-          <input placeholder="搜索知识点，如：并发、集合、JVM" value="${h(m.q || '')}" data-bind="modal" data-key="q"></div>
-        <div class="pick-list">${list.map(k => `<div class="pick ${d.kp === k.id ? 'on' : ''}" data-act="pickKp" data-val="${k.id}">
-          <div class="pm"><div class="pn">${k.name}</div><div class="pd">${h(k.desc.slice(0, 34))}…</div></div>
-          <div style="text-align:right">
-            <div style="font-size:16px;font-weight:700;color:${k.mastery >= 60 ? 'var(--ok)' : 'var(--danger)'}">${k.mastery}</div>
-            <div style="font-size:11px;color:var(--text-3)">${mtext(k.mastery)}</div></div>
-        </div>`).join('') || '<div class="empty"><div class="empty-title">没有匹配的知识点</div></div>'}</div>`;
+          <input placeholder="搜索知识点，如：并发、集合、JVM" value="${h(d.q || '')}" data-bind="modal" data-key="q"></div>
+        <div class="pick-list">${newSessionPickList()}</div>`;
       foot = `<button class="btn" data-act="closeModal">取消</button>
         <button class="btn primary" data-act="createSession" ${d.kp ? '' : 'disabled'}>${icon('sparkles', 15)} 创建并生成学习路径</button>`;
 
@@ -1458,7 +1465,20 @@
 
     /* --- 学生：会话 --- */
     newSession() { State.modal = { type: 'newSession', data: { kp: null, q: '' } }; renderOverlays(); },
-    pickKp(v) { State.modal.data.kp = v; renderOverlays(); },
+    pickKp(v, id, t) {
+      State.modal.data.kp = v;
+      // 局部切换选中态：整窗 innerHTML 重建会重放 mask/modal 入场动画（闪屏），
+      // 且 .pick-list 的 scrollTop 会归零（弹窗列表跳回顶部）；改为直接改 class。
+      if (t && t.classList && t.closest('.pick-list')) {
+        const list = t.closest('.pick-list');
+        const prev = list.querySelector('.pick.on');
+        if (prev) prev.classList.remove('on');
+        t.classList.add('on');
+      }
+      // 同步「创建」按钮可用态（原先由整窗重渲染负责，局部更新后需手动刷新）
+      const btn = document.querySelector('.modal [data-act="createSession"]');
+      if (btn) btn.disabled = !v;
+    },
     async createSession() {
       const kid = State.modal.data.kp;
       if (!kid) return;
@@ -2141,7 +2161,14 @@
     const t = e.target, b = t.dataset.bind;
     if (!b) return;
     if (b === 'draft') { State.draft = t.value; autoGrow(t); }
-    else if (b === 'modal') { if (State.modal) State.modal.data[t.dataset.key] = t.value; if (t.dataset.key === 'q') renderOverlays(), focusKeep(t.dataset.key); }
+    else if (b === 'modal') {
+      if (State.modal) State.modal.data[t.dataset.key] = t.value;
+      // newSession 搜索：仅局部刷新知识点列表，避免整窗重建重放弹窗动画（闪屏）并丢失输入焦点
+      if (t.dataset.key === 'q' && State.modal && State.modal.type === 'newSession') {
+        const pl = document.querySelector('.modal .pick-list');
+        if (pl) pl.innerHTML = newSessionPickList();
+      }
+    }
     else if (b === 'rubric') {
       State.grading.scores[t.dataset.id] = Number(t.value) || 0;
       const sub = DB.submissions.find(x => x.id === State.drawer.subId);
