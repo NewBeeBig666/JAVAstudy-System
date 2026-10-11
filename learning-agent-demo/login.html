@@ -24,13 +24,10 @@
 
       <form id="loginForm" class="login-form" onsubmit="return doLogin(event)">
         <div class="form-row"><label>用户名</label>
-          <input class="input" id="lgUser" placeholder="student / teacher" autocomplete="username"></div>
+          <input class="input" id="lgUser" placeholder="请输入用户名" autocomplete="username"></div>
         <div class="form-row"><label>密码</label>
-          <input class="input" id="lgPass" type="password" placeholder="123456" autocomplete="current-password"></div>
+          <input class="input" id="lgPass" type="password" placeholder="请输入密码" autocomplete="current-password"></div>
         <button class="btn primary block" type="submit" id="lgBtn">登 录</button>
-        <div class="login-hint">
-          演示账号：<b>student / 123456</b>（学生·张明）· <b>teacher / 123456</b>（教师·陈老师）
-        </div>
       </form>
 
       <form id="regForm" class="login-form" style="display:none" onsubmit="return doRegister(event)">
