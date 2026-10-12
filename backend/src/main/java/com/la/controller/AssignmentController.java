@@ -33,9 +33,21 @@ public class AssignmentController {
         return ApiResponse.ok(assignmentService.submit(CurrentUser.id(), id, req.getCode()));
     }
 
+    @Operation(summary = "在线答题提交（题目型作业）：结构化作答 + 客观题自动判分")
+    @PostMapping("/{id}/answer")
+    public ApiResponse<Map<String, Object>> answer(@PathVariable Long id, @RequestBody AnswerRequest req) {
+        return ApiResponse.ok(assignmentService.submitAnswer(CurrentUser.id(), id, req.getAnswers()));
+    }
+
     @Data
     public static class SubmitRequest {
         @NotBlank(message = "代码不能为空")
         private String code;
+    }
+
+    @Data
+    public static class AnswerRequest {
+        /** [{"questionId":"5","value":"A"}]，value：单选 key / 多选 [keys] / 判断 true|false / 文本内容 */
+        private List<Map<String, Object>> answers;
     }
 }

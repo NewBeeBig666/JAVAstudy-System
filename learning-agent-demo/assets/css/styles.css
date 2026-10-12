@@ -825,6 +825,39 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   .ci-textarea { min-height: 200px; }
   .ci-preview { min-height: 200px; }
 }
+/* ---------- 学生答题页（作业详情） ---------- */
+.ans-info {
+  flex: none; padding: 12px 18px 4px;
+}
+.ans-info h3 { font-size: 16.5px; margin-bottom: 5px; }
+.ans-info-meta { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-3); }
+.ans-body { flex: 1; display: flex; gap: 14px; min-height: 0; padding: 10px 18px 18px; }
+.ans-main { flex: 1; overflow-y: auto; min-width: 0; padding-right: 4px; }
+.ans-group { padding: 4px 0 8px; }
+.ans-group-title {
+  display: inline-block; font-size: 13.5px; font-weight: 700; color: var(--text);
+  background: var(--brand-soft); border-radius: 7px; padding: 5px 12px;
+}
+.ans-opt {
+  display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px;
+  border: 1px solid var(--border-2); border-radius: 9px; margin-bottom: 7px;
+  cursor: pointer; font-size: 13.5px; transition: border-color .12s, background .12s;
+}
+.ans-opt:hover { border-color: var(--brand-2); background: var(--brand-soft); }
+.ans-opt > input { width: 16px; height: 16px; accent-color: var(--brand); flex: none; margin-top: 1px; }
+.ans-opt > span { line-height: 1.6; }
+.ans-opt .opt-key { font-weight: 700; color: var(--text-2); flex: none; }
+.ans-text { width: 100%; }
+.ans-nav {
+  flex: none; width: 200px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px;
+}
+.ans-nav .cp-nav-item.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+@media (max-width: 900px) {
+  .ans-body { flex-direction: column; overflow-y: auto; }
+  .ans-nav { width: auto; }
+  .ans-main { overflow-y: visible; }
+}
 .cp-qcard {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 14px; margin-bottom: 14px;

@@ -100,6 +100,135 @@ public class AssignmentService {
     }
 
     /**
+     * 学生答题提交（题目型作业）：结构化作答 + 客观题自动判分
+     * answers 形如 [{"questionId":"5","value":"A"}]（单选 key / 多选 [keys] / 判断 true|false / 文本内容）
+     */
+    @Transactional
+    public Map<String, Object> submitAnswer(Long userId, Long assignmentId, List<Map<String, Object>> answers) {
+        Assignment as = assignmentMapper.selectById(assignmentId);
+        if (as == null) {
+            throw new BizException("作业不存在");
+        }
+        if (as.getScoreMode() == null) {
+            throw new BizException("该作业不支持在线作答");
+        }
+        if ("CLOSED".equals(as.getStatus())) {
+            throw new BizException("作业已截止，无法提交");
+        }
+        // 有效时段校验：截止后未关闭时，仅允许补交（allowLate=1）
+        boolean overdue = as.getDueAt() != null && LocalDateTime.now().isAfter(as.getDueAt());
+        if (overdue && (as.getAllowLate() == null || as.getAllowLate() != 1)) {
+            throw new BizException("作业已截止，无法提交");
+        }
+        if (answers == null || answers.isEmpty()) {
+            throw new BizException("请至少作答一道题目");
+        }
+        List<Question> questions = questionMapper.selectList(new LambdaQueryWrapper<Question>()
+                .eq(Question::getAssignmentId, assignmentId).orderByAsc(Question::getSortOrder));
+        Map<Long, Question> qMap = questions.stream()
+                .collect(Collectors.toMap(Question::getId, q -> q));
+
+        // 逐题校验 + 客观题自动判分 + 汇总文本（兼容教师批改页 code 展示）
+        StringBuilder summary = new StringBuilder();
+        double autoScore = 0;
+        List<Map<String, Object>> clean = new ArrayList<>();
+        for (Map<String, Object> a : answers) {
+            Long qid;
+            try {
+                qid = Long.valueOf(String.valueOf(a.get("questionId")));
+            } catch (Exception e) {
+                continue;
+            }
+            Question q = qMap.get(qid);
+            if (q == null) {
+                continue;
+            }
+            Object value = a.get("value");
+            boolean answered = value != null && !(value instanceof List && ((List<?>) value).isEmpty())
+                    && !String.valueOf(value).isBlank();
+            if (q.getScore() != null) {
+                autoScore += gradeObjective(q, value, answered);
+            }
+            clean.add(Map.of("questionId", String.valueOf(qid), "value", value == null ? "" : value));
+            summary.append('第').append(q.getSortOrder()).append("题：")
+                    .append(answered ? answerText(q, value) : "未作答").append('\n');
+        }
+        if (clean.isEmpty()) {
+            throw new BizException("作答内容无效");
+        }
+
+        Submission sub = submissionMapper.selectOne(new LambdaQueryWrapper<Submission>()
+                .eq(Submission::getAssignmentId, assignmentId)
+                .eq(Submission::getStudentId, userId));
+        if (sub == null) {
+            sub = new Submission();
+            sub.setAssignmentId(assignmentId);
+            sub.setStudentId(userId);
+            sub.setStatus("PENDING");
+            sub.setAttempts(1);
+            sub.setSimilarity(0);
+            sub.setSubmittedAt(LocalDateTime.now());
+        } else {
+            sub.setStatus("PENDING");
+            sub.setAttempts(sub.getAttempts() + 1);
+            sub.setSubmittedAt(LocalDateTime.now());
+        }
+        sub.setCode(summary.toString());
+        sub.setAnswers(toJson(clean));
+        if (sub.getId() == null) {
+            submissionMapper.insert(sub);
+        } else {
+            submissionMapper.updateById(sub);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("submission", toSubmissionDto(sub, false));
+        result.put("autoScore", Math.round(autoScore * 10) / 10.0);
+        result.put("attempted", clean.size());
+        result.put("totalQuestions", questions.size());
+        return result;
+    }
+
+    /** 客观题（SINGLE/MULTI/JUDGE）自动判分；主观题返回 0（由教师批改） */
+    @SuppressWarnings("unchecked")
+    private double gradeObjective(Question q, Object value, boolean answered) {
+        if (!answered || !isObjective(q)) {
+            return 0;
+        }
+        List<Object> correct = parseObjects(q.getAnswer());
+        List<Object> mine = value instanceof List ? (List<Object>) value : List.of(value);
+        boolean ok;
+        if ("SINGLE".equals(q.getType()) || "JUDGE".equals(q.getType())) {
+            ok = correct.size() == 1 && mine.size() == 1 && objEquals(correct.get(0), mine.get(0));
+        } else {
+            ok = correct.size() == mine.size() && correct.containsAll(mine)
+                    && mine.containsAll(correct);
+        }
+        return ok ? q.getScore().doubleValue() : 0;
+    }
+
+    private boolean isObjective(Question q) {
+        return "SINGLE".equals(q.getType()) || "MULTI".equals(q.getType()) || "JUDGE".equals(q.getType());
+    }
+
+    private boolean objEquals(Object a, Object b) {
+        return String.valueOf(a).equals(String.valueOf(b));
+    }
+
+    /** 作答内容的可读文本（用于 code 汇总，教师批改页直接可读） */
+    private String answerText(Question q, Object value) {
+        if (!isObjective(q)) {
+            String s = String.valueOf(value);
+            return s.length() > 60 ? s.substring(0, 60) + "…" : s;
+        }
+        List<Object> mine = value instanceof List ? (List<Object>) value : List.of(value);
+        if ("JUDGE".equals(q.getType())) {
+            return mine.isEmpty() ? "-" : ("true".equals(String.valueOf(mine.get(0))) ? "正确" : "错误");
+        }
+        return mine.stream().map(String::valueOf).sorted().collect(Collectors.joining(""));
+    }
+
+    /**
      * 教师发布/修改作业
      */
     @Transactional
@@ -472,6 +601,7 @@ public class AssignmentService {
         if (withCode) {
             dto.put("code", sub.getCode());
         }
+        dto.put("answers", parseObjects(sub.getAnswers()));
         dto.put("aiComment", sub.getAiComment() != null ? sub.getAiComment() : "");
         dto.put("teacherComment", sub.getTeacherComment() != null ? sub.getTeacherComment() : "");
         dto.put("rubricScores", new LinkedHashMap<>());

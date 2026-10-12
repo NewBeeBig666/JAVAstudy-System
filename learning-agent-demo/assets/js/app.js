@@ -122,6 +122,7 @@
     modal: null,
     drawer: null,
     compose: null,
+    answer: null,
     grading: null,
     insight: null,
     filters: { hw: 'all', warn: 'all', kpModule: 'all', subAs: 'as-2', exKp: 'all', classId: 'c1', report: 'overview' },
@@ -724,7 +725,7 @@
           <div style="font-size:13px;color:var(--text-2);line-height:1.7">${h(a.desc)}</div>
           ${hwQuestionList(a)}
           ${st.key === 'todo' ? `<div style="margin-top:12px">
-            <button class="btn primary" data-act="submitHw" data-val="${a.id}">${icon('send', 14)} 提交作业</button></div>` : ''}
+            <button class="btn primary" data-act="${a.questionCount ? 'openAnswer' : 'submitHw'}" data-val="${a.id}">${icon('send', 14)} ${a.questionCount ? '进入作业详情作答' : '提交作业'}</button></div>` : ''}
           ${extra ? '<div style="margin-top:12px">' + extra + '</div>' : ''}
         </div></div>`;
     }).join('');
@@ -1216,6 +1217,7 @@
     const box = $('#overlay');
     let html = '';
     if (State.compose) html += renderCompose();
+    if (State.answer) html += renderAnswer();
     if (State.modal) html += renderModal();
     if (State.drawer) html += renderDrawer();
     box.innerHTML = html;
@@ -1323,6 +1325,12 @@
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn danger" data-act="doDelAs" ${d.busy ? 'disabled' : ''}>${icon('trash', 15)} ${d.busy ? '删除中…' : '确认删除'}</button>`;
 
+    } else if (m.type === 'answerConfirm') {
+      title = '提交作业';
+      body = `<div class="note" style="margin-bottom:12px">即将提交作业 <b>${h(d.title)}</b>。</div>
+        <div class="hint">已作答 <b>${d.done}</b> / ${d.total} 题${d.done < d.total ? '，未作答的题目将记为空' : ''}。提交后客观题（单选/多选/判断）将自动判分，主观题由教师批改；支持在批改完成前重新提交。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消，继续作答</button>
+        <button class="btn primary" data-act="ansDoSubmit" ${d.busy ? 'disabled' : ''}>${icon('send', 15)} ${d.busy ? '提交中…' : '确认提交'}</button>`;
     } else if (m.type === 'importClass') {
       title = '添加班级 · 上传名单';
       const f = d.file;
@@ -1686,6 +1694,8 @@
 
   // 粘贴文本的自动识别（1 秒防抖后触发，右侧实时联动）
   let importTimer = null;
+  // 学生答题：文本输入的导航状态联动防抖
+  let ansTextTimer = null;
   async function importParse() {
     const im = State.compose && State.compose.import;
     if (!im || im.busy) return;
@@ -1934,6 +1944,196 @@
         ${(q.options || []).map(o => `<div class="hw-q-opt">${o.key}. ${h(o.text)}</div>`).join('')}
       </div>`).join('')}
     </div>`;
+  }
+
+  /* ===========================================================
+   *  学生答题页（作业详情 · 全屏 overlay，参考超星作业详情布局）
+   *  左：题目按题型分组 + 各题型答题组件；右：题号导航（已答高亮）。
+   *  支持答案编辑 / 临时保存（本地草稿）/ 最终提交（结构化作答 + 客观题自动判分）。
+   * =========================================================== */
+  const ansDraftKey = asId => 'la-answer-draft-' + asId;
+
+  function openAnswerEditor(a) {
+    if (!a || !a.questionCount) { toast('该作业不支持在线作答'); return; }
+    let draft = {};
+    try { draft = JSON.parse(localStorage.getItem(ansDraftKey(a.id)) || '{}') || {}; } catch (e) { draft = {}; }
+    State.answer = {
+      asId: a.id, title: a.title || '',
+      startAt: a.startAt || '', endAt: a.due || '', allowLate: !!a.allowLate,
+      scoreMode: a.scoreMode, totalScore: a.totalScore,
+      questions: (a.questions || []).map(q => ({
+        id: q.id, type: q.type, title: q.title || '',
+        options: (q.options || []).map(o => ({ key: o.key, text: o.text || '' })),
+        score: q.score != null ? q.score : null
+      })),
+      answers: draft, busy: false
+    };
+    renderOverlays();
+  }
+
+  // 是否已作答：文本非空 / 数组非空 / 布尔有值
+  function ansAnswered(qi) {
+    const v = State.answer.answers[qi];
+    if (v == null) return false;
+    if (Array.isArray(v)) return v.length > 0;
+    return String(v) !== '';
+  }
+
+  function ansAnsweredCount() {
+    let n = 0;
+    State.answer.questions.forEach((q, i) => { if (ansAnswered(i)) n++; });
+    return n;
+  }
+
+  function renderAnswer() {
+    const c = State.answer;
+    if (!c) return '';
+    const per = c.scoreMode !== 'custom' && c.questions.length
+      ? Math.round(1000 / c.questions.length) / 10 : 0;
+    // 按题型分组（保持题号顺序）
+    const groups = [];
+    const groupIdx = {};
+    c.questions.forEach((q, i) => {
+      if (groupIdx[q.type] === undefined) {
+        groupIdx[q.type] = groups.length;
+        groups.push({ type: q.type, idx: [] });
+      }
+      groups[groupIdx[q.type]].idx.push(i);
+    });
+    let secNo = 0;
+    const body = groups.map(g => {
+      secNo++;
+      const score = g.idx.reduce((s, i) => s + (c.scoreMode === 'custom'
+        ? (c.questions[i].score || 0) : per), 0);
+      return `<div class="ans-group"><span class="ans-group-title">${'一二三四五六'[secNo - 1] || secNo}. ${QTYPES[g.type] ? QTYPES[g.type].label : g.type}（共 ${g.idx.length} 题，${Math.round(score * 10) / 10} 分）</span></div>` +
+        g.idx.map(i => answerQCard(c, i, per)).join('');
+    }).join('');
+    return `<div class="compose-mask">
+      <div class="compose-top">
+        <button class="btn sm ghost" data-act="closeAnswer">${icon('chevronL', 15)} 返回</button>
+        <span class="badge brand">${icon('clipboard', 13)} 作业详情</span>
+        <span class="badge" id="ansStat">已作答 ${ansAnsweredCount()}/${c.questions.length}</span>
+        ${c.endAt ? `<span class="badge">${icon('clock', 12)} 截止 ${h(c.endAt)}</span>` : ''}
+        ${c.allowLate ? '<span class="badge warn">允许补交</span>' : ''}
+        <div class="spacer"></div>
+        <button class="btn sm" data-act="ansSaveDraft" ${c.busy ? 'disabled' : ''}>${icon('save', 14)} 临时保存</button>
+        <button class="btn primary sm" data-act="answerSubmit" ${c.busy ? 'disabled' : ''}>${c.busy ? '提交中…' : icon('send', 14) + ' 提交作业'}</button>
+      </div>
+      <div class="ans-info">
+        <h3>${h(c.title)}</h3>
+        <div class="ans-info-meta">
+          <span>题量：${c.questions.length}</span>
+          <span>满分：${c.totalScore != null ? c.totalScore : 100}</span>
+          <span>作答时段：${c.startAt ? h(c.startAt) + ' 至 ' : ''}${h(c.endAt || '不限')}</span>
+        </div>
+      </div>
+      <div class="ans-body">
+        <div class="ans-main">${body}</div>
+        <aside class="ans-nav" id="ansNav">${answerNavHtml()}</aside>
+      </div>
+    </div>`;
+  }
+
+  // 单题答题卡：按题型渲染作答组件（答案实时写入 State.answer.answers）
+  function answerQCard(c, i, per) {
+    const q = c.questions[i];
+    const t = QTYPES[q.type] || { label: q.type };
+    const score = c.scoreMode === 'custom' && q.score != null ? q.score : per;
+    const v = c.answers[i];
+    let input = '';
+    if (q.type === 'SINGLE' || q.type === 'MULTI') {
+      const multi = q.type === 'MULTI';
+      const checked = k => Array.isArray(v) ? v.indexOf(k) >= 0 : (Array.isArray(v) ? false : v === k);
+      input = (q.options || []).map(o => `
+        <label class="ans-opt">
+          <input type="${multi ? 'checkbox' : 'radio'}" name="ansq-${i}" data-ans="${multi ? 'answerMulti' : 'answerSingle'}" data-qi="${i}" data-val="${o.key}" ${checked(o.key) ? 'checked' : ''}>
+          <span class="opt-key">${o.key}.</span><span>${h(o.text)}</span>
+        </label>`).join('');
+    } else if (q.type === 'JUDGE') {
+      input = `
+        <label class="ans-opt"><input type="radio" name="ansq-${i}" data-ans="answerJudge" data-qi="${i}" data-val="true" ${v === true ? 'checked' : ''}><span class="opt-key">A.</span><span>正确</span></label>
+        <label class="ans-opt"><input type="radio" name="ansq-${i}" data-ans="answerJudge" data-qi="${i}" data-val="false" ${v === false ? 'checked' : ''}><span class="opt-key">B.</span><span>错误</span></label>`;
+    } else if (q.type === 'FILL') {
+      input = `<input class="input ans-text" placeholder="填写答案" value="${v != null ? h(String(v)) : ''}" data-bind="answer" data-qi="${i}">`;
+    } else {
+      input = `<textarea class="textarea ans-text" style="min-height:110px${q.type === 'CODE' ? ';font-family:Consolas,monospace' : ''}"
+        placeholder="${q.type === 'CODE' ? '在此编写代码…' : '在此输入答案…'}" data-bind="answer" data-qi="${i}">${v != null ? h(String(v)) : ''}</textarea>`;
+    }
+    return `<div class="cp-qcard" id="ansq-${i}">
+      <div class="cp-qhead">
+        <span class="cp-qno">${i + 1}</span>
+        <span class="badge brand">${t.label}</span>
+        <span class="badge">${score} 分</span>
+      </div>
+      <div class="hw-q-title" style="margin-bottom:8px">${h(q.title)}</div>
+      ${input}
+    </div>`;
+  }
+
+  // 右侧题号导航（按题型分组，已答高亮）
+  function answerNavHtml() {
+    const c = State.answer;
+    const groups = [];
+    const groupIdx = {};
+    c.questions.forEach((q, i) => {
+      if (groupIdx[q.type] === undefined) {
+        groupIdx[q.type] = groups.length;
+        groups.push({ type: q.type, idx: [] });
+      }
+      groups[groupIdx[q.type]].idx.push(i);
+    });
+    let html = `<div class="cp-nav-sum">已作答 <b id="ansNavCount">${ansAnsweredCount()}</b><br>/ 共 ${c.questions.length} 题</div>`;
+    groups.forEach(g => {
+      html += `<div class="cp-nav-group">${QTYPES[g.type] ? QTYPES[g.type].label : g.type}</div>` +
+        g.idx.map(i => `<button class="cp-nav-item ${ansAnswered(i) ? 'on' : ''}" data-act="answerGotoQ" data-val="${i}" title="第 ${i + 1} 题${ansAnswered(i) ? '（已作答）' : ''}">${i + 1}</button>`).join('');
+    });
+    return html;
+  }
+
+  // 局部刷新：题号导航 + 顶部已答统计
+  function refreshAnswerPanels() {
+    const c = State.answer; if (!c) return;
+    const nav = $('#ansNav'); if (nav) nav.innerHTML = answerNavHtml();
+    const st = $('#ansStat');
+    if (st) st.textContent = '已作答 ' + ansAnsweredCount() + '/' + c.questions.length;
+  }
+
+  function saveAnswerDraft(silent) {
+    const c = State.answer; if (!c) return;
+    try {
+      localStorage.setItem(ansDraftKey(c.asId), JSON.stringify(c.answers));
+      if (!silent) toast('草稿已临时保存，下次进入自动恢复', 'ok');
+    } catch (e) {
+      if (!silent) toast('草稿保存失败：' + e.message);
+    }
+  }
+
+  async function doAnswerSubmit() {
+    const c = State.answer;
+    if (!c || c.busy) return;
+    c.busy = true;
+    State.modal = null;
+    renderOverlays();
+    try {
+      const payload = c.questions.map((q, i) => ({
+        questionId: q.id,
+        value: c.answers[i] != null ? c.answers[i] : (Array.isArray(q.options) && (q.type === 'MULTI') ? [] : '')
+      }));
+      const r = await API.post('/assignments/' + c.asId + '/answer', { answers: payload });
+      const auto = r && r.autoScore != null ? r.autoScore : null;
+      State.answer = null;
+      localStorage.removeItem(ansDraftKey(c.asId));
+      renderOverlays();
+      DB.assignments = await API.get('/assignments/my');
+      render();
+      toast(auto != null
+        ? '作业已提交，客观题自动判分 ' + auto + ' 分，主观题等待教师批改'
+        : '作业已提交，等待教师批改', 'ok');
+    } catch (e) {
+      c.busy = false;
+      renderOverlays();
+      toast('提交失败：' + e.message);
+    }
   }
 
 
@@ -2393,6 +2593,36 @@
     },
     openCompose() { openComposeEditor(null); },
     closeCompose() { State.compose = null; renderOverlays(); },
+    openAnswer(v) {
+      const a = DB.assignments.find(x => String(x.id) === String(v));
+      if (!a) { toast('作业不存在'); return; }
+      openAnswerEditor(a);
+    },
+    closeAnswer() {
+      // 返回时自动保存草稿，防止误退丢答案
+      saveAnswerDraft(true);
+      State.answer = null;
+      renderOverlays();
+      toast('已返回，作答内容已自动保存为草稿');
+    },
+    ansSaveDraft() { saveAnswerDraft(false); },
+    answerSubmit() {
+      const c = State.answer;
+      if (!c || c.busy) return;
+      const done = ansAnsweredCount();
+      const total = c.questions.length;
+      if (!done) { toast('请至少作答一道题目'); return; }
+      State.modal = {
+        type: 'answerConfirm',
+        data: { asId: c.asId, title: c.title, done, total, busy: false }
+      };
+      renderOverlays();
+    },
+    ansDoSubmit() { doAnswerSubmit(); },
+    answerGotoQ(v) {
+      const card = $('#ansq-' + v);
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    },
     composeAddQ(v) {
       if (!QTYPES[v]) return;
       State.compose.questions.push(newQuestion(v));
@@ -2985,6 +3215,14 @@
       clearTimeout(importTimer);
       importTimer = setTimeout(importParse, 1000);
     }
+    else if (b === 'answer') {
+      // 学生答题：填空/简答/编程文本输入写回答案（不重渲染保焦点），导航状态防抖联动
+      const c = State.answer;
+      if (!c) return;
+      c.answers[Number(t.dataset.qi)] = t.value;
+      clearTimeout(ansTextTimer);
+      ansTextTimer = setTimeout(refreshAnswerPanels, 400);
+    }
     else if (b === 'rubric') {
       State.grading.scores[t.dataset.id] = Number(t.value) || 0;
       const sub = DB.submissions.find(x => x.id === State.drawer.subId);
@@ -3034,6 +3272,24 @@
         else if (!t.checked && i >= 0) q.answer.splice(i, 1);
       }
       else if (t.dataset.ans === 'judge') { q.answer = [t.dataset.val === 'true']; }
+    }
+    // 学生答题：单选 / 多选 / 判断（原生视觉切换，仅回写答案并联动题号导航）
+    if (t && t.dataset && State.answer
+        && (t.dataset.ans === 'answerSingle' || t.dataset.ans === 'answerMulti' || t.dataset.ans === 'answerJudge')) {
+      const qi = Number(t.dataset.qi);
+      const v = t.dataset.val;
+      if (t.dataset.ans === 'answerSingle') {
+        State.answer.answers[qi] = t.checked ? v : '';
+      } else if (t.dataset.ans === 'answerJudge') {
+        State.answer.answers[qi] = t.checked ? v === 'true' : '';
+      } else {
+        const arr = Array.isArray(State.answer.answers[qi]) ? State.answer.answers[qi] : [];
+        const i = arr.indexOf(v);
+        if (t.checked && i < 0) arr.push(v);
+        else if (!t.checked && i >= 0) arr.splice(i, 1);
+        State.answer.answers[qi] = arr;
+      }
+      refreshAnswerPanels();
     }
   });
 
