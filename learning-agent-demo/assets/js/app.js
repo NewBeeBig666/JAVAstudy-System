@@ -121,6 +121,7 @@
     activeStudent: null,
     modal: null,
     drawer: null,
+    compose: null,
     grading: null,
     insight: null,
     filters: { hw: 'all', warn: 'all', kpModule: 'all', subAs: 'as-2', exKp: 'all', classId: 'c1', report: 'overview' },
@@ -721,6 +722,7 @@
             <span class="badge">${icon('clock', 12)} 截止 ${h(a.due)}</span>
           </div>
           <div style="font-size:13px;color:var(--text-2);line-height:1.7">${h(a.desc)}</div>
+          ${hwQuestionList(a)}
           ${st.key === 'todo' ? `<div style="margin-top:12px">
             <button class="btn primary" data-act="submitHw" data-val="${a.id}">${icon('send', 14)} 提交作业</button></div>` : ''}
           ${extra ? '<div style="margin-top:12px">' + extra + '</div>' : ''}
@@ -905,33 +907,44 @@
 
   function viewAssignments() {
     const head = mainHead('作业管理', '结构化发布 + Rubric 驱动评分',
-      '<button class="btn primary sm" data-act="publishModal">' + icon('plus', 14) + ' 发布新作业</button>');
+      '<button class="btn primary sm" data-act="publishModal">' + icon('plus', 14) + ' 发布新作业</button>' +
+      '<button class="btn sm" data-act="openCompose" title="支持单选/多选/填空/判断/简答/编程题组卷">' + icon('edit', 14) + ' 出题组卷</button>');
     if (!DB.assignments.length) {
-      return { head, body: emptyBox('还没有作业', '点击右上角「发布新作业」，发布后学生侧会立即看到。') };
+      return { head, body: emptyBox('还没有作业', '点击右上角「发布新作业」或「出题组卷」，发布后学生侧会立即看到。') };
     }
     const body = DB.assignments.map(a => {
       const pct = Math.round(a.submitted / a.total * 100);
       const stBadge = a.status === 'draft' ? '<span class="badge">草稿</span>'
         : a.status === 'ongoing' ? '<span class="badge info">进行中</span>' : '<span class="badge ok">已截止</span>';
+      const isQ = a.questionCount > 0;
+      // 题目型作业展示题型分布与题量/总分；Rubric 型作业展示原评分标准
+      const detail = isQ
+        ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+            ${(a.questions || []).reduce((acc, q) => { const g = acc.find(x => x[0] === q.type); g ? g[1]++ : acc.push([q.type, 1]); return acc; }, [])
+              .map(g => '<span class="badge">' + (QTYPES[g[0]] ? QTYPES[g[0]].label : g[0]) + ' × ' + g[1] + '</span>').join('')}
+            <span class="badge brand">共 ${a.questionCount} 题 · 总分 ${a.totalScore}</span>
+            ${a.allowLate ? '<span class="badge warn">允许补交</span>' : ''}
+          </div>`
+        : `<div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2)">Rubric（满分 100）</div>
+          <div class="mini-list">
+            ${a.rubric.map(r => `<div class="mini-row"><span class="nm">${h(r.name)}</span>
+              <span style="flex:1;font-size:11.5px;color:var(--text-3)">${h(r.desc)}</span>
+              <span class="vl">${r.max}</span></div>`).join('')}
+          </div>`;
       return `<div class="card">
         <div class="card-head">${icon('clipboard', 15)}<h3>${h(a.title)}</h3><div class="spacer"></div>
           <button class="btn sm ghost" data-act="asMore" data-val="${a.id}" title="更多操作">${icon('dots', 14)} 更多</button>${stBadge}</div>
         <div class="card-body">
           <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
             ${a.kp.map(k => '<span class="badge brand">' + kpName(k) + '</span>').join('')}
-            <span class="badge">${icon('clock', 12)} 截止 ${h(a.due)}</span>
+            <span class="badge">${icon('clock', 12)} ${isQ ? (a.startAt ? h(a.startAt) + ' ~ ' : '') : '截止 '}${h(a.due)}</span>
           </div>
-          <div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:12px">${h(a.desc)}</div>
+          ${a.desc ? `<div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:12px">${h(a.desc)}</div>` : ''}
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
             <div class="bar" style="flex:1"><i style="width:${pct}%"></i></div>
             <span style="font-size:12.5px;font-weight:600">${a.submitted}/${a.total}</span>
           </div>
-          <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-2)">Rubric（满分 100）</div>
-          <div class="mini-list">
-            ${a.rubric.map(r => `<div class="mini-row"><span class="nm">${h(r.name)}</span>
-              <span style="flex:1;font-size:11.5px;color:var(--text-3)">${h(r.desc)}</span>
-              <span class="vl">${r.max}</span></div>`).join('')}
-          </div>
+          ${detail}
           <div style="margin-top:12px;display:flex;gap:8px">
             ${a.status === 'draft'
               ? '<button class="btn primary sm" data-act="publishDraft" data-val="' + a.id + '">' + icon('send', 14) + ' 正式发布给学生</button>'
@@ -1202,6 +1215,7 @@
   function renderOverlays() {
     const box = $('#overlay');
     let html = '';
+    if (State.compose) html += renderCompose();
     if (State.modal) html += renderModal();
     if (State.drawer) html += renderDrawer();
     box.innerHTML = html;
@@ -1408,6 +1422,520 @@
         </div>
       </div>`;
   }
+
+  /* ===========================================================
+   *  出题组卷（教师端全屏 overlay）：六种题型 + 评分机制 + 有效时段
+   *  更新策略：输入走数据绑定（不重渲染，防丢焦点）；添加/删除题、
+   *  切换评分模式等按钮操作走局部面板重建或整层重渲染（无入场动画不闪屏）。
+   * =========================================================== */
+  const QTYPES = {
+    SINGLE: { label: '单选题', hasOptions: true },
+    MULTI: { label: '多选题', hasOptions: true },
+    FILL: { label: '填空题' },
+    JUDGE: { label: '判断题' },
+    SHORT: { label: '简答题' },
+    CODE: { label: '编程题' }
+  };
+
+  function newQuestion(type) {
+    const q = { type, title: '', answer: [], analysis: '', difficulty: 0.5, kpCode: '', score: null, options: [] };
+    if (type === 'SINGLE' || type === 'MULTI') {
+      q.options = ['A', 'B', 'C', 'D'].map(k => ({ key: k, text: '' }));
+    }
+    return q;
+  }
+
+  const composeNowStr = () => {
+    const d = new Date(), p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  };
+
+  // 出题页总分：百分制恒 100（有题时）；自定义 = 各题分值之和
+  function composeTotal(c) {
+    if (c.scoreMode !== 'CUSTOM') return c.questions.length ? 100 : 0;
+    return Math.round(c.questions.reduce((s, q) => s + (Number(q.score) || 0), 0) * 10) / 10;
+  }
+
+  function openComposeEditor(a) {
+    if (a) {
+      // 回填编辑：题目型作业 DTO（含答案）转为编辑器结构；关联知识点由题目知识点合集推导
+      const kps = [];
+      (a.questions || []).forEach(q => { if (q.kpCode && kps.indexOf(q.kpCode) < 0) kps.push(q.kpCode); });
+      State.compose = {
+        id: a.id, title: a.title || '',
+        scoreMode: (a.scoreMode || 'average').toUpperCase(),
+        startAt: a.startAt || '', endAt: a.due || '',
+        allowLate: !!a.allowLate,
+        kps,
+        questions: (a.questions || []).map(q => ({
+          type: q.type, title: q.title || '',
+          options: (q.options || []).map(o => ({ key: o.key, text: o.text || '' })),
+          answer: Array.isArray(q.answer) ? q.answer : [],
+          analysis: q.analysis || '',
+          difficulty: q.difficulty != null ? q.difficulty : 0.5,
+          kpCode: q.kpCode || '', score: q.score != null ? q.score : null
+        })),
+        busy: false, aiBusy: false, _dtp: null, _kpOpen: false, preview: false
+      };
+    } else {
+      // 默认标题「新建作业 + 日期时间」，与产品规范一致；可直接编辑并实时同步至草稿状态
+      const d = new Date(), p = n => String(n).padStart(2, '0');
+      State.compose = {
+        id: null,
+        title: '新建作业' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()),
+        scoreMode: 'AVERAGE',
+        startAt: composeNowStr(), endAt: '', allowLate: false,
+        kps: [], questions: [], busy: false, aiBusy: false, _dtp: null, _kpOpen: false, preview: false
+      };
+    }
+    renderOverlays();
+  }
+
+  function renderCompose() {
+    const c = State.compose;
+    if (!c) return '';
+    if (c.preview) return composePreviewHtml();
+    if (c.import) return composeImportHtml();
+    const avg = c.scoreMode !== 'CUSTOM';
+    return `<div class="compose-mask">
+      <div class="compose-top">
+        <button class="btn sm ghost" data-act="closeCompose">${icon('chevronL', 15)} 返回</button>
+        <input class="input compose-title" placeholder="请输入作业标题" value="${h(c.title)}" data-bind="compose" data-key="title">
+        <span class="badge brand" id="composeStat">题量 ${c.questions.length} · 总分 ${composeTotal(c)}</span>
+        <div class="spacer"></div>
+        <button class="btn sm ghost" data-act="composePreview">${icon('eye', 14)} 预览</button>
+        <button class="btn sm" data-act="composeSave" ${c.busy ? 'disabled' : ''}>${c.busy ? '处理中…' : '保存草稿'}</button>
+        <button class="btn primary sm" data-act="composePublish" ${c.busy ? 'disabled' : ''}>${c.busy ? '提交中…' : '保存并发布'}</button>
+      </div>
+      <div class="compose-cfg">
+        <div class="cfg-row"><span class="cfg-label">评分机制</span>
+          <label class="radio"><input type="radio" name="composeScoreMode" data-ans="mode" data-val="AVERAGE" ${avg ? 'checked' : ''}><i></i>百分制（平均分配每道题的分值）</label>
+          <label class="radio"><input type="radio" name="composeScoreMode" data-ans="mode" data-val="CUSTOM" ${!avg ? 'checked' : ''}><i></i>自定义（自行设置每道题的分值）</label>
+        </div>
+        <div class="cfg-row"><span class="cfg-label">有效时段</span>
+          <div class="input dtp-input" data-act="openDtp" data-val="startAt" title="选择开始时间">${c.startAt ? h(c.startAt) : '<span style="color:var(--text-3)">开始时间</span>'}</div>
+          <span style="color:var(--text-3)">—</span>
+          <div class="input dtp-input" data-act="openDtp" data-val="endAt" title="选择结束时间">${c.endAt ? h(c.endAt) : '<span style="color:var(--text-3)">请选择结束时间</span>'}</div>
+          <span class="cfg-sub">允许学生补交</span>
+          <button class="toggle ${c.allowLate ? 'on' : ''}" data-act="toggleLate" title="开启后截止时间后学生仍可补交"><i></i></button>
+        </div>
+        ${c._dtp ? composeDtpHtml() : ''}
+      </div>
+      <div class="compose-body">
+        <aside class="compose-nav" id="composeNav">${composeNavHtml()}</aside>
+        <div class="compose-main">
+          <div class="cp-toolbar">
+            <span class="cp-tb-label">${icon('plus', 14)} 添加题目</span>
+            ${Object.keys(QTYPES).map(t => `<button class="btn sm" data-act="composeAddQ" data-val="${t}">${QTYPES[t].label}</button>`).join('')}
+            <div class="spacer"></div>
+            <button class="btn sm ghost" id="composeKpBtn" data-act="kpPanel">${icon('target', 14)} 关联知识点${c.kps.length ? ' (' + c.kps.length + ')' : ''}</button>
+            <button class="btn sm ai-gen ${aiReady(c) && !c.aiBusy ? 'ready' : ''}" id="composeAiBtn" data-act="aiGen" ${aiReady(c) && !c.aiBusy ? '' : 'disabled'} title="${aiReady(c) ? '基于关联知识点与已有题目生成新题' : '请先关联知识点并添加至少一道题目'}">${icon('sparkles', 14)} ${c.aiBusy ? '生成中…' : '一键AI生成题目'}</button>
+            <button class="btn sm ghost" data-act="openImport" title="粘贴文本或上传 Word/Excel 导入题目">${icon('file', 14)} 导入作业</button>
+          </div>
+          ${c._kpOpen ? composeKpPanelHtml() : ''}
+          <div id="composeQList">${composeQListHtml()}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function composeQListHtml() {
+    const c = State.compose;
+    if (!c.questions.length) {
+      return `<div class="empty" style="padding:48px 12px"><div class="empty-ico">${icon('file', 24)}</div>
+        <div class="empty-title">还没有题目</div><div class="empty-desc">点击上方题型按钮，添加第一道题</div></div>`;
+    }
+    return c.questions.map((q, i) => composeQCard(q, i)).join('');
+  }
+
+  // AI 生成按钮可用条件：已关联知识点 且 已添加至少一道题目
+  function aiReady(c) {
+    return !!(c && c.kps && c.kps.length && c.questions && c.questions.length);
+  }
+
+  // 知识点选择面板（图1 规范：标题 + pill 标签流式多选）
+  function composeKpPanelHtml() {
+    const c = State.compose;
+    return `<div class="kp-panel">
+      <div class="kp-panel-head">${icon('target', 14)} 关联知识点
+        <span>选中的知识点将作为「一键 AI 生成题目」的依据</span>
+        <button class="btn sm" data-act="kpPanelClose">${icon('check', 13)} 完成</button>
+      </div>
+      <div class="kp-panel-body">
+        ${DB.knowledgePoints.map(k => `<button class="chip ${c.kps.indexOf(k.id) >= 0 ? 'on' : ''}" data-act="kpToggle" data-val="${k.id}">${k.name}</button>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  // 学生视角预览：以学生端「我的作业」的呈现与交互展示当前编辑中的作业（数据实时取自草稿）
+  function composePreviewHtml() {
+    const c = State.compose;
+    const n = c.questions.length;
+    const per = n ? Math.round(1000 / n) / 10 : 0;
+    const kpSet = [];
+    c.questions.forEach(q => { if (q.kpCode && kpSet.indexOf(q.kpCode) < 0) kpSet.push(q.kpCode); });
+    const qlist = n
+      ? c.questions.map((q, i) => `<div class="hw-q">
+          <div class="hw-q-head"><span class="badge brand">${QTYPES[q.type] ? QTYPES[q.type].label : q.type}</span>
+            <span class="hw-q-score">${c.scoreMode === 'CUSTOM' ? (q.score != null ? q.score + ' 分' : '未设分值') : per + ' 分'}</span></div>
+          <div class="hw-q-title">${i + 1}. ${h(q.title || '（未填写题干）')}</div>
+          ${q.type === 'JUDGE' ? '<div class="hw-q-opt">A. 正确　B. 错误</div>' : ''}
+          ${(q.options || []).map(o => `<div class="hw-q-opt">${o.key}. ${h(o.text)}</div>`).join('')}
+        </div>`).join('')
+      : '<div class="hw-q-title" style="color:var(--text-3)">（尚未添加题目）</div>';
+    return `<div class="compose-mask">
+      <div class="compose-top">
+        <button class="btn sm ghost" data-act="backFromPreview">${icon('chevronL', 15)} 返回编辑</button>
+        <span class="badge brand">${icon('eye', 13)} 学生视角预览</span>
+        <div class="spacer"></div>
+        <button class="btn primary sm" data-act="backFromPreview">退出预览，继续编辑</button>
+      </div>
+      <div class="compose-main" style="max-width:860px;margin:0 auto;width:100%">
+        <div class="card">
+          <div class="card-head">${icon('clipboard', 15)}<h3>${h(c.title || '未命名作业')}</h3>
+            <div class="spacer"></div><span class="badge info">进行中</span></div>
+          <div class="card-body">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+              ${kpSet.map(k => '<span class="badge brand">' + kpName(k) + '</span>').join('')}
+              <span class="badge">${icon('clock', 12)} ${c.startAt ? h(c.startAt) + ' ~ ' : ''}${h(c.endAt || '未设置截止时间')}</span>
+              ${c.allowLate ? '<span class="badge warn">允许补交</span>' : ''}
+            </div>
+            <div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:4px">
+              共 ${n} 题 · 总分 ${composeTotal(c)}${c.scoreMode !== 'CUSTOM' && n ? '（每题 ' + per + ' 分）' : ''}
+            </div>
+            <div class="hw-qlist">
+              <div class="hw-qlist-head">${icon('file', 14)} 题目 · 共 ${n} 题 · 总分 ${composeTotal(c)}</div>
+              ${qlist}
+            </div>
+            <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
+              <button class="btn primary" data-act="previewSubmit">${icon('send', 14)} 提交作业</button>
+              <span style="font-size:12px;color:var(--text-3)">预览模式下提交不会真正执行</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  /* ---------- 导入作业（左编辑 / 右预览分栏，粘贴与 Word/Excel 上传双通道） ---------- */
+  // 导入页视图：左侧粘贴/上传自动识别，右侧实时预览识别结果
+  function composeImportHtml() {
+    const im = State.compose.import;
+    return `<div class="compose-mask">
+      <div class="compose-top">
+        <button class="btn sm ghost" data-act="importBack">${icon('chevronL', 15)} 返回编辑</button>
+        <span class="badge brand">${icon('file', 13)} 导入作业</span>
+        <span class="badge" id="ciStat">${im.busy ? 'AI 识别中…' : '已识别 ' + im.questions.length + ' 道题目'}</span>
+        ${im.err ? '<span class="badge warn">' + h(im.err) + '</span>' : ''}
+        <div class="spacer"></div>
+        <button class="btn primary sm" id="ciJoin" data-act="importJoin" ${im.questions.length && !im.busy ? '' : 'disabled'}>加入作业${im.questions.length ? '（' + im.questions.length + ' 题）' : ''}</button>
+      </div>
+      <div class="ci-body">
+        <div class="ci-pane">
+          <div class="ci-head">
+            <span class="cfg-label">题目编辑</span>
+            <div class="spacer"></div>
+            <button class="btn sm" data-act="importPickFile">${icon('file', 14)} 上传 Word / Excel / 图片文件</button>
+            <input type="file" id="ciFileInput" accept=".docx,.doc,.xlsx,.xls,.png,.jpg,.jpeg,.bmp,.webp,.gif" style="display:none" data-import-qfile>
+          </div>
+          <textarea class="textarea ci-textarea" id="ciTextArea" placeholder="在此粘贴题目内容，或点击右上角按钮上传文件。&#10;&#10;支持题型：单选题、多选题、填空题、判断题、简答题、编程题。&#10;内容变更 1 秒后自动识别，识别结果实时显示在右侧预览区。" data-bind="import" data-key="text">${h(im.text)}</textarea>
+          <div class="ci-hint">① 粘贴题目文本 · ② 上传 Word（.docx/.doc）/ Excel（.xlsx/.xls）自动解析 · 图片识别暂未开放，请将图片中的题目文字粘贴到编辑区</div>
+        </div>
+        <div class="ci-pane">
+          <div class="ci-head">
+            <span class="cfg-label">题目预览</span>
+            <div class="spacer"></div>
+            <span class="badge" id="ciRightBadge">${im.busy ? 'AI 识别中…' : im.questions.length + ' 道题目'}</span>
+          </div>
+          <div class="ci-preview" id="ciPreview">${importPreviewHtml()}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // 右侧预览：识别出的结构化题目（教师校对视角，含答案与解析）
+  function importPreviewHtml() {
+    const im = State.compose.import;
+    if (im.busy) return '<div class="ci-loading">AI 识别中，请稍候…</div>';
+    if (im.err && !im.questions.length) return '<div class="ci-loading">识别失败：' + h(im.err) + '</div>';
+    if (!im.questions.length) return '<div class="ci-loading">在左侧粘贴题目文本或上传文件，识别结果会实时显示在这里</div>';
+    return im.questions.map((q, i) => `<div class="hw-q">
+      <div class="hw-q-head"><span class="badge brand">${QTYPES[q.type] ? QTYPES[q.type].label : q.type}</span>
+        <span class="hw-q-score">第 ${i + 1} 题</span></div>
+      <div class="hw-q-title">${h(q.title)}</div>
+      ${(q.options || []).map(o => `<div class="hw-q-opt">${o.key}. ${h(o.text)}${(q.answer || []).indexOf(o.key) >= 0 ? ' <span class="badge ok">✓ 正确答案</span>' : ''}</div>`).join('')}
+      ${q.type === 'JUDGE' ? '<div class="hw-q-opt">正确答案：' + (q.answer && q.answer[0] === true ? '正确' : '错误') + '</div>' : ''}
+      ${['FILL', 'SHORT', 'CODE'].indexOf(q.type) >= 0 && q.answer && q.answer[0]
+        ? '<div class="hw-q-opt" style="color:var(--text-3)">参考答案：' + h(String(q.answer[0]).slice(0, 160)) + '</div>' : ''}
+      ${q.analysis ? '<div class="hw-q-opt" style="color:var(--text-3)">解析：' + h(String(q.analysis).slice(0, 200)) + '</div>' : ''}
+    </div>`).join('');
+  }
+
+  // 局部刷新右侧预览 / 顶部统计 / 加入按钮（左侧编辑区不动，保焦点）
+  function refreshImportPanels() {
+    const im = State.compose.import; if (!im) return;
+    const pv = $('#ciPreview'); if (pv) pv.innerHTML = importPreviewHtml();
+    const st = $('#ciStat'); if (st) st.textContent = im.busy ? 'AI 识别中…' : '已识别 ' + im.questions.length + ' 道题目';
+    const rb = $('#ciRightBadge'); if (rb) rb.textContent = im.busy ? 'AI 识别中…' : im.questions.length + ' 道题目';
+    const join = $('#ciJoin');
+    if (join) {
+      join.disabled = !(im.questions.length && !im.busy);
+      join.textContent = '加入作业' + (im.questions.length ? '（' + im.questions.length + ' 题）' : '');
+    }
+  }
+
+  // 粘贴文本的自动识别（1 秒防抖后触发，右侧实时联动）
+  let importTimer = null;
+  async function importParse() {
+    const im = State.compose && State.compose.import;
+    if (!im || im.busy) return;
+    if (!im.text || !im.text.trim()) {
+      im.questions = []; im.err = '';
+      refreshImportPanels();
+      return;
+    }
+    im.busy = true; im.err = '';
+    refreshImportPanels();
+    try {
+      const qs = await API.post('/teacher/compose/import-parse', { text: im.text });
+      im.questions = qs || [];
+    } catch (e) {
+      im.err = e.message;
+    }
+    im.busy = false;
+    refreshImportPanels();
+  }
+
+  function composeNavHtml() {
+    const c = State.compose;
+    const groups = {};
+    c.questions.forEach((q, i) => { (groups[q.type] = groups[q.type] || []).push(i); });
+    let html = `<div class="cp-nav-sum">题量 <b>${c.questions.length}</b><br>总分 <b id="composeTotal">${composeTotal(c)}</b></div>`;
+    Object.keys(groups).forEach(t => {
+      html += `<div class="cp-nav-group">${QTYPES[t].label}</div>` +
+        groups[t].map(i => `<button class="cp-nav-item" data-act="composeGotoQ" data-val="${i}" title="第 ${i + 1} 题">${i + 1}</button>`).join('');
+    });
+    if (!c.questions.length) html += `<div class="cp-nav-empty">添加题目后<br>这里会按题型<br>展示题号导航</div>`;
+    return html;
+  }
+
+  function composeQCard(q, i) {
+    const t = QTYPES[q.type] || { label: q.type };
+    const c = State.compose;
+    const avg = c.scoreMode !== 'CUSTOM';
+    const per = c.questions.length ? Math.round(1000 / c.questions.length) / 10 : 0;
+    const ans = Array.isArray(q.answer) ? q.answer : [];
+    let ansHtml = '';
+    if (q.type === 'SINGLE' || q.type === 'MULTI') {
+      const multi = q.type === 'MULTI';
+      ansHtml = q.options.map((o, oi) => `
+        <div class="opt-row">
+          <input type="${multi ? 'checkbox' : 'radio'}" name="ans-${i}" data-ans="${multi ? 'multi' : 'single'}" data-q="${i}" data-oi="${oi}" ${ans.indexOf(o.key) >= 0 ? 'checked' : ''} title="设为正确答案">
+          <span class="opt-key">${o.key}</span>
+          <input class="input" placeholder="选项 ${o.key} 内容" value="${h(o.text)}" data-bind="compose" data-q="${i}" data-oi="${oi}">
+        </div>`).join('') +
+        `<div class="hint">${multi ? '勾选多个选项作为正确答案' : '点选一个选项作为正确答案'}</div>`;
+    } else if (q.type === 'JUDGE') {
+      ansHtml = `<div class="opt-row" style="padding:2px 0">
+        <label class="radio sm"><input type="radio" name="ans-${i}" data-ans="judge" data-q="${i}" data-val="true" ${ans[0] === true ? 'checked' : ''}><i></i> 正确</label>
+        <label class="radio sm"><input type="radio" name="ans-${i}" data-ans="judge" data-q="${i}" data-val="false" ${ans[0] === false ? 'checked' : ''}><i></i> 错误</label>
+      </div>`;
+    } else if (q.type === 'FILL') {
+      ansHtml = `<div class="form-row"><label>正确答案</label>
+        <input class="input" placeholder="填写正确答案" value="${h(ans[0] != null ? ans[0] : '')}" data-bind="compose" data-q="${i}" data-key="answerText"></div>`;
+    } else {
+      ansHtml = `<div class="form-row"><label>参考答案</label>
+        <textarea class="textarea" style="min-height:76px" placeholder="${q.type === 'CODE' ? '参考实现 / 评分要点' : '参考答案要点'}" data-bind="compose" data-q="${i}" data-key="answerText">${h(ans[0] != null ? ans[0] : '')}</textarea></div>`;
+    }
+    return `<div class="cp-qcard" id="cpq-${i}">
+      <div class="cp-qhead">
+        <span class="cp-qno">${i + 1}</span>
+        <span class="badge brand">${t.label}</span>
+        ${avg
+          ? `<span class="badge">自动 ${per} 分</span>`
+          : `<input class="input cp-score" type="number" min="0" step="0.5" placeholder="分值" value="${q.score != null ? q.score : ''}" data-bind="compose" data-q="${i}" data-key="score"> <span style="color:var(--text-3);font-size:12px">分</span>`}
+        <div class="spacer"></div>
+        <button class="btn sm ghost" data-act="composeDelQ" data-val="${i}" title="删除本题">${icon('trash', 13)} 删除</button>
+      </div>
+      <div class="form-row"><label>题干</label>
+        <textarea class="textarea" style="min-height:60px" placeholder="请输入题干" data-bind="compose" data-q="${i}" data-key="title">${h(q.title)}</textarea></div>
+      ${ansHtml}
+      <div class="cp-meta">
+        <div class="form-row"><label>难度</label>
+          <select class="select" data-bind="compose" data-q="${i}" data-key="difficulty">
+            <option value="0.8" ${q.difficulty === 0.8 ? 'selected' : ''}>0.8（易）</option>
+            <option value="0.5" ${q.difficulty !== 0.8 && q.difficulty !== 0.2 ? 'selected' : ''}>0.5（中）</option>
+            <option value="0.2" ${q.difficulty === 0.2 ? 'selected' : ''}>0.2（难）</option>
+          </select></div>
+        <div class="form-row"><label>知识点</label>
+          <select class="select" data-bind="compose" data-q="${i}" data-key="kpCode">
+            <option value="">不关联</option>
+            ${DB.knowledgePoints.map(k => `<option value="${k.id}" ${q.kpCode === k.id ? 'selected' : ''}>${k.name}</option>`).join('')}
+          </select></div>
+      </div>
+      <div class="form-row"><label>答案解析</label>
+        <input class="input" placeholder="答案解析，学生会看到（可选）" value="${h(q.analysis || '')}" data-bind="compose" data-q="${i}" data-key="analysis"></div>
+    </div>`;
+  }
+
+  /* ---------- 日期时间选择器（弹层日历 + 时:分，开始/结束共用） ---------- */
+  function composeDtpHtml() {
+    const d = State.compose._dtp;
+    const [y, m] = d.month.split('-').map(Number);
+    const firstDay = new Date(y, m - 1, 1).getDay();
+    const days = new Date(y, m, 0).getDate();
+    const prevDays = new Date(y, m - 1, 0).getDate();
+    const now = new Date();
+    let cells = '';
+    for (let i = 0; i < 42; i++) {
+      const n = i - firstDay + 1;
+      if (n < 1) { cells += `<span class="dtp-day off">${prevDays + n}</span>`; }
+      else if (n > days) { cells += `<span class="dtp-day off">${n - days}</span>`; }
+      else {
+        const isToday = n === now.getDate() && m === now.getMonth() + 1 && y === now.getFullYear();
+        cells += `<button class="dtp-day ${n === d.day ? 'sel' : ''} ${isToday ? 'today' : ''}" data-act="dtpDay" data-val="${n}">${n}</button>`;
+      }
+    }
+    return `<div class="dtp-pop" id="dtpPop" style="left:${d.x}px;top:${d.y}px">
+      <div class="dtp-head">
+        <button class="icon-btn" data-act="dtpPrev" title="上月">${icon('chevronL', 15)}</button>
+        <b>${y} 年 ${m} 月</b>
+        <button class="icon-btn" data-act="dtpNext" title="下月">${icon('chevronR', 15)}</button>
+      </div>
+      <div class="dtp-grid">${['日', '一', '二', '三', '四', '五', '六'].map(w => `<span class="dtp-wk">${w}</span>`).join('')}${cells}</div>
+      <div class="dtp-time">
+        <span>时间</span>
+        <input class="input" type="number" min="0" max="23" value="${d.hour}" data-bind="dtp" data-key="hour"> :
+        <input class="input" type="number" min="0" max="59" value="${d.minute}" data-bind="dtp" data-key="minute">
+      </div>
+      <div class="dtp-foot">
+        <button class="btn sm ghost" data-act="dtpClear">清空</button>
+        <button class="btn sm ghost" data-act="dtpToday">今天</button>
+        <button class="btn primary sm" data-act="dtpOk">确定</button>
+      </div>
+    </div>`;
+  }
+
+  function openDtpField(field, el) {
+    const c = State.compose;
+    const cur = c[field] || composeNowStr();
+    const parts = cur.split(/[- :]/).map(Number);
+    const r = el.getBoundingClientRect();
+    c._dtp = {
+      field,
+      month: parts[0] + '-' + String(parts[1]).padStart(2, '0'),
+      day: parts[2], hour: parts[3], minute: parts[4],
+      x: Math.min(r.left, window.innerWidth - 300),
+      y: Math.min(r.bottom + 6, window.innerHeight - 330)
+    };
+    renderOverlays();
+  }
+
+  // 添加/删除题后局部重建题目列表 + 左栏 + 顶部统计（不整层重渲染，保输入焦点与滚动位置）
+  function refreshComposePanels() {
+    const ql = $('#composeQList'); if (ql) ql.innerHTML = composeQListHtml();
+    const nv = $('#composeNav'); if (nv) nv.innerHTML = composeNavHtml();
+    updateComposeStats();
+    updateAiBtn();
+  }
+
+  // 局部刷新「一键AI生成题目」按钮状态（灰暗禁用 ↔ 蓝色可用 ↔ 生成中）
+  function updateAiBtn() {
+    const c = State.compose; if (!c) return;
+    const btn = $('#composeAiBtn'); if (!btn) return;
+    const ready = aiReady(c) && !c.aiBusy;
+    btn.disabled = !ready;
+    btn.classList.toggle('ready', ready);
+    btn.title = aiReady(c) ? '基于关联知识点与已有题目生成新题' : '请先关联知识点并添加至少一道题目';
+    btn.innerHTML = icon('sparkles', 14) + ' ' + (c.aiBusy ? '生成中…' : '一键AI生成题目');
+  }
+
+  // 仅刷新总分/题量两处文本（自定义分值输入时联动，不重建任何输入框）
+  function updateComposeStats() {
+    const c = State.compose; if (!c) return;
+    const total = composeTotal(c);
+    const st = $('#composeStat');
+    if (st) st.textContent = '题量 ' + c.questions.length + ' · 总分 ' + total;
+    const tv = $('#composeTotal');
+    if (tv) tv.textContent = total;
+  }
+
+  function shiftDtpMonth(delta) {
+    const d = State.compose._dtp;
+    const [y, m] = d.month.split('-').map(Number);
+    const cur = new Date(y, m - 1 + delta, 1);
+    d.month = cur.getFullYear() + '-' + String(cur.getMonth() + 1).padStart(2, '0');
+    const days = new Date(cur.getFullYear(), cur.getMonth() + 1, 0).getDate();
+    if (d.day > days) d.day = days;
+    renderOverlays();
+  }
+
+  // 出题保存/发布：前端校验 + 提交 + 刷新
+  async function composeSubmit(status) {
+    const c = State.compose;
+    if (!c || c.busy) return;
+    if (!c.title || !c.title.trim()) { toast('请填写作业标题'); return; }
+    if (!c.questions.length) { toast('请至少添加一道题目'); return; }
+    for (let i = 0; i < c.questions.length; i++) {
+      const q = c.questions[i], no = '第 ' + (i + 1) + ' 题';
+      if (!q.title.trim()) { toast(no + '缺少题干'); return; }
+      if (q.type === 'SINGLE' || q.type === 'MULTI') {
+        if (q.options.filter(o => o.text.trim()).length < 2) { toast(no + '至少需要 2 个非空选项'); return; }
+        if (!q.answer.length) { toast(no + '请设置正确答案'); return; }
+      }
+      if (q.type === 'JUDGE' && q.answer.length === 0) { toast(no + '请设置正确答案'); return; }
+    }
+    if (c.scoreMode === 'CUSTOM') {
+      const sum = c.questions.reduce((s, q) => s + (Number(q.score) || 0), 0);
+      if (Math.abs(sum - 100) > 0.01) { toast('自定义评分总分须为 100 分，当前 ' + Math.round(sum * 10) / 10); return; }
+    }
+    if (!c.endAt) { toast('请选择结束时间'); return; }
+    if (c.startAt && c.endAt <= c.startAt) { toast('结束时间必须晚于开始时间'); return; }
+
+    c.busy = true; renderOverlays();
+    try {
+      const r = await API.post('/teacher/compose', {
+        id: c.id != null ? Number(c.id) : null,
+        title: c.title, scoreMode: c.scoreMode,
+        startAt: c.startAt || null, endAt: c.endAt, allowLate: !!c.allowLate,
+        status: status,
+        questions: c.questions.map(q => ({
+          type: q.type, title: q.title,
+          options: (q.options || []).filter(o => o.text.trim()).map(o => ({ key: o.key, text: o.text })),
+          answer: q.answer || [],
+          analysis: q.analysis || null,
+          difficulty: Number(q.difficulty) || 0.5,
+          kpCode: q.kpCode || null,
+          score: c.scoreMode === 'CUSTOM' ? (Number(q.score) || 0) : null
+        }))
+      });
+      State.compose = null; renderOverlays();
+      DB.assignments = await API.get('/teacher/assignments');
+      render();
+      toast(status === 'DRAFT' ? '草稿已保存' : '作业「' + r.title + '」已发布，学生侧已同步收到', 'ok');
+    } catch (e) {
+      if (State.compose) { State.compose.busy = false; renderOverlays(); }
+      toast(e.message);
+    }
+  }
+
+  /* ---------- 学生端：题目型作业的只读题目列表（不含答案） ---------- */
+  function hwQuestionList(a) {
+    const qs = a.questions || [];
+    if (!a.questionCount || !qs.length) return '';
+    const per = Math.round(1000 / qs.length) / 10;
+    return `<div class="hw-qlist">
+      <div class="hw-qlist-head">${icon('file', 14)} 题目 · 共 ${a.questionCount} 题 · 总分 ${a.totalScore}</div>
+      ${qs.map((q, i) => `<div class="hw-q">
+        <div class="hw-q-head"><span class="badge brand">${QTYPES[q.type] ? QTYPES[q.type].label : q.type}</span>
+          <span class="hw-q-score">${a.scoreMode === 'custom' && q.score != null ? q.score + ' 分' : per + ' 分'}</span></div>
+        <div class="hw-q-title">${i + 1}. ${h(q.title)}</div>
+        ${q.type === 'JUDGE' ? '<div class="hw-q-opt">A. 正确　B. 错误</div>' : ''}
+        ${(q.options || []).map(o => `<div class="hw-q-opt">${o.key}. ${h(o.text)}</div>`).join('')}
+      </div>`).join('')}
+    </div>`;
+  }
+
 
   /* ===========================================================
    *  交互动作
@@ -1855,11 +2383,190 @@
       closeAsMenu();
       const a = DB.assignments.find(x => String(x.id) === String(v));
       if (!a) { toast('作业不存在或已删除'); return; }
+      // 题目型作业改道出题组卷编辑（避免旧 Rubric 弹窗破坏 question 数据）
+      if (a.scoreMode) { openComposeEditor(a); return; }
       State.modal = { type: 'publish', data: {
         id: a.id, title: a.title, kp: [...(a.kp || [])], due: a.due || '',
         desc: a.desc || '', status: (a.status || 'ongoing').toUpperCase(), rubric: a.rubric
       } };
       renderOverlays();
+    },
+    openCompose() { openComposeEditor(null); },
+    closeCompose() { State.compose = null; renderOverlays(); },
+    composeAddQ(v) {
+      if (!QTYPES[v]) return;
+      State.compose.questions.push(newQuestion(v));
+      refreshComposePanels();
+      // 平滑滚动到新题卡
+      requestAnimationFrame(() => {
+        const list = document.querySelector('.compose-main');
+        const card = $('#cpq-' + (State.compose.questions.length - 1));
+        if (list && card) list.scrollTo({ top: card.offsetTop - 8, behavior: 'smooth' });
+      });
+    },
+    composeDelQ(v) {
+      State.compose.questions.splice(Number(v), 1);
+      refreshComposePanels();
+    },
+    composeGotoQ(v) {
+      const card = $('#cpq-' + v);
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    },
+    toggleLate(v, id, t) {
+      State.compose.allowLate = !State.compose.allowLate;
+      if (t && t.classList) t.classList.toggle('on', State.compose.allowLate);
+    },
+    openDtp(v, id, t) { openDtpField(v, t); },
+    dtpPrev() { shiftDtpMonth(-1); },
+    dtpNext() { shiftDtpMonth(1); },
+    dtpDay(v) { State.compose._dtp.day = Number(v); renderOverlays(); },
+    dtpToday() {
+      const d = State.compose._dtp, n = new Date();
+      d.month = n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0');
+      d.day = n.getDate(); d.hour = n.getHours(); d.minute = n.getMinutes();
+      renderOverlays();
+    },
+    dtpClear() { State.compose[State.compose._dtp.field] = ''; State.compose._dtp = null; renderOverlays(); },
+    dtpOk() {
+      const d = State.compose._dtp, p = n => String(n).padStart(2, '0');
+      State.compose[d.field] = d.month + '-' + p(d.day) + ' ' + p(d.hour) + ':' + p(d.minute);
+      State.compose._dtp = null;
+      renderOverlays();
+    },
+    composeSave() { composeSubmit('DRAFT'); },
+    composePublish() { composeSubmit('ONGOING'); },
+    composePreview() { State.compose.preview = true; renderOverlays(); },
+    backFromPreview() { State.compose.preview = false; renderOverlays(); },
+    previewSubmit() { toast('预览模式：此操作不会真正提交'); },
+    openImport() {
+      State.compose.import = { text: '', questions: [], busy: false, err: '' };
+      renderOverlays();
+    },
+    importBack() { State.compose.import = null; renderOverlays(); },
+    importJoin() {
+      const c = State.compose, im = c.import;
+      if (!im || !im.questions.length || im.busy) return;
+      im.questions.forEach(q => {
+        c.questions.push({
+          type: q.type, title: q.title || '',
+          options: (q.options || []).map(o => ({ key: o.key, text: o.text || '' })),
+          answer: Array.isArray(q.answer) ? q.answer : [],
+          analysis: q.analysis || '',
+          difficulty: q.difficulty != null ? Number(q.difficulty) : 0.5,
+          kpCode: q.kpCode || '',
+          score: c.scoreMode === 'CUSTOM' ? 0 : null
+        });
+      });
+      const n = im.questions.length;
+      c.import = null;
+      renderOverlays();
+      toast('已将 ' + n + ' 道题目加入当前作业', 'ok');
+    },
+    importPickFile() {
+      const input = $('#ciFileInput');
+      if (input) input.click();
+    },
+    importUploadFile(file) {
+      const im = State.compose && State.compose.import;
+      if (!im || im.busy) return;
+      const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+      if (['.png', '.jpg', '.jpeg', '.bmp', '.webp', '.gif'].indexOf(ext) >= 0) {
+        toast('图片识别暂未开放：请将图片中的题目文字粘贴到编辑区，或上传 Word / Excel 版本');
+        return;
+      }
+      if (['.docx', '.doc', '.xlsx', '.xls'].indexOf(ext) < 0) { toast('仅支持 Word / Excel / 图片格式'); return; }
+      if (file.size > 10 * 1024 * 1024) { toast('文件超过 10MB 上限'); return; }
+      im.busy = true; im.err = '';
+      refreshImportPanels();
+      const fd = new FormData();
+      fd.append('file', file);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/teacher/compose/import-file');
+      xhr.setRequestHeader('Authorization', 'Bearer ' + API.token());
+      xhr.onload = () => {
+        try {
+          const r = JSON.parse(xhr.responseText);
+          if (xhr.status === 200 && r.code === 0) {
+            im.text = r.data.text || '';
+            im.questions = r.data.questions || [];
+            im.busy = false; im.err = '';
+            const ta = $('#ciTextArea');
+            if (ta) ta.value = im.text;
+            refreshImportPanels();
+            toast('文件已解析，识别出 ' + im.questions.length + ' 道题目', 'ok');
+          } else {
+            im.busy = false; im.err = r.msg || '解析失败';
+            refreshImportPanels();
+            toast(im.err);
+          }
+        } catch (err) {
+          im.busy = false; refreshImportPanels();
+          toast('解析失败，请重试');
+        }
+      };
+      xhr.onerror = () => { im.busy = false; refreshImportPanels(); toast('上传失败，请重试'); };
+      xhr.send(fd);
+    },
+    kpPanel() { State.compose._kpOpen = !State.compose._kpOpen; renderOverlays(); },
+    kpPanelClose() { State.compose._kpOpen = false; renderOverlays(); },
+    kpToggle(v, id, t) {
+      // 局部切换选中态（chip class）+ 同步按钮计数与 AI 按钮状态，不重渲染面板
+      const c = State.compose;
+      const i = c.kps.indexOf(v);
+      if (i >= 0) c.kps.splice(i, 1); else c.kps.push(v);
+      if (t && t.classList) t.classList.toggle('on', i < 0);
+      const kb = $('#composeKpBtn');
+      if (kb) kb.innerHTML = icon('target', 14) + ' 关联知识点' + (c.kps.length ? ' (' + c.kps.length + ')' : '');
+      updateAiBtn();
+    },
+    async aiGen() {
+      const c = State.compose;
+      if (!c || c.aiBusy) return;
+      if (!aiReady(c)) { toast('请先关联知识点，并添加至少一道题目'); return; }
+      // 优先填充教师已添加但未填写题干的空白题（按原题型生成），剩余配额追加新题
+      const blanks = c.questions.filter(q => !q.title.trim());
+      c.aiBusy = true; updateAiBtn();
+      try {
+        const qs = await API.post('/teacher/compose/ai-generate', {
+          kpCodes: c.kps,
+          existing: c.questions.map(q => ({ type: q.type, title: q.title })),
+          blanks: blanks.map(q => q.type),
+          count: 3
+        });
+        const normalize = q => ({
+          type: q.type, title: q.title || '',
+          options: (q.options || []).map(o => ({ key: o.key, text: o.text || '' })),
+          answer: Array.isArray(q.answer) ? q.answer : [],
+          analysis: q.analysis || '',
+          difficulty: q.difficulty != null ? Number(q.difficulty) : 0.5,
+          kpCode: q.kpCode || '',
+          score: c.scoreMode === 'CUSTOM' ? 0 : null
+        });
+        let filled = 0, appended = 0;
+        (qs || []).forEach((q, idx) => {
+          if (idx < blanks.length) {
+            // 按空白题的原题型填充内容（界面题型保持教师所选）
+            const b = blanks[idx];
+            const n = normalize(Object.assign({}, q, { type: b.type }));
+            Object.assign(b, n);
+            filled++;
+          } else {
+            c.questions.push(normalize(q));
+            appended++;
+          }
+        });
+        c.aiBusy = false;
+        refreshComposePanels();
+        const total = filled + appended;
+        const msg = total
+          ? '已基于「' + c.kps.map(kpName).join('、') + '」生成 ' + total + ' 道题目'
+            + (filled ? '（其中填充空白题 ' + filled + ' 道' + (appended ? '、新增 ' + appended + ' 道' : '') + '）' : '')
+          : 'AI 未返回有效题目，请重试';
+        toast(msg, total ? 'ok' : undefined);
+      } catch (e) {
+        c.aiBusy = false; updateAiBtn();
+        toast('生成失败：' + e.message);
+      }
     },
     delAs(v) {
       closeAsMenu();
@@ -2246,6 +2953,38 @@
         if (pl) pl.innerHTML = newSessionPickList();
       }
     }
+    else if (b === 'compose') {
+      // 出题组卷：输入只写数据、不重渲染（防丢焦点）；分值输入仅联动总分文本
+      const c = State.compose;
+      if (!c) return;
+      const qi = t.dataset.q !== undefined ? Number(t.dataset.q) : null;
+      if (qi !== null) {
+        const q = c.questions[qi];
+        if (!q) return;
+        if (t.dataset.oi !== undefined) { (q.options[Number(t.dataset.oi)] || {}).text = t.value; }
+        else if (t.dataset.key === 'answerText') { q.answer = [t.value]; }
+        else if (t.dataset.key === 'score') { q.score = Number(t.value) || 0; updateComposeStats(); }
+        else if (t.dataset.key === 'difficulty') { q.difficulty = Number(t.value) || 0.5; }
+        else { q[t.dataset.key] = t.value; }
+      } else {
+        c[t.dataset.key] = t.value;
+      }
+    }
+    else if (b === 'dtp') {
+      // 时间选择器：时/分输入写回弹层状态，不重渲染
+      if (State.compose && State.compose._dtp) {
+        const v = Math.max(0, Math.min(Number(t.value) || 0, t.dataset.key === 'hour' ? 23 : 59));
+        State.compose._dtp[t.dataset.key] = v;
+      }
+    }
+    else if (b === 'import') {
+      // 导入作业：内容变更写回 + 1 秒防抖自动识别（右侧实时联动，左侧不重渲染保焦点）
+      const im = State.compose && State.compose.import;
+      if (!im) return;
+      im.text = t.value;
+      clearTimeout(importTimer);
+      importTimer = setTimeout(importParse, 1000);
+    }
     else if (b === 'rubric') {
       State.grading.scores[t.dataset.id] = Number(t.value) || 0;
       const sub = DB.submissions.find(x => x.id === State.drawer.subId);
@@ -2266,6 +3005,35 @@
         State.modal.data.file = file;
         renderOverlays();
       }
+    }
+    // 导入作业：题目文件选择（Word / Excel / 图片）
+    if (t && t.dataset && t.dataset.importQfile !== undefined && State.compose
+        && State.compose.import) {
+      const file = t.files && t.files[0];
+      if (file) {
+        Actions.importUploadFile(file);
+        t.value = '';
+      }
+    }
+    // 出题组卷：正确答案勾选（radio/checkbox 原生视觉切换，仅回写数据不重渲染）
+    if (t && t.dataset && t.dataset.ans !== undefined && State.compose) {
+      const c = State.compose;
+      if (t.dataset.ans === 'mode') {
+        // 评分机制切换：radio 原生切换 + 整层重渲染（按钮操作无焦点丢失；分值展示联动）
+        c.scoreMode = t.dataset.val || 'AVERAGE';
+        if (c.scoreMode !== 'CUSTOM') c.questions.forEach(q => { q.score = null; });
+        renderOverlays();
+        return;
+      }
+      const q = c.questions[Number(t.dataset.q)];
+      if (!q) return;
+      if (t.dataset.ans === 'single') { q.answer = t.checked ? [q.options[Number(t.dataset.oi)].key] : []; }
+      else if (t.dataset.ans === 'multi') {
+        const k = q.options[Number(t.dataset.oi)].key, i = q.answer.indexOf(k);
+        if (t.checked && i < 0) q.answer.push(k);
+        else if (!t.checked && i >= 0) q.answer.splice(i, 1);
+      }
+      else if (t.dataset.ans === 'judge') { q.answer = [t.dataset.val === 'true']; }
     }
   });
 

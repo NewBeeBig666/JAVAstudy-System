@@ -2,6 +2,7 @@ package com.la.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.la.dto.ComposeRequest;
 import com.la.entity.*;
 import com.la.exception.BizException;
 import com.la.mapper.*;
@@ -9,6 +10,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -25,6 +28,7 @@ public class AssignmentService {
     private final RubricMapper rubricMapper;
     private final SubmissionMapper submissionMapper;
     private final RubricScoreMapper rubricScoreMapper;
+    private final QuestionMapper questionMapper;
     private final ClassMapper classMapper;
     private final UserMapper userMapper;
     private final NotificationService notificationService;
@@ -143,6 +147,14 @@ public class AssignmentService {
             }
         }
         // 正式发布时通知全班（仅首次发布：修改已发布的作业不重复推送通知）
+        notifyOnPublish(as, title, classId, oldStatus);
+        return toAssignmentDto(as, true);
+    }
+
+    /**
+     * 首次发布为 ONGOING 时通知全班学生（saveAssignment / saveCompose 共用）
+     */
+    private void notifyOnPublish(Assignment as, String title, Long classId, String oldStatus) {
         if ("ONGOING".equals(as.getStatus()) && !"ONGOING".equals(oldStatus)) {
             List<User> students = userMapper.selectList(new LambdaQueryWrapper<User>()
                     .eq(User::getClassId, classId).eq(User::getRole, "STUDENT"));
@@ -151,7 +163,121 @@ public class AssignmentService {
                         + (as.getDueAt() != null ? "，截止 " + as.getDueAt().format(DUE) : ""), "ASSIGNMENT");
             }
         }
-        return toAssignmentDto(as);
+    }
+
+    /**
+     * 出题组卷：保存/发布题目型作业（单选/多选/填空/判断/简答/编程题）
+     * 评分机制：AVERAGE=百分制均分 / CUSTOM=自定义分值（总分须为 100）
+     * 时间设置：有效时段（startAt ~ endAt，endAt 写入 dueAt）+ 允许补交
+     */
+    @Transactional
+    public Map<String, Object> saveCompose(Long teacherId, ComposeRequest req) {
+        if (req.getTitle() == null || req.getTitle().isBlank()) {
+            throw new BizException("请填写作业标题");
+        }
+        String scoreMode = "CUSTOM".equalsIgnoreCase(req.getScoreMode()) ? "CUSTOM" : "AVERAGE";
+        String status = req.getStatus() != null ? req.getStatus().toUpperCase() : "DRAFT";
+        if (!"DRAFT".equals(status) && !"ONGOING".equals(status)) {
+            throw new BizException("作业状态不合法");
+        }
+        List<ComposeRequest.QuestionReq> questions = req.getQuestions() != null ? req.getQuestions() : List.of();
+        if (questions.isEmpty()) {
+            throw new BizException("请至少添加一道题目");
+        }
+        Set<String> validTypes = Set.of("SINGLE", "MULTI", "FILL", "JUDGE", "SHORT", "CODE");
+        double scoreSum = 0;
+        for (ComposeRequest.QuestionReq q : questions) {
+            if (q.getType() == null || !validTypes.contains(q.getType())) {
+                throw new BizException("存在不支持的题型");
+            }
+            if (q.getTitle() == null || q.getTitle().isBlank()) {
+                throw new BizException("每道题目均需填写题干");
+            }
+            if (("SINGLE".equals(q.getType()) || "MULTI".equals(q.getType()))
+                    && (q.getOptions() == null || q.getOptions().size() < 2)) {
+                throw new BizException("单选题/多选题至少需要 2 个选项");
+            }
+            if (("SINGLE".equals(q.getType()) || "MULTI".equals(q.getType()) || "JUDGE".equals(q.getType()))
+                    && q.getAnswer() == null) {
+                throw new BizException("客观题需设置正确答案");
+            }
+            if (q.getScore() != null) {
+                scoreSum += q.getScore();
+            }
+        }
+        if ("CUSTOM".equals(scoreMode) && Math.abs(scoreSum - 100) > 0.01) {
+            throw new BizException("自定义评分的总分必须为 100 分，当前为 " + BigDecimal.valueOf(scoreSum).stripTrailingZeros().toPlainString());
+        }
+
+        LocalDateTime startAt = req.getStartAt() != null && !req.getStartAt().isBlank()
+                ? LocalDateTime.parse(req.getStartAt().replace(' ', 'T')) : LocalDateTime.now();
+        LocalDateTime endAt = null;
+        if (req.getEndAt() != null && !req.getEndAt().isBlank()) {
+            endAt = LocalDateTime.parse(req.getEndAt().replace(' ', 'T'));
+        }
+        if (endAt == null || !endAt.isAfter(startAt)) {
+            throw new BizException("结束时间必须晚于开始时间");
+        }
+
+        Assignment as;
+        String oldStatus = null;
+        if (req.getId() != null) {
+            as = assignmentMapper.selectById(req.getId());
+            if (as == null) {
+                throw new BizException("作业不存在");
+            }
+            oldStatus = as.getStatus();
+        } else {
+            as = new Assignment();
+            as.setTeacherId(teacherId);
+            as.setCreatedAt(LocalDateTime.now());
+        }
+        as.setClassId(req.getClassId() != null ? req.getClassId() : as.getClassId());
+        if (as.getClassId() == null) {
+            throw new BizException("缺少发放班级");
+        }
+        as.setTitle(req.getTitle());
+        as.setDescription("");
+        // 作业级知识点 = 各题关联知识点的去重合集（保证学生端按知识点过滤仍有效）
+        List<String> kpCodes = questions.stream().map(ComposeRequest.QuestionReq::getKpCode)
+                .filter(Objects::nonNull).distinct().toList();
+        as.setKpIds(toJson(kpCodes));
+        as.setStartAt(startAt);
+        as.setDueAt(endAt);
+        as.setStatus(status);
+        as.setScoreMode(scoreMode);
+        as.setAllowLate(Boolean.TRUE.equals(req.getAllowLate()) ? 1 : 0);
+        if (as.getId() == null) {
+            assignmentMapper.insert(as);
+        } else {
+            assignmentMapper.updateById(as);
+        }
+
+        // 全删重建题目
+        questionMapper.delete(new LambdaQueryWrapper<Question>()
+                .eq(Question::getAssignmentId, as.getId()));
+        for (int i = 0; i < questions.size(); i++) {
+            ComposeRequest.QuestionReq q = questions.get(i);
+            Question en = new Question();
+            en.setAssignmentId(as.getId());
+            en.setType(q.getType());
+            en.setTitle(q.getTitle());
+            en.setOptions(q.getOptions() != null ? toJson(q.getOptions()) : null);
+            en.setAnswer(q.getAnswer() != null ? toJson(q.getAnswer()) : null);
+            en.setAnalysis(q.getAnalysis());
+            en.setDifficulty(q.getDifficulty() != null ? BigDecimal.valueOf(q.getDifficulty()) : BigDecimal.valueOf(0.5));
+            en.setKpCode(q.getKpCode());
+            en.setScore("CUSTOM".equals(scoreMode) && q.getScore() != null
+                    ? BigDecimal.valueOf(q.getScore()).setScale(1, RoundingMode.HALF_UP) : null);
+            en.setSortOrder(i + 1);
+            questionMapper.insert(en);
+        }
+
+        // 题目型作业不带 Rubric：清理可能遗留的旧 Rubric（Rubric 型转题目型场景）
+        rubricMapper.delete(new LambdaQueryWrapper<Rubric>().eq(Rubric::getAssignmentId, as.getId()));
+
+        notifyOnPublish(as, as.getTitle(), as.getClassId(), oldStatus);
+        return toAssignmentDto(as, true);
     }
 
     /**
@@ -170,7 +296,7 @@ public class AssignmentService {
         if (!ownClassIds.isEmpty() && !ownClassIds.contains(as.getClassId())) {
             throw new BizException("无权操作该作业");
         }
-        // 级联清理：提交评分 → 学生提交 → Rubric → 作业
+        // 级联清理：提交评分 → 学生提交 → Rubric → 题目 → 作业
         List<Submission> subs = submissionMapper.selectList(new LambdaQueryWrapper<Submission>()
                 .eq(Submission::getAssignmentId, assignmentId));
         if (!subs.isEmpty()) {
@@ -180,10 +306,18 @@ public class AssignmentService {
                     .eq(Submission::getAssignmentId, assignmentId));
         }
         rubricMapper.delete(new LambdaQueryWrapper<Rubric>().eq(Rubric::getAssignmentId, assignmentId));
+        questionMapper.delete(new LambdaQueryWrapper<Question>().eq(Question::getAssignmentId, assignmentId));
         assignmentMapper.deleteById(assignmentId);
     }
 
     public Map<String, Object> toAssignmentDto(Assignment as) {
+        return toAssignmentDto(as, false);
+    }
+
+    /**
+     * withAnswer：教师端编辑回填需含答案与解析；学生端只读看题不含（防作弊）
+     */
+    public Map<String, Object> toAssignmentDto(Assignment as, boolean withAnswer) {
         List<Rubric> rubrics = rubricMapper.selectList(new LambdaQueryWrapper<Rubric>()
                 .eq(Rubric::getAssignmentId, as.getId()).orderByAsc(Rubric::getSortOrder));
         long submitted = submissionMapper.selectCount(new LambdaQueryWrapper<Submission>()
@@ -210,7 +344,48 @@ public class AssignmentService {
             return rm;
         }).collect(Collectors.toList()));
         dto.put("createdAt", as.getCreatedAt() != null ? as.getCreatedAt().format(DT) : null);
+        // 出题组卷扩展：评分机制 / 有效时段 / 允许补交 / 题目
+        dto.put("scoreMode", as.getScoreMode() != null ? as.getScoreMode().toLowerCase() : null);
+        dto.put("startAt", as.getStartAt() != null ? as.getStartAt().format(DUE) : null);
+        dto.put("allowLate", as.getAllowLate() != null && as.getAllowLate() == 1);
+        if (as.getScoreMode() != null) {
+            List<Question> qs = questionMapper.selectList(new LambdaQueryWrapper<Question>()
+                    .eq(Question::getAssignmentId, as.getId()).orderByAsc(Question::getSortOrder));
+            dto.put("questionCount", qs.size());
+            BigDecimal totalScore = "AVERAGE".equals(as.getScoreMode())
+                    ? BigDecimal.valueOf(100)
+                    : qs.stream().map(q -> q.getScore() == null ? BigDecimal.ZERO : q.getScore())
+                            .reduce(BigDecimal.ZERO, BigDecimal::add);
+            dto.put("totalScore", totalScore.stripTrailingZeros().toPlainString());
+            dto.put("questions", qs.stream().map(q -> questionDto(q, withAnswer)).collect(Collectors.toList()));
+        }
         return dto;
+    }
+
+    private Map<String, Object> questionDto(Question q, boolean withAnswer) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", String.valueOf(q.getId()));
+        m.put("type", q.getType());
+        m.put("title", q.getTitle());
+        m.put("options", parseObjects(q.getOptions()));
+        m.put("answer", withAnswer ? parseObjects(q.getAnswer()) : null);
+        m.put("analysis", withAnswer ? q.getAnalysis() : null);
+        m.put("difficulty", q.getDifficulty() != null ? q.getDifficulty().doubleValue() : null);
+        m.put("kpCode", q.getKpCode());
+        m.put("score", q.getScore() != null ? q.getScore().doubleValue() : null);
+        return m;
+    }
+
+    private List<Object> parseObjects(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, objectMapper.getTypeFactory()
+                    .constructCollectionType(List.class, Object.class));
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     /**

@@ -748,3 +748,158 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .as-menu-item:hover { background: var(--brand-soft); }
 .as-menu-item.danger { color: var(--danger); }
 .as-menu-item.danger:hover { background: var(--danger-soft); }
+
+/* ---------- 出题组卷（教师端全屏 overlay） ---------- */
+.compose-mask {
+  position: fixed; inset: 0; z-index: 80;
+  background: var(--panel-2);
+  display: flex; flex-direction: column;
+}
+.compose-top {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+.compose-top .spacer { flex: 1; }
+.compose-title { flex: 0 1 380px; font-weight: 650; }
+.compose-cfg {
+  flex: none; position: relative; padding: 10px 16px;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+}
+.cfg-row { display: flex; align-items: center; gap: 14px; padding: 5px 0; flex-wrap: wrap; }
+.cfg-label { font-size: 13px; font-weight: 650; color: var(--text-2); flex: none; }
+.cfg-sub { font-size: 13px; color: var(--text-2); margin-left: 12px; }
+.dtp-input { width: 180px; cursor: pointer; }
+.compose-body { flex: 1; display: flex; min-height: 0; }
+.compose-nav {
+  flex: none; width: 190px; overflow-y: auto;
+  background: var(--panel); border-right: 1px solid var(--border); padding: 12px;
+}
+.cp-nav-sum { font-size: 12.5px; color: var(--text-2); padding: 8px 10px; background: var(--brand-soft); border-radius: 8px; margin-bottom: 8px; }
+.cp-nav-sum b { color: var(--brand); font-size: 14px; }
+.cp-nav-group { font-size: 12px; font-weight: 600; color: var(--text-3); margin: 10px 2px 4px; }
+.cp-nav-item {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; margin: 2px; border: 1px solid var(--border);
+  border-radius: 7px; background: var(--panel); font-size: 12.5px; cursor: pointer;
+}
+.cp-nav-item:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+.cp-nav-empty { font-size: 12px; color: var(--text-3); text-align: center; padding: 24px 0; line-height: 1.8; }
+.compose-main { flex: 1; overflow-y: auto; padding: 14px 18px; }
+.cp-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 10px; margin-bottom: 12px;
+  /* 固定常驻：滚动出题列表时工具栏（题型按钮/关联知识点/AI生成）始终可见可点 */
+  position: sticky; top: 0; z-index: 5;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, .06);
+}
+.cp-tb-label { font-size: 13px; font-weight: 650; color: var(--text-2); display: inline-flex; align-items: center; gap: 4px; }
+/* 「一键AI生成题目」按钮：默认灰暗禁用（.btn:disabled 已有），满足条件后蓝色可用 */
+.ai-gen.ready { background: var(--brand); border-color: var(--brand); color: #fff; }
+.ai-gen.ready:hover { background: var(--brand-2); border-color: var(--brand-2); }
+/* 关联知识点选择面板 */
+.kp-panel {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 12px;
+}
+.kp-panel-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 650; margin-bottom: 10px;
+}
+.kp-panel-head span { font-size: 12px; font-weight: 400; color: var(--text-3); flex: 1; }
+.kp-panel-body { display: flex; flex-wrap: wrap; gap: 7px; }
+/* 导入作业：左编辑 / 右预览分栏 */
+.ci-body { flex: 1; display: flex; gap: 14px; min-height: 0; padding: 14px 16px; }
+.ci-pane {
+  flex: 1; display: flex; flex-direction: column; min-width: 0;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+}
+.ci-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex: none; }
+.ci-head .spacer { flex: 1; }
+.ci-textarea { flex: 1; min-height: 0; resize: none; font-size: 13.5px; line-height: 1.8; }
+.ci-hint { flex: none; font-size: 12px; color: var(--text-3); margin-top: 8px; line-height: 1.7; }
+.ci-preview { flex: 1; overflow-y: auto; min-height: 0; }
+.ci-loading { padding: 48px 12px; text-align: center; font-size: 13px; color: var(--text-3); line-height: 1.8; }
+@media (max-width: 900px) {
+  .ci-body { flex-direction: column; overflow-y: auto; }
+  .ci-textarea { min-height: 200px; }
+  .ci-preview { min-height: 200px; }
+}
+.cp-qcard {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 14px; margin-bottom: 14px;
+}
+.cp-qhead { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.cp-qhead .spacer { flex: 1; }
+.cp-qno {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--brand); color: #fff; font-size: 13px; font-weight: 700;
+}
+.cp-score { width: 88px; }
+.cp-meta { display: flex; gap: 12px; }
+.cp-meta .form-row { flex: 1; }
+.opt-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.opt-row > input[type="radio"], .opt-row > input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--brand); flex: none; }
+.opt-key { font-size: 12.5px; font-weight: 700; color: var(--text-2); width: 16px; flex: none; }
+.opt-row .input { flex: 1; }
+/* 自定义 radio（评分机制 / 判断题） */
+.radio {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--text-2); cursor: pointer; user-select: none;
+}
+.radio input { display: none; }
+.radio i {
+  width: 16px; height: 16px; border: 1.5px solid var(--border); border-radius: 50%;
+  position: relative; flex: none; transition: border-color .12s;
+}
+.radio input:checked + i { border-color: var(--brand); }
+.radio input:checked + i::after {
+  content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--brand);
+}
+.radio.sm { font-size: 12.5px; gap: 4px; }
+/* toggle 开关（允许补交） */
+.toggle {
+  width: 40px; height: 22px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--panel-3); position: relative; cursor: pointer; transition: .15s; flex: none;
+  padding: 0;
+}
+.toggle i {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25);
+  transition: .15s;
+}
+.toggle.on { background: var(--brand); border-color: var(--brand); }
+.toggle.on i { left: 20px; }
+/* 日期时间选择器弹层 */
+.dtp-pop {
+  position: fixed; z-index: 90; width: 272px; padding: 10px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .18);
+}
+.dtp-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 2px 8px; }
+.dtp-head b { font-size: 13px; }
+.dtp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.dtp-wk { font-size: 11px; color: var(--text-3); text-align: center; padding: 3px 0; }
+.dtp-day {
+  height: 30px; display: flex; align-items: center; justify-content: center;
+  font-size: 12.5px; border: 0; background: none; border-radius: 7px; cursor: pointer;
+}
+.dtp-day:hover:not(.off) { background: var(--brand-soft); color: var(--brand); }
+.dtp-day.off { color: var(--text-3); opacity: .45; cursor: default; }
+.dtp-day.sel { background: var(--brand); color: #fff; font-weight: 700; }
+.dtp-day.today:not(.sel) { color: var(--brand); font-weight: 700; }
+.dtp-time { display: flex; align-items: center; gap: 6px; padding: 10px 2px 4px; font-size: 12.5px; color: var(--text-2); }
+.dtp-time .input { width: 64px; text-align: center; }
+.dtp-foot { display: flex; justify-content: space-between; padding-top: 8px; }
+/* 学生端：题目只读列表 */
+.hw-qlist {
+  margin-top: 12px; padding: 12px 14px;
+  background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 10px;
+}
+.hw-qlist-head { font-size: 12.5px; font-weight: 650; color: var(--text-2); margin-bottom: 8px; display: flex; align-items: center; gap: 4px; }
+.hw-q { padding: 8px 0; border-top: 1px solid var(--border-2); }
+.hw-q-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.hw-q-score { font-size: 12px; color: var(--text-3); }
+.hw-q-title { font-size: 13.5px; line-height: 1.6; margin-bottom: 4px; }
+.hw-q-opt { font-size: 13px; color: var(--text-2); padding: 1px 0 1px 10px; }

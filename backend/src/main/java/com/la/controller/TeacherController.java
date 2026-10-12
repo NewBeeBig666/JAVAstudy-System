@@ -2,12 +2,15 @@ package com.la.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.la.dto.ApiResponse;
+import com.la.dto.ComposeRequest;
 import com.la.entity.Assignment;
 import com.la.entity.ClassEntity;
 import com.la.mapper.AssignmentMapper;
 import com.la.mapper.ClassMapper;
 import com.la.security.CurrentUser;
 import com.la.service.AssignmentService;
+import com.la.service.ComposeAiService;
+import com.la.service.ComposeImportService;
 import com.la.service.GradingService;
 import com.la.service.TeacherService;
 import com.la.service.ClassImportService;
@@ -19,6 +22,7 @@ import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -30,6 +34,8 @@ public class TeacherController {
 
     private final TeacherService teacherService;
     private final AssignmentService assignmentService;
+    private final ComposeAiService composeAiService;
+    private final ComposeImportService composeImportService;
     private final GradingService gradingService;
     private final ClassMapper classMapper;
     private final AssignmentMapper assignmentMapper;
@@ -76,7 +82,7 @@ public class TeacherController {
         Long cid = classId != null ? classId : defaultClassId();
         List<Assignment> list = assignmentMapper.selectList(new LambdaQueryWrapper<Assignment>()
                 .eq(Assignment::getClassId, cid).orderByDesc(Assignment::getCreatedAt));
-        return ApiResponse.ok(list.stream().map(assignmentService::toAssignmentDto).toList());
+        return ApiResponse.ok(list.stream().map(a -> assignmentService.toAssignmentDto(a, true)).toList());
     }
 
     @Operation(summary = "发布/修改作业")
@@ -93,6 +99,55 @@ public class TeacherController {
     public ApiResponse<Void> deleteAssignment(@PathVariable Long id) {
         assignmentService.deleteAssignment(CurrentUser.id(), id);
         return ApiResponse.ok();
+    }
+
+    @Operation(summary = "出题组卷：保存/发布题目型作业（单选/多选/填空/判断/简答/编程题）")
+    @PostMapping("/compose")
+    public ApiResponse<Map<String, Object>> compose(@RequestBody ComposeRequest req) {
+        if (req.getClassId() == null) {
+            req.setClassId(defaultClassId());
+        }
+        return ApiResponse.ok(assignmentService.saveCompose(CurrentUser.id(), req));
+    }
+
+    @Operation(summary = "出题组卷：一键 AI 生成题目（基于关联知识点与已有题目参考，优先填充空白题）")
+    @PostMapping("/compose/ai-generate")
+    public ApiResponse<List<Map<String, Object>>> aiGenerate(@RequestBody AiGenerateRequest req) {
+        int count = req.getCount() != null ? req.getCount() : 3;
+        return ApiResponse.ok(composeAiService.generate(req.getKpCodes(), req.getExisting(), count, req.getBlanks()));
+    }
+
+    @Operation(summary = "出题组卷：导入作业——解析粘贴的题目文本")
+    @PostMapping("/compose/import-parse")
+    public ApiResponse<List<Map<String, Object>>> importParse(@RequestBody ImportParseRequest req) {
+        return ApiResponse.ok(composeImportService.parseQuestions(req.getText()));
+    }
+
+    @Operation(summary = "出题组卷：导入作业——上传 Word/Excel 文件解析（图片暂未开放）")
+    @PostMapping(value = "/compose/import-file", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<Map<String, Object>> importFile(@RequestParam("file") MultipartFile file) {
+        String text = composeImportService.extractText(file);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("text", text);
+        data.put("questions", composeImportService.parseQuestions(text));
+        return ApiResponse.ok(data);
+    }
+
+    @Data
+    public static class ImportParseRequest {
+        private String text;
+    }
+
+    @Data
+    public static class AiGenerateRequest {
+        /** 关联的知识点编码 */
+        private List<String> kpCodes;
+        /** 已添加题目（type/title），作为出题风格参考 */
+        private List<Map<String, Object>> existing;
+        /** 待填充空白题的题型列表（按顺序），生成结果前 N 道按此题型出题 */
+        private List<String> blanks;
+        /** 追加生成题量（1-5，默认 3） */
+        private Integer count;
     }
 
     @Operation(summary = "作业的提交列表（含相似度/AI初评）")
