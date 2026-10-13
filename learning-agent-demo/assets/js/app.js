@@ -124,6 +124,7 @@
     compose: null,
     answer: null,
     grading: null,
+    gradingDrafts: {},
     insight: null,
     filters: { hw: 'all', warn: 'all', kpModule: 'all', subAs: 'as-2', exKp: 'all', classId: 'c1', report: 'overview' },
     search: ''
@@ -296,7 +297,7 @@
     } else if (sec === 'assignments' || sec === 'submissions') {
       head = '<div class="side-head"><div class="side-title">' + (sec === 'assignments' ? '作业管理' : '选择作业') + '</div></div>';
       foot = sec === 'assignments'
-        ? '<button class="btn primary block" data-act="publishModal">' + icon('plus', 15) + ' 发布新作业</button>'
+        ? '<button class="btn primary block" data-act="openCompose">' + icon('plus', 15) + ' 发布新作业</button>'
         : '';
       body = DB.assignments.map(a => {
         const pend = DB.submissions.filter(s => s.asId === a.id && s.status === 'pending').length;
@@ -908,10 +909,9 @@
 
   function viewAssignments() {
     const head = mainHead('作业管理', '结构化发布 + Rubric 驱动评分',
-      '<button class="btn primary sm" data-act="publishModal">' + icon('plus', 14) + ' 发布新作业</button>' +
-      '<button class="btn sm" data-act="openCompose" title="支持单选/多选/填空/判断/简答/编程题组卷">' + icon('edit', 14) + ' 出题组卷</button>');
+      '<button class="btn sm" data-act="openCompose" title="发布新作业：支持单选/多选/填空/判断/简答/编程题组卷">' + icon('edit', 14) + ' 发布新作业</button>');
     if (!DB.assignments.length) {
-      return { head, body: emptyBox('还没有作业', '点击右上角「发布新作业」或「出题组卷」，发布后学生侧会立即看到。') };
+      return { head, body: emptyBox('还没有作业', '点击右上角「发布新作业」开始组卷，发布后学生侧会立即看到。') };
     }
     const body = DB.assignments.map(a => {
       const pct = Math.round(a.submitted / a.total * 100);
@@ -962,7 +962,7 @@
     if (!a) {
       return {
         head: mainHead('提交批改', '按作业查看学生提交与批改',
-          '<button class="btn primary sm" data-act="publishModal">' + icon('plus', 14) + ' 发布新作业</button>'),
+          '<button class="btn primary sm" data-act="openCompose">' + icon('plus', 14) + ' 发布新作业</button>'),
         body: emptyBox('还没有作业', '先在「作业管理」发布作业，学生提交后会实时出现在这里，支持 AI 初评 + Rubric 人工复核。')
       };
     }
@@ -1283,39 +1283,6 @@
       foot = `<button class="btn" data-act="closeModal">取消</button>
         <button class="btn primary" data-act="doSubmitHw">${icon('send', 15)} 确认提交</button>`;
 
-    } else if (m.type === 'publish') {
-      title = d.id ? '修改作业' : '发布新作业';
-      const tpls = {
-        coding: [{ name: '功能正确性', max: 40, desc: '核心逻辑与结果正确' }, { name: '边界与异常处理', max: 20, desc: '非法入参与异常场景' }, { name: '复杂度与设计', max: 20, desc: '时间与空间复杂度合理' }, { name: '代码规范与注释', max: 20, desc: '命名、注释、结构' }],
-        algo: [{ name: '算法正确性', max: 45, desc: '通过全部测试用例' }, { name: '复杂度分析', max: 25, desc: '给出并证明复杂度' }, { name: '边界处理', max: 15, desc: '空输入、极大值' }, { name: '代码可读性', max: 15, desc: '命名与注释' }],
-        test: [{ name: '用例完整性', max: 40, desc: '分支覆盖充分' }, { name: 'Mock 合理性', max: 25, desc: '依赖隔离正确' }, { name: '断言质量', max: 20, desc: '断言具体可读' }, { name: '代码规范', max: 15, desc: '命名与组织' }]
-      };
-      // 修改模式沿用原作业 Rubric；新建模式按所选模板预览
-      const cur = d.rubric || tpls[d.tpl || 'coding'];
-      body = `<div class="form-row"><label>作业标题</label>
-          <input class="input" placeholder="例：并发编程实战：线程池参数调优" value="${h(d.title || '')}" data-bind="modal" data-key="title"></div>
-        <div class="form-row"><label>关联知识点</label>
-          <div style="display:flex;flex-wrap:wrap;gap:6px">
-            ${DB.knowledgePoints.map(k => `<button class="chip ${(d.kp || []).indexOf(k.id) >= 0 ? 'on' : ''}" data-act="pubKp" data-val="${k.id}">${k.name}</button>`).join('')}
-          </div></div>
-        <div class="row-2">
-          <div class="form-row"><label>截止时间</label>
-            <input class="input" placeholder="2026-10-10 23:59" value="${h(d.due || '')}" data-bind="modal" data-key="due"></div>
-          ${d.id ? '' : `<div class="form-row"><label>Rubric 模板</label>
-            <select class="select" data-bind="modal" data-key="tpl">
-              <option value="coding" ${d.tpl === 'coding' ? 'selected' : ''}>综合编程（默认）</option>
-              <option value="algo" ${d.tpl === 'algo' ? 'selected' : ''}>算法题</option>
-              <option value="test" ${d.tpl === 'test' ? 'selected' : ''}>测试题</option>
-            </select></div>`}
-        </div>
-        <div class="form-row"><label>作业要求</label>
-          <textarea class="textarea" placeholder="描述任务目标、交付形式与评分说明…" data-bind="modal" data-key="desc">${h(d.desc || '')}</textarea></div>
-        <div class="form-row"><label>${d.id ? 'Rubric（沿用原评分标准）' : 'Rubric 预览（满分 100）'}</label>
-          ${cur.map(r => `<div class="rubric-row"><div class="rn"><b>${h(r.name)}</b><span>${h(r.desc)}</span></div><span class="badge">${r.max} 分</span></div>`).join('')}
-        </div>`;
-      foot = `<button class="btn" data-act="closeModal">取消</button>
-        <button class="btn primary" data-act="doPublish">${icon('send', 15)} ${d.id ? '保存修改' : '发布给学生'}</button>`;
-
     } else if (m.type === 'delAs') {
       title = '删除作业';
       body = `<div class="note warn" style="margin-bottom:12px">确定要删除作业 <b>${h(d.title)}</b> 吗？<b style="color:var(--danger)">操作不可恢复</b>。</div>
@@ -1382,53 +1349,148 @@
     if (!sub) return '';
     const a = DB.assignments.find(x => x.id === sub.asId);
     const g = State.grading;
-    let inner = '';
+    const isQ = a.questionCount > 0;
+    const graded = sub.status === 'graded';
+    const all = DB.submissions;
+    const idx = all.findIndex(s => s.id === sub.id);
+    const prev = idx > 0 ? all[idx - 1] : null;
+    const next = idx >= 0 && idx < all.length - 1 ? all[idx + 1] : null;
+    const submittedN = all.filter(s => s.status !== 'missing').length;
+    const pendingN = all.filter(s => s.status === 'pending').length;
+    const total = a.rubric.reduce((s, r) => s + (Number(g.scores[r.name]) || 0), 0);
+    const scorePreview = isQ ? (g.total != null ? g.total : 0) : total;
+
+    /* 主内容区：题目型 = 原始题目与学生作答逐题对照；Rubric 型 = 作业要求 + 提交代码 */
+    let main = '';
     if (sub.status === 'missing') {
-      inner = '<div class="empty"><div class="empty-ico">' + icon('inbox', 22) + '</div><div class="empty-title">该学生未提交</div><div class="empty-desc">可直接记 0 分或发起提醒。</div></div>';
+      main = '<div class="empty" style="padding:80px 20px"><div class="empty-ico">' + icon('inbox', 24) + '</div><div class="empty-title">该学生未提交</div><div class="empty-desc">可直接记 0 分，或回到列表提醒学生补交。</div></div>';
+    } else if (isQ) {
+      // 学生作答映射：questionId -> value
+      const ansMap = {};
+      (sub.answers || []).forEach(x => { ansMap[String(x.questionId)] = x.value; });
+      main = `<div class="note warn" style="margin-bottom:12px"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || '尚未初评，可稍后重试')}</div>
+        <div class="hw-qlist-head" style="margin-bottom:12px">${icon('file', 14)} 原始题目与学生作答对照 · 共 ${(a.questions || []).length} 题 · 总分 ${a.totalScore != null ? a.totalScore : 100}</div>
+        ${(a.questions || []).map((q, i) => gradeQCompareCard(q, i, ansMap, a)).join('')}`;
     } else {
-      const total = a.rubric.reduce((s, r) => s + (Number(g.scores[r.name]) || 0), 0);
-      inner = `<div style="margin-bottom:14px">
+      main = `${a.desc ? `<div style="margin-bottom:14px">
+          <div style="font-size:12px;font-weight:600;margin-bottom:6px">作业要求</div>
+          <div style="font-size:13px;color:var(--text-2);line-height:1.8;white-space:pre-wrap">${h(a.desc)}</div></div>` : ''}
+        <div style="margin-bottom:14px">
           <div style="font-size:12px;font-weight:600;margin-bottom:6px">提交代码</div>
           <pre class="code-block">${h(sub.code)}</pre></div>
-        <div class="note warn" style="margin-bottom:14px"><b>AI 初评（${sub.aiScore} 分）：</b>${h(sub.aiComment)}</div>
+        <div class="note warn" style="margin-bottom:14px"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || '尚未初评，可稍后重试')}</div>
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
           <div style="font-size:12px;font-weight:600">相似度检测</div>
           <div class="bar ${sub.similarity > 60 ? 'danger' : sub.similarity > 30 ? 'warn' : 'ok'}" style="flex:1"><i style="width:${sub.similarity}%"></i></div>
           <span style="font-weight:700;color:${sub.similarity > 60 ? 'var(--danger)' : 'var(--text)'}">${sub.similarity}%</span>
-        </div>
-        <div style="font-size:12px;font-weight:600;margin-bottom:6px">Rubric 评分</div>
-        ${a.rubric.map(r => `<div class="rubric-row">
-          <div class="rn"><b>${h(r.name)}</b><span>${h(r.desc)}</span></div>
-          <input class="input" type="number" min="0" max="${r.max}" value="${g.scores[r.name] != null ? g.scores[r.name] : ''}" placeholder="0" data-bind="rubric" data-id="${h(r.name)}">
-          <span style="font-size:12px;color:var(--text-3);width:36px">/${r.max}</span>
-        </div>`).join('')}
-        <div style="display:flex;align-items:center;gap:10px;margin:14px 0">
-          <span style="font-size:13px;font-weight:600">合计</span>
-          <span class="score-big" id="scorePreview">${total}</span>
-          <span style="color:var(--text-3)">/ 100</span>
-          <div style="flex:1"></div>
-          <button class="btn sm ghost" data-act="useAi">采用 AI 初评</button>
-        </div>
-        <div class="form-row"><label>教师评语（将同步给学生）</label>
-          <textarea class="textarea" placeholder="肯定做得好的地方 + 一条具体改进建议…" data-bind="comment">${h(g.comment || '')}</textarea></div>`;
+        </div>`;
     }
-    return `<div class="drawer-mask"></div>
-      <div class="drawer">
-        <div class="drawer-head">
-          <span class="badge ${sub.status === 'graded' ? 'ok' : 'warn'}">${sub.status === 'graded' ? '已批改' : '待批改'}</span>
-          <h3>${sub.name} · ${h(a.title)}</h3><div style="flex:1"></div>
-          <span style="font-size:12px;color:var(--text-3)">${sub.submittedAt || '未提交'}</span>
-          <button class="icon-btn" data-act="closeDrawer">${icon('x', 16)}</button></div>
-        <div class="drawer-body">${inner}</div>
-        <div class="drawer-foot">
-          ${sub.status === 'graded'
-            ? '<span class="badge ok">' + icon('check', 12) + ' 已发布反馈（得分 ' + sub.score + '）</span>'
-            : '<button class="btn primary" data-act="doGrade">' + icon('send', 15) + ' 发布评分与反馈</button>' +
-              '<button class="btn" data-act="doGradeZero">记 0 分（未提交）</button>'}
-          <div style="flex:1"></div>
-          <button class="btn ghost" data-act="closeDrawer">关闭</button>
+
+    /* 右侧评分面板：学生信息卡 + 评分区 + 合计 + 评语 */
+    const scoreArea = isQ
+      ? `<div class="rubric-row" style="align-items:center">
+          <div class="rn"><b>作业总分</b><span>客观题已自动判分，主观题请参考 AI 初评复核</span></div>
+          <input class="input" type="number" min="0" max="100" value="${g.total != null ? g.total : ''}" placeholder="0" data-bind="rubricTotal" ${graded ? 'disabled' : ''}>
+          <span style="font-size:12px;color:var(--text-3);width:36px">/100</span>
+        </div>`
+      : a.rubric.map(r => `<div class="rubric-row">
+          <div class="rn"><b>${h(r.name)}</b><span>${h(r.desc)}</span></div>
+          <input class="input" type="number" min="0" max="${r.max}" value="${g.scores[r.name] != null ? g.scores[r.name] : ''}" placeholder="0" data-bind="rubric" data-id="${h(r.name)}" ${graded ? 'disabled' : ''}>
+          <span style="font-size:12px;color:var(--text-3);width:36px">/${r.max}</span>
+        </div>`).join('');
+    const side = `<div class="grade-student">
+        <div class="grade-avatar">${h((sub.name || '学').slice(0, 1))}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:14px">${h(sub.name)}</div>
+          <div style="font-size:12px;color:var(--text-3);margin-top:2px">${sub.submittedAt ? '提交于 ' + h(sub.submittedAt) + '（第 ' + sub.attempts + ' 次）' : '未提交'}</div>
         </div>
-      </div>`;
+        <span class="badge ${graded ? 'ok' : sub.status === 'missing' ? '' : 'warn'}">${graded ? '已批改 ' + sub.score : sub.status === 'missing' ? '未提交' : '待批改'}</span>
+      </div>
+      <div style="font-size:12px;font-weight:600;margin:14px 0 8px">${isQ ? '题目评分' : 'Rubric 评分'}</div>
+      ${scoreArea}
+      <div style="display:flex;align-items:center;gap:10px;margin:12px 0 14px">
+        <span style="font-size:13px;font-weight:600">合计</span>
+        <span class="score-big" id="scorePreview">${scorePreview}</span>
+        <span style="color:var(--text-3)">/ 100</span>
+        <div style="flex:1"></div>
+        ${graded ? '' : '<button class="btn sm ghost" data-act="useAi">采用 AI 初评</button>'}
+      </div>
+      <div class="form-row"><label>教师评语（将同步给学生）</label>
+        <textarea class="textarea" style="min-height:88px" placeholder="肯定做得好的地方 + 一条具体改进建议…" data-bind="comment" ${graded ? 'disabled' : ''}>${h(g.comment || '')}</textarea></div>`;
+
+    /* 二级批阅页：顶栏（返回/导航）+ 主内容区 + 右侧评分面板 + 底部操作栏 */
+    return `<div class="grade-mask">
+      <div class="grade-top">
+        <button class="btn sm ghost" data-act="closeGradePage">${icon('chevronL', 15)} 返回列表</button>
+        <span class="badge brand">${icon('clipboard', 13)} 批阅</span>
+        <h3>${h(sub.name)} · ${h(a.title)}</h3>
+        <div class="spacer"></div>
+        <span class="badge">已交 ${submittedN} · 待批 ${pendingN}</span>
+        <button class="btn sm" data-act="gradeGo" data-val="prev" ${prev ? '' : 'disabled'} title="${prev ? '上一份：' + h(prev.name) : '已是第一份'}">${icon('chevronL', 14)} 上一份</button>
+        <button class="btn sm" data-act="gradeGo" data-val="next" ${next ? '' : 'disabled'} title="${next ? '下一份：' + h(next.name) : '已是最后一份'}">下一份 ${icon('chevronR', 14)}</button>
+      </div>
+      <div class="grade-body">
+        <div class="grade-main">${main}</div>
+        <aside class="grade-side">${side}</aside>
+      </div>
+      <div class="grade-foot">
+        ${graded
+          ? '<span class="badge ok">' + icon('check', 12) + ' 已发布反馈（得分 ' + sub.score + '）</span>'
+          : `<button class="btn" data-act="doGradeZero">记 0 分（未提交）</button>`}
+        <div style="flex:1"></div>
+        <span style="font-size:13px;font-weight:600;margin-right:12px">总分：<span class="score-big" style="font-size:18px">${graded ? sub.score : scorePreview}</span><span style="color:var(--text-3);font-size:12px"> / 100</span></span>
+        ${graded
+            ? '<button class="btn" data-act="closeGradePage">关闭</button>'
+            : `<button class="btn" data-act="doGrade">${icon('send', 15)} 提交</button>
+               <button class="btn primary" data-act="doGradeNext">提交并进入下一份</button>`}
+      </div>
+    </div>`;
+  }
+
+  // 批阅页：单题对照卡——原始题目（题干/选项/正确答案/解析，样式与学生端题目列表一致）+ 学生作答分区
+  function gradeQCompareCard(q, i, ansMap, a) {
+    const t = QTYPES[q.type] || { label: q.type };
+    const per = a.scoreMode !== 'custom' && (a.questions || []).length
+      ? Math.round(1000 / a.questions.length) / 10 : 0;
+    const score = a.scoreMode === 'custom' && q.score != null ? q.score : per;
+    const correct = Array.isArray(q.answer) ? q.answer : [];
+    const val = ansMap[String(q.id)];
+    const answered = val != null && !(Array.isArray(val) && !val.length) && String(val) !== '';
+    // 学生作答的可读文本
+    let stuText = '<span style="color:var(--text-3)">未作答</span>';
+    if (answered) {
+      if (q.type === 'JUDGE') {
+        stuText = val === true ? '正确（A）' : '错误（B）';
+      } else if (q.type === 'SINGLE' || q.type === 'MULTI') {
+        const ks = Array.isArray(val) ? val : [val];
+        stuText = h(ks.join('、'));
+      } else {
+        stuText = `<span style="white-space:pre-wrap">${h(String(val))}</span>`;
+      }
+    }
+    // 正确答案标记（客观题在选项上 ✓；主观题展示参考答案）
+    let optsHtml = '';
+    if (q.type === 'SINGLE' || q.type === 'MULTI') {
+      optsHtml = (q.options || []).map(o => {
+        const isKey = correct.indexOf(o.key) >= 0;
+        const isStu = val != null && (Array.isArray(val) ? val.indexOf(o.key) >= 0 : val === o.key);
+        return `<div class="hw-q-opt">${o.key}. ${h(o.text)}
+          ${isKey ? '<span class="badge ok">正确答案</span>' : ''}${isStu ? '<span class="badge brand">学生选择</span>' : ''}</div>`;
+      }).join('');
+    } else if (q.type === 'JUDGE') {
+      optsHtml = `<div class="hw-q-opt">A. 正确 ${correct[0] === true ? '<span class="badge ok">正确答案</span>' : ''}${val === true ? '<span class="badge brand">学生选择</span>' : ''}</div>
+        <div class="hw-q-opt">B. 错误 ${correct[0] === false ? '<span class="badge ok">正确答案</span>' : ''}${val === false ? '<span class="badge brand">学生选择</span>' : ''}</div>`;
+    } else if (correct.length && correct[0] != null && String(correct[0]) !== '') {
+      optsHtml = `<div class="hw-q-opt" style="color:var(--text-3)">参考答案：${h(String(correct[0]).slice(0, 300))}</div>`;
+    }
+    return `<div class="hw-q">
+      <div class="hw-q-head"><span class="badge brand">${t.label}</span>
+        <span class="hw-q-score">第 ${i + 1} 题 · ${score} 分</span></div>
+      <div class="hw-q-title">${i + 1}. ${h(q.title || '')}</div>
+      ${optsHtml}
+      ${q.analysis ? `<div class="hw-q-opt" style="color:var(--text-3)">解析：${h(String(q.analysis).slice(0, 300))}</div>` : ''}
+      <div class="grade-stu-ans">${icon('user', 13)} 学生作答：${stuText}</div>
+    </div>`;
   }
 
   /* ===========================================================
@@ -2140,6 +2202,15 @@
   /* ===========================================================
    *  交互动作
    * =========================================================== */
+  // 批改草稿缓存：返回列表 / 切换学生时保存当前评分与批注，再次进入同一学生自动恢复
+  function cacheGradingDraft() {
+    const g = State.grading;
+    if (g && g.subId != null) {
+      State.gradingDrafts = State.gradingDrafts || {};
+      State.gradingDrafts[String(g.subId)] = { subId: g.subId, scores: g.scores, comment: g.comment, total: g.total };
+    }
+  }
+
   /* --- 作业卡片「更多」下拉菜单（绝对定位浮层，不触发整页重渲染） --- */
   let asMenuEl = null;
   function closeAsMenu() {
@@ -2559,7 +2630,6 @@
         toast('重置失败：' + e.message);
       }
     },
-    publishModal() { State.modal = { type: 'publish', data: { kp: [], tpl: 'coding' } }; renderOverlays(); },
     asMore(v, id, t) {
       closeAsMenu();
       if (!t) return;
@@ -2583,13 +2653,10 @@
       closeAsMenu();
       const a = DB.assignments.find(x => String(x.id) === String(v));
       if (!a) { toast('作业不存在或已删除'); return; }
-      // 题目型作业改道出题组卷编辑（避免旧 Rubric 弹窗破坏 question 数据）
+      // 题目型作业走出题组卷编辑
       if (a.scoreMode) { openComposeEditor(a); return; }
-      State.modal = { type: 'publish', data: {
-        id: a.id, title: a.title, kp: [...(a.kp || [])], due: a.due || '',
-        desc: a.desc || '', status: (a.status || 'ongoing').toUpperCase(), rubric: a.rubric
-      } };
-      renderOverlays();
+      // 旧版 Rubric 型作业不再支持在线修改（发布弹窗已下线）
+      toast('该作业为旧版编程作业，暂不支持在线修改；如需调整可通过「发布新作业」重新组卷');
     },
     openCompose() { openComposeEditor(null); },
     closeCompose() { State.compose = null; renderOverlays(); },
@@ -2820,35 +2887,6 @@
         toast('删除失败：' + e.message);
       }
     },
-    pubKp(v, id, t) {
-      const d = State.modal.data; d.kp = d.kp || [];
-      const i = d.kp.indexOf(v);
-      if (i >= 0) d.kp.splice(i, 1); else d.kp.push(v);
-      // 局部切换当前 chip 的选中态：若整窗 innerHTML 重建，mask/modal 的
-      // 入场动画（fade/pop）会被重放，造成点击时的闪屏；改为直接改 class。
-      if (t && t.classList) t.classList.toggle('on', i < 0);
-    },
-    async doPublish() {
-      const d = State.modal.data;
-      const tpls = {
-        coding: [{ name: '功能正确性', max: 40, desc: '核心逻辑与结果正确' }, { name: '边界与异常处理', max: 20, desc: '非法入参与异常场景' }, { name: '复杂度与设计', max: 20, desc: '时间与空间复杂度合理' }, { name: '代码规范与注释', max: 20, desc: '命名、注释、结构' }],
-        algo: [{ name: '算法正确性', max: 45, desc: '通过全部测试用例' }, { name: '复杂度分析', max: 25, desc: '给出并证明复杂度' }, { name: '边界处理', max: 15, desc: '空输入、极大值' }, { name: '代码可读性', max: 15, desc: '命名与注释' }],
-        test: [{ name: '用例完整性', max: 40, desc: '分支覆盖充分' }, { name: 'Mock 合理性', max: 25, desc: '依赖隔离正确' }, { name: '断言质量', max: 20, desc: '断言具体可读' }, { name: '代码规范', max: 15, desc: '命名与组织' }]
-      };
-      if (!d.title || !d.title.trim()) { toast('请填写作业标题'); return; }
-      try {
-        await API.post('/teacher/assignments', {
-          id: d.id != null ? Number(d.id) : null,
-          title: d.title, desc: d.desc || '', kp: d.kp || [],
-          due: d.due || '', status: d.status || 'ONGOING',
-          rubric: d.rubric || tpls[d.tpl || 'coding']
-        });
-        State.modal = null; renderOverlays();
-        DB.assignments = await API.get('/teacher/assignments');
-        render();
-        toast(d.id ? '作业已修改，学生侧已同步更新' : '作业已发布，学生侧已同步收到', 'ok');
-      } catch (e) { toast(e.message); }
-    },
     async publishDraft(v) {
       const a = DB.assignments.find(x => x.id === v);
       if (!a) return;
@@ -2871,6 +2909,14 @@
     openSub(v) {
       const sub = DB.submissions.find(x => x.id === v);
       if (!sub) return;
+      // 批改草稿缓存：返回列表/切换学生后再次进入同一学生，恢复已输入的评分与批注
+      const cached = State.gradingDrafts && State.gradingDrafts[String(v)];
+      if (cached) {
+        State.grading = cached;
+        State.drawer = { subId: v };
+        renderOverlays(); renderCtx();
+        return;
+      }
       const a = DB.assignments.find(x => x.id === sub.asId);
       const scores = {};
       a.rubric.forEach(r => {
@@ -2878,15 +2924,43 @@
           ? sub.rubricScores[r.name]
           : Math.round(r.max * ((sub.aiScore != null ? sub.aiScore : 70) / 100));
       });
-      State.grading = { subId: v, scores, comment: sub.teacherComment || '' };
+      State.grading = {
+        subId: v, scores, comment: sub.teacherComment || '',
+        // 题目型作业：总分默认取 AI 初评（客观题自动判分结果），教师可改
+        total: a.questionCount > 0 ? (sub.aiScore != null ? sub.aiScore : null) : null
+      };
       State.drawer = { subId: v };
       renderOverlays(); renderCtx();
     },
-    closeDrawer() { State.drawer = null; State.grading = null; renderOverlays(); renderCtx(); },
+    // 返回列表：当前批改草稿写入缓存，再次点击同一学生可继续批改
+    closeGradePage() {
+      cacheGradingDraft();
+      State.drawer = null;
+      renderOverlays(); renderCtx();
+    },
+    // 上一份 / 下一份：当前草稿写入缓存后切换学生
+    gradeGo(v) {
+      const sub = DB.submissions.find(x => x.id === State.drawer.subId);
+      if (!sub) return;
+      const idx = DB.submissions.findIndex(s => s.id === sub.id);
+      const target = v === 'prev' ? (idx > 0 ? DB.submissions[idx - 1] : null)
+        : (idx >= 0 && idx < DB.submissions.length - 1 ? DB.submissions[idx + 1] : null);
+      if (!target) { toast(v === 'prev' ? '已是第一份' : '已是最后一份'); return; }
+      cacheGradingDraft();
+      Actions.openSub(target.id);
+    },
+    closeDrawer() { State.drawer = null; renderOverlays(); renderCtx(); },
     useAi() {
       const sub = DB.submissions.find(x => x.id === State.drawer.subId);
       const a = DB.assignments.find(x => x.id === sub.asId);
       const g = State.grading;
+      if (a.questionCount > 0) {
+        if (sub.aiScore == null) { toast('暂无 AI 初评结果，请先稍候重试或人工评分'); return; }
+        g.total = sub.aiScore;
+        renderOverlays();
+        toast('已采用 AI 初评总分（客观题自动判分 + 主观题 AI 评分），请人工复核后发布');
+        return;
+      }
       const ratio = (sub.aiScore != null ? sub.aiScore : 70) / 100;
       a.rubric.forEach(r => { g.scores[r.name] = Math.round(r.max * ratio); });
       renderOverlays();
@@ -2894,16 +2968,56 @@
     },
     async doGrade() {
       const sub = DB.submissions.find(x => x.id === State.drawer.subId);
+      const a = DB.assignments.find(x => x.id === sub.asId);
       const g = State.grading;
+      if (a.questionCount > 0 && (g.total == null || g.total === '')) {
+        toast('请先填写作业总分');
+        return;
+      }
       try {
         await API.post('/teacher/submissions/' + sub.id + '/grade', {
-          rubricScores: g.scores, comment: g.comment || ''
+          rubricScores: g.scores, comment: g.comment || '',
+          totalScore: a.questionCount > 0 ? Number(g.total) : null
         });
+        // 已发布的批改不再保留草稿缓存
+        if (State.gradingDrafts) delete State.gradingDrafts[String(sub.id)];
         State.drawer = null; State.grading = null;
         renderOverlays(); renderCtx();
         await loadSubmissions(sub.asId);
         render();
         toast('评分已发布，学生侧已收到反馈', 'ok');
+      } catch (e) { toast(e.message); }
+    },
+    // 提交并进入下一份：发布当前批改后自动打开下一份待批改的提交
+    async doGradeNext() {
+      const sub = DB.submissions.find(x => x.id === State.drawer.subId);
+      const a = DB.assignments.find(x => x.id === sub.asId);
+      const g = State.grading;
+      if (a.questionCount > 0 && (g.total == null || g.total === '')) {
+        toast('请先填写作业总分');
+        return;
+      }
+      try {
+        await API.post('/teacher/submissions/' + sub.id + '/grade', {
+          rubricScores: g.scores, comment: g.comment || '',
+          totalScore: a.questionCount > 0 ? Number(g.total) : null
+        });
+        await loadSubmissions(sub.asId);
+        // 找当前的下一位（刷新后按列表顺序），优先待批改
+        const idx = DB.submissions.findIndex(s => s.id === sub.id);
+        const after = idx >= 0 ? DB.submissions.slice(idx + 1).find(s => s.status === 'pending') : null;
+        const fallback = idx >= 0 ? DB.submissions.slice(idx + 1)[0] : null;
+        const nextTarget = after || fallback;
+        State.grading = null;
+        if (nextTarget) {
+          Actions.openSub(nextTarget.id);
+          toast('已发布，继续批改：' + nextTarget.name, 'ok');
+        } else {
+          State.drawer = null;
+          renderOverlays(); renderCtx();
+          render();
+          toast('评分已发布，全部提交批改完成', 'ok');
+        }
       } catch (e) { toast(e.message); }
     },
     async doGradeZero() {
@@ -2913,7 +3027,8 @@
       a.rubric.forEach(r => { scores[r.name] = 0; });
       try {
         await API.post('/teacher/submissions/' + sub.id + '/grade', {
-          rubricScores: scores, comment: '未提交，记 0 分。请尽快补交，有困难可随时联系我。'
+          rubricScores: scores, comment: '未提交，记 0 分。请尽快补交，有困难可随时联系我。',
+          totalScore: a.questionCount > 0 ? 0 : null
         });
         State.drawer = null; State.grading = null;
         renderOverlays(); renderCtx();
@@ -3222,6 +3337,12 @@
       c.answers[Number(t.dataset.qi)] = t.value;
       clearTimeout(ansTextTimer);
       ansTextTimer = setTimeout(refreshAnswerPanels, 400);
+    }
+    else if (b === 'rubricTotal') {
+      // 题目型作业：教师录入总分，仅更新合计预览（不重渲染保输入焦点）
+      State.grading.total = Number(t.value) || 0;
+      const pv = $('#scorePreview');
+      if (pv) pv.textContent = State.grading.total;
     }
     else if (b === 'rubric') {
       State.grading.scores[t.dataset.id] = Number(t.value) || 0;

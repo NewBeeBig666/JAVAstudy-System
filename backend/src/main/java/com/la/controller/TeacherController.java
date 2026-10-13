@@ -172,7 +172,7 @@ public class TeacherController {
     @Operation(summary = "教师评分发布（回流学生通知+会话卡片）")
     @PostMapping("/submissions/{id}/grade")
     public ApiResponse<Void> grade(@PathVariable Long id, @RequestBody GradeRequest req) {
-        gradingService.teacherGrade(id, req.getRubricScores(), req.getComment());
+        gradingService.teacherGrade(id, req.getRubricScores(), req.getComment(), req.getTotalScore());
         return ApiResponse.ok();
     }
 
@@ -232,5 +232,7 @@ public class TeacherController {
     public static class GradeRequest {
         private Map<String, Integer> rubricScores;
         private String comment;
+        /** 题目型作业（无 Rubric）教师直接录入的总分 */
+        private Integer totalScore;
     }
 }

@@ -858,6 +858,52 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   .ans-nav { width: auto; }
   .ans-main { overflow-y: visible; }
 }
+/* ---------- 二级批阅页（全屏，参考超星批阅：左内容 + 右评分 + 底部操作栏） ---------- */
+.grade-mask {
+  position: fixed; inset: 0; z-index: 80;
+  background: var(--bg); display: flex; flex-direction: column;
+}
+.grade-top {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+.grade-top h3 { font-size: 15px; font-weight: 700; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.grade-top .spacer { flex: 1; min-width: 12px; }
+.grade-body { flex: 1; display: flex; gap: 14px; min-height: 0; padding: 14px 16px; }
+.grade-main {
+  flex: 1; overflow-y: auto; min-width: 0;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+}
+.grade-side {
+  flex: none; width: 360px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+}
+.grade-student {
+  display: flex; align-items: center; gap: 10px; padding: 10px;
+  background: var(--brand-soft); border-radius: 10px;
+}
+.grade-avatar {
+  flex: none; width: 38px; height: 38px; border-radius: 50%;
+  background: var(--brand); color: #fff; font-weight: 700; font-size: 15px;
+  display: flex; align-items: center; justify-content: center;
+}
+.grade-foot {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; background: var(--panel); border-top: 1px solid var(--border);
+}
+/* 批阅页：题目对照卡的学生作答分区（与题目内容用虚线分隔） */
+.grade-stu-ans {
+  margin-top: 10px; padding: 9px 12px; border-top: 1px dashed var(--border-2);
+  background: var(--brand-soft); border-radius: 8px;
+  font-size: 13px; line-height: 1.7; color: var(--text);
+  display: flex; align-items: flex-start; gap: 6px; word-break: break-word;
+}
+.grade-stu-ans svg { flex: none; margin-top: 3px; color: var(--brand); }
+@media (max-width: 980px) {
+  .grade-body { flex-direction: column; overflow-y: auto; }
+  .grade-main { overflow-y: visible; }
+  .grade-side { width: auto; }
+}
 .cp-qcard {
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 14px; margin-bottom: 14px;
