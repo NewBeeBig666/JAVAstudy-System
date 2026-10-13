@@ -712,8 +712,12 @@
           rubric: a.rubric.map(r => ({ name: r.name, score: (sub.rubricScores && sub.rubricScores[r.name]) || 0, max: r.max })),
           comment: sub.teacherComment || '（教师未填写评语）'
         });
-      } else if (st.key === 'pending') {
-        extra = `<div class="note" style="margin-top:10px">已提交于 ${sub.submittedAt} · 教师批改中，批改完成后会在这里和会话里同步通知你。</div>`;
+      } else if (st.key === 'pending' && sub) {
+        // 自动评分临时分数（客观题标准答案匹配，不落库不计成绩），明确标注仅供参考
+        const autoBadge = sub.autoScore != null
+          ? `<span class="badge brand" style="margin-left:0">${icon('sparkles', 12)} 自动评分临时分数 ${sub.autoScore} 分</span>` : '';
+        extra = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">${autoBadge}</div>
+          <div class="note" style="margin-top:10px">已提交于 ${sub.submittedAt} · 教师批改中，批改完成后会在这里和会话里同步通知你。${sub.autoScore != null ? ' 上方「自动评分临时分数」由系统按标准答案即时匹配（仅客观题），仅供参考，最终成绩以教师批改为准。' : ''}</div>`;
       }
       return `<div class="card" id="hw-${a.id}" style="${State.focusHwId === a.id ? 'border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)' : ''}">
         <div class="card-head">${icon('clipboard', 15)}<h3>${h(a.title)}</h3>
@@ -2170,7 +2174,7 @@
       DB.assignments = await API.get('/assignments/my');
       render();
       toast(auto != null
-        ? '作业已提交，客观题自动判分 ' + auto + ' 分，主观题等待教师批改'
+        ? '作业已提交。自动评分临时分数：' + auto + ' 分（客观题按标准答案匹配，主观题待教师批改；临时分数仅供参考，不计入最终成绩）'
         : '作业已提交，等待教师批改', 'ok');
     } catch (e) {
       c.busy = false;

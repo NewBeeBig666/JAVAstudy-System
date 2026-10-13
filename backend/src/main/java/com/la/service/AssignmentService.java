@@ -1,6 +1,7 @@
 package com.la.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.la.dto.ComposeRequest;
 import com.la.entity.*;
@@ -29,6 +30,7 @@ public class AssignmentService {
     private final SubmissionMapper submissionMapper;
     private final RubricScoreMapper rubricScoreMapper;
     private final QuestionMapper questionMapper;
+    private final AutoScoreService autoScoreService;
     private final ClassMapper classMapper;
     private final UserMapper userMapper;
     private final NotificationService notificationService;
@@ -55,7 +57,14 @@ public class AssignmentService {
             Submission sub = submissionMapper.selectOne(new LambdaQueryWrapper<Submission>()
                     .eq(Submission::getAssignmentId, as.getId())
                     .eq(Submission::getStudentId, userId));
-            dto.put("mySubmission", sub != null ? toSubmissionDto(sub, false) : null);
+            Map<String, Object> my = sub != null ? toSubmissionDto(sub, false) : null;
+            // 自动评分临时分数：题目型作业按标准答案即时匹配判分（不落库，不计入最终成绩）
+            if (my != null && as.getScoreMode() != null && !"GRADED".equals(sub.getStatus())) {
+                Map<String, Object> auto = autoScoreService.objectiveScore(as.getId(), sub.getAnswers());
+                my.put("autoScore", auto.get("total"));
+                my.put("autoFullScore", auto.get("fullScore"));
+            }
+            dto.put("mySubmission", my);
             result.add(dto);
         }
         return result;
@@ -94,13 +103,25 @@ public class AssignmentService {
             sub.setStatus("PENDING");
             sub.setAttempts(sub.getAttempts() + 1);
             sub.setSubmittedAt(LocalDateTime.now());
-            submissionMapper.updateById(sub);
+            // 重新提交：上次批改结果作废（成绩以教师重新批改为准）；
+            // updateById 会忽略 null 字段，改用 UpdateWrapper 显式置空
+            submissionMapper.update(null, new LambdaUpdateWrapper<Submission>()
+                    .eq(Submission::getId, sub.getId())
+                    .set(Submission::getCode, code)
+                    .set(Submission::getStatus, "PENDING")
+                    .set(Submission::getAttempts, sub.getAttempts())
+                    .set(Submission::getSubmittedAt, sub.getSubmittedAt())
+                    .set(Submission::getScore, null)
+                    .set(Submission::getAiScore, null)
+                    .set(Submission::getAiComment, null)
+                    .set(Submission::getTeacherComment, null)
+                    .set(Submission::getGradedAt, null));
         }
         return toSubmissionDto(sub, false);
     }
 
     /**
-     * 学生答题提交（题目型作业）：结构化作答 + 客观题自动判分
+     * 学生答题提交（题目型作业）：结构化作答 + 客观题自动判分（独立 AutoScoreService，不落库不影响成绩）
      * answers 形如 [{"questionId":"5","value":"A"}]（单选 key / 多选 [keys] / 判断 true|false / 文本内容）
      */
     @Transactional
@@ -128,9 +149,8 @@ public class AssignmentService {
         Map<Long, Question> qMap = questions.stream()
                 .collect(Collectors.toMap(Question::getId, q -> q));
 
-        // 逐题校验 + 客观题自动判分 + 汇总文本（兼容教师批改页 code 展示）
+        // 逐题校验 + 汇总文本（兼容教师批改页 code 展示）
         StringBuilder summary = new StringBuilder();
-        double autoScore = 0;
         List<Map<String, Object>> clean = new ArrayList<>();
         for (Map<String, Object> a : answers) {
             Long qid;
@@ -146,9 +166,6 @@ public class AssignmentService {
             Object value = a.get("value");
             boolean answered = value != null && !(value instanceof List && ((List<?>) value).isEmpty())
                     && !String.valueOf(value).isBlank();
-            if (q.getScore() != null) {
-                autoScore += gradeObjective(q, value, answered);
-            }
             clean.add(Map.of("questionId", String.valueOf(qid), "value", value == null ? "" : value));
             summary.append('第').append(q.getSortOrder()).append("题：")
                     .append(answered ? answerText(q, value) : "未作答").append('\n');
@@ -178,46 +195,39 @@ public class AssignmentService {
         if (sub.getId() == null) {
             submissionMapper.insert(sub);
         } else {
-            submissionMapper.updateById(sub);
+            // 重新提交：上次批改结果作废（成绩以教师重新批改为准）；
+            // updateById 会忽略 null 字段，改用 UpdateWrapper 显式置空
+            submissionMapper.update(null, new LambdaUpdateWrapper<Submission>()
+                    .eq(Submission::getId, sub.getId())
+                    .set(Submission::getCode, sub.getCode())
+                    .set(Submission::getAnswers, sub.getAnswers())
+                    .set(Submission::getStatus, "PENDING")
+                    .set(Submission::getAttempts, sub.getAttempts())
+                    .set(Submission::getSubmittedAt, sub.getSubmittedAt())
+                    .set(Submission::getScore, null)
+                    .set(Submission::getAiScore, null)
+                    .set(Submission::getAiComment, null)
+                    .set(Submission::getTeacherComment, null)
+                    .set(Submission::getGradedAt, null));
         }
+
+        // 自动评分（独立模块即时计算，不写入任何成绩字段）：
+        // 客观题按标准答案匹配判分；主观题无精确标准答案，由教师批改
+        Map<String, Object> auto = autoScoreService.objectiveScore(assignmentId, sub.getAnswers());
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("submission", toSubmissionDto(sub, false));
-        result.put("autoScore", Math.round(autoScore * 10) / 10.0);
+        result.put("autoScore", auto.get("total"));
+        result.put("autoDetail", auto.get("detail"));
         result.put("attempted", clean.size());
         result.put("totalQuestions", questions.size());
         return result;
     }
 
-    /** 客观题（SINGLE/MULTI/JUDGE）自动判分；主观题返回 0（由教师批改） */
-    @SuppressWarnings("unchecked")
-    private double gradeObjective(Question q, Object value, boolean answered) {
-        if (!answered || !isObjective(q)) {
-            return 0;
-        }
-        List<Object> correct = parseObjects(q.getAnswer());
-        List<Object> mine = value instanceof List ? (List<Object>) value : List.of(value);
-        boolean ok;
-        if ("SINGLE".equals(q.getType()) || "JUDGE".equals(q.getType())) {
-            ok = correct.size() == 1 && mine.size() == 1 && objEquals(correct.get(0), mine.get(0));
-        } else {
-            ok = correct.size() == mine.size() && correct.containsAll(mine)
-                    && mine.containsAll(correct);
-        }
-        return ok ? q.getScore().doubleValue() : 0;
-    }
-
-    private boolean isObjective(Question q) {
-        return "SINGLE".equals(q.getType()) || "MULTI".equals(q.getType()) || "JUDGE".equals(q.getType());
-    }
-
-    private boolean objEquals(Object a, Object b) {
-        return String.valueOf(a).equals(String.valueOf(b));
-    }
-
     /** 作答内容的可读文本（用于 code 汇总，教师批改页直接可读） */
     private String answerText(Question q, Object value) {
-        if (!isObjective(q)) {
+        boolean objective = "SINGLE".equals(q.getType()) || "MULTI".equals(q.getType()) || "JUDGE".equals(q.getType());
+        if (!objective) {
             String s = String.valueOf(value);
             return s.length() > 60 ? s.substring(0, 60) + "…" : s;
         }
