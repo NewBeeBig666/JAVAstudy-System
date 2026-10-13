@@ -415,6 +415,12 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .typing i:nth-child(3) { animation-delay: .4s; }
 @keyframes blink { 0%, 80%, 100% { opacity: .25; transform: scale(.8); } 40% { opacity: 1; transform: scale(1); } }
 
+/* 学习路径卡片在步骤完成后自动出现的平滑入场：
+   仅位移与透明度动画，不改变文档流高度，避免页面跳动；尊重系统减弱动效设置 */
+.msg.path-pop { animation: pathCardIn .45s cubic-bezier(.22, .61, .36, 1); }
+@keyframes pathCardIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .msg.path-pop { animation: none; } }
+
 /* 工件卡片（Agent 产物） */
 .work {
   margin-top: 10px; background: var(--panel);

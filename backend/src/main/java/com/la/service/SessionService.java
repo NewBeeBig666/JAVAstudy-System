@@ -334,6 +334,8 @@ public class SessionService {
         SessionEntity s = ownedSession(userId, sessionId);
         List<SessionStep> steps = stepMapper.selectList(new LambdaQueryWrapper<SessionStep>()
                 .eq(SessionStep::getSessionId, sessionId).orderByAsc(SessionStep::getSortOrder));
+        SessionStep finished = steps.stream()
+                .filter(st -> st.getSortOrder() == stepNo).findFirst().orElse(null);
         for (int i = 0; i < steps.size(); i++) {
             if (i + 1 == stepNo) {
                 steps.get(i).setStatus("DONE");
@@ -341,14 +343,23 @@ public class SessionService {
             }
         }
         boolean allDone = steps.stream().allMatch(st -> "DONE".equals(st.getStatus()));
+        KnowledgePoint kp = kpMapper.selectById(s.getKpId());
         if (allDone) {
             s.setStatus("DONE");
             insertMessage(sessionId, "SYS", null, "会话已完成 · 学习报告已同步至画像与报告", null, null);
+            // 步骤全部完成：追加路径卡片消息，让学生在对话流内直接看到完整收官路径
+            insertMessage(sessionId, "AGENT", "planning",
+                    "「" + (finished != null ? finished.getTitle() : "步骤 " + stepNo) + "」已完成，全部步骤已收官。学习路径回顾如下，可点击任意步骤在右侧查看上下文。",
+                    "path", Map.of("type", "path", "kp", kp != null ? kp.getKpCode() : ""));
         } else {
             // 自动推进下一步
             int next = steps.stream().filter(st -> "PENDING".equals(st.getStatus()))
                     .mapToInt(SessionStep::getSortOrder).min().orElse(stepNo);
             startStep(userId, sessionId, next);
+            // 追加路径更新卡片消息：完成后无需上滑查找，最新学习路径直接出现在当前对话可视区域
+            insertMessage(sessionId, "AGENT", "planning",
+                    "「" + (finished != null ? finished.getTitle() : "步骤 " + stepNo) + "」已完成，路径已自动推进到下一步。可直接点击下方步骤继续学习。",
+                    "path", Map.of("type", "path", "kp", kp != null ? kp.getKpCode() : ""));
             return detail(userId, sessionId);
         }
         s.setUpdatedAt(LocalDateTime.now());

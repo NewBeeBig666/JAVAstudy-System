@@ -540,7 +540,7 @@
         <div class="msg-col"><div class="msg-meta"><b>${ag.name}</b>${tag}</div>
         <div class="agent-text"><span class="typing"><i></i><i></i><i></i></span></div></div></div>`;
     }
-    return `<div class="msg">
+    return `<div class="msg${String(m.id) === String(State.pathPopId || '') ? ' path-pop' : ''}">
       <div class="avatar agent" style="background:linear-gradient(135deg,${ag.color},#8b5cf6)">${ag.name.slice(0, 2)}</div>
       <div class="msg-col">
         <div class="msg-meta"><b>${ag.name}</b>${tag}<span>${m.time || ''}</span></div>
@@ -2594,6 +2594,16 @@
             });
           }
           ns.messages.push(resultMsg);
+          // 步骤完成后服务端会追加一条「路径更新」卡片消息（card.type === 'path'）：
+          // 将其挪到评测结果之后，保证阅读顺序为 评测结果 → 最新学习路径；
+          // 配合下方 scrollBottom 自动滚底，路径模块直接出现在当前可视区域，无需用户上滑查找
+          const oldIds = new Set(s.messages.map(x => String(x.id)));
+          const pi = ns.messages.findIndex(x => x.card && x.card.type === 'path' && !oldIds.has(String(x.id)));
+          if (pi >= 0) {
+            const pathMsg = ns.messages.splice(pi, 1)[0];
+            ns.messages.push(pathMsg);
+            State.pathPopId = pathMsg.id; // 该卡片首次渲染时播放平滑入场动画
+          }
           replaceSession(ns);
         } catch (e) {
           // 步骤推进失败不影响本地评测展示
@@ -3432,6 +3442,8 @@
       autoGrow(ci);
       if (State.focusComposer) { ci.focus(); ci.selectionStart = ci.value.length; State.focusComposer = false; }
     }
+    // 路径入场动画标记仅在本次渲染生效，避免后续重渲染重复播放
+    State.pathPopId = null;
   }
 
   function autoGrow(t) {
