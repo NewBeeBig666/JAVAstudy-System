@@ -22,6 +22,9 @@ public class ExerciseRecord {
 
     private Integer selected;
 
+    /** 非选择题型的文本作答 */
+    private String answer;
+
     private Boolean isCorrect;
 
     private Integer delta;

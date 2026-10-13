@@ -50,15 +50,93 @@
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
   }
 
+  /* ---------------- Markdown 渲染（Agent 回复）：标题层级 / 有序无序列表 / 表格 / 代码块高亮 / 行内样式 ---------------- */
+  // 简易 Java 语法高亮：注释 / 字符串 / 关键字 / 数字（输入须已 HTML 转义）
+  function hlJava(code) {
+    const slots = [];
+    let src = code
+      .replace(/(\/\/[^\n]*)/g, (m) => { slots.push('<span class="md-com">' + m + '</span>'); return '\u0001' + (slots.length - 1) + '\u0001'; })
+      .replace(/(&quot;[^&\n]*?&quot;|&#39;[^&\n]*?&#39;)/g, (m) => { slots.push('<span class="md-str">' + m + '</span>'); return '\u0001' + (slots.length - 1) + '\u0001'; });
+    const KW = 'abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|final|finally|float|for|if|implements|import|instanceof|int|interface|long|native|new|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|void|volatile|while|true|false|null|String|System|var';
+    // 按占位符分段，只对非占位符片段做关键字/数字高亮：
+    // 否则数字高亮会把占位符里的序号（\u0001N\u0001）也包上 span，导致还原正则匹配失败、注释/字符串高亮泄漏
+    const kwRe = new RegExp('\\b(' + KW + ')\\b', 'g');
+    const numRe = /\b(\d+(?:\.\d+)?[LlDdFf]?)\b/g;
+    src = src.split(/(\u0001\d+\u0001)/).map(seg =>
+      /^\u0001\d+\u0001$/.test(seg) ? seg
+        : seg.replace(kwRe, '<span class="md-kw">$1</span>').replace(numRe, '<span class="md-num">$1</span>')
+    ).join('');
+    return src.replace(/\u0001(\d+)\u0001/g, (m, i) => slots[Number(i)]);
+  }
+
   function md(t) {
-    return h(t)
-      .replace(/```(\w+)?\n?([\s\S]*?)```/g, (m, l, c) => '<pre class="code-block cb">' + c + '</pre>')
+    // 1) 先提取代码块（内容已随 h(t) 整体转义），避免被行内/列表规则污染
+    const blocks = [];
+    let src = h(t).replace(/```(\w+)?\n?([\s\S]*?)```/g, (m, lang, code) => {
+      blocks.push('<pre class="code-block cb md-code"' + (lang ? ' data-lang="' + h(lang) + '"' : '') + '>' +
+        hlJava(code.replace(/\n$/, '')) + '</pre>');
+      return '\u0002B' + (blocks.length - 1) + '\u0002';
+    });
+    // 2) 行内样式
+    src = src
       .replace(/`([^`\n]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/^[-·•] (.+)$/gm, '<p style="padding-left:12px">• $1</p>')
-      .split('\n')
-      .map(l => (l.trim() ? (l.startsWith('<p') || l.startsWith('<pre') ? l : '<p>' + l + '</p>') : ''))
-      .join('');
+      .replace(/(^|[\s（(【])\*([^*\n]+)\*(?=[\s，。；)）】，、]|$)/g, '$1<em>$2</em>');
+    // 3) 逐行解析：标题 / 列表（两级缩进）/ 表格 / 段落
+    const lines = src.split('\n');
+    const out = [];
+    let listTag = null;          // 'ul' | 'ol'
+    let tableRows = null;        // 连续表格行累积
+    const closeList = () => { if (listTag) { out.push('</' + listTag + '>'); listTag = null; } };
+    const closeTable = () => {
+      if (!tableRows) return;
+      const rows = tableRows.filter(r => !/^\s*\|?[\s:|-]+\|?\s*$/.test(r));
+      const html = [];
+      if (rows.length) {
+        html.push('<table class="md-table">');
+        rows.forEach((r, idx) => {
+          const cells = r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+          const tag = idx === 0 ? 'th' : 'td';
+          html.push('<tr>' + cells.map(c => '<' + tag + '>' + c + '</' + tag + '>').join('') + '</tr>');
+        });
+        html.push('</table>');
+      }
+      out.push(html.join(''));
+      tableRows = null;
+    };
+    for (const raw of lines) {
+      const l = raw.replace(/\s+$/, '');
+      let m;
+      if ((m = l.match(/^\u0002B(\d+)\u0002$/))) { closeList(); closeTable(); out.push(blocks[Number(m[1])]); continue; }
+      if (!l.trim()) { closeList(); closeTable(); continue; }
+      if ((m = l.match(/^(#{1,4})\s+(.+)$/))) {
+        closeList(); closeTable();
+        out.push('<div class="md-h md-h' + m[1].length + '">' + m[2] + '</div>');
+        continue;
+      }
+      if (/^\s*\|.*\|\s*$/.test(l)) {
+        closeList();
+        tableRows = tableRows || [];
+        tableRows.push(l);
+        continue;
+      }
+      closeTable();
+      if ((m = l.match(/^(\s*)([-*·•])\s+(.+)$/))) {
+        const lv2 = m[1].length >= 2 ? ' class="md-lv2"' : '';
+        if (listTag !== 'ul') { closeList(); out.push('<ul class="md-ul">'); listTag = 'ul'; }
+        out.push('<li' + lv2 + '>' + m[3] + '</li>');
+        continue;
+      }
+      if ((m = l.match(/^\s*\d+[.、)）]\s+(.+)$/))) {
+        if (listTag !== 'ol') { closeList(); out.push('<ol class="md-ol">'); listTag = 'ol'; }
+        out.push('<li>' + m[1] + '</li>');
+        continue;
+      }
+      closeList();
+      out.push('<p class="md-p">' + l + '</p>');
+    }
+    closeList(); closeTable();
+    return out.join('');
   }
 
   /* ---------------- 图标 ---------------- */
@@ -125,6 +203,8 @@
     answer: null,
     grading: null,
     gradingDrafts: {},
+    quizReply: {},
+    quizDone: {},
     insight: null,
     filters: { hw: 'all', warn: 'all', kpModule: 'all', subAs: 'as-2', exKp: 'all', classId: 'c1', report: 'overview' },
     search: ''
@@ -466,7 +546,61 @@
         <div class="msg-meta"><b>${ag.name}</b>${tag}<span>${m.time || ''}</span></div>
         ${m.text ? '<div class="agent-text">' + md(m.text) + '</div>' : ''}
         ${m.card ? renderCard(m.card, m.id, s) : ''}
+        ${(!m.card && m.text && !m.quizHidden) ? quizAnswerBox(m) : ''}
       </div></div>`;
+  }
+
+  /* Agent Markdown 生成题目的作答框：按题目关键词适配题型（编程/填空/判断/简答），
+     提交后作为用户消息发送，由 Agent 在对话中点评。仅识别非选择题（选择题已有卡片交互）。 */
+  // 该题是否已在对话中提交过作答（从服务端消息推导：题面消息之后出现「我的作答」用户消息），
+  // 刷新页面后仍能保持隐藏，避免重复作答
+  function quizAnswered(m) {
+    const s = session();
+    if (!s || !s.messages) return false;
+    const i = s.messages.findIndex(x => String(x.id) === String(m.id));
+    return i >= 0 && s.messages.slice(i + 1).some(x => x.from === 'user' && /^我的作答/.test((x.text || '').trim()));
+  }
+  function quizAnswerBox(m) {
+    const text = m.text || '';
+    const hasChoice = /单选|多选|以下(哪|正确)?:?\s*[（(]/.test(text) && /A[.、]\s/.test(text);
+    // 门控：只对「题目」类消息挂作答框；题目特征须出现在开头 150 字内，
+    // 且排除点评/解析类反馈消息（点评里常复述题型词，会误判）
+    const head = (text || '').trim().slice(0, 150);
+    const isQuestion = (/题目[：:]|出一道|来一道|练一道|练习题|作答要求|编程题|填空题|判断题|简答题|问答题|请完成|请实现|请编写|请回答/.test(head))
+      && !/✅|⚠️/.test(head) && !/^(点评|解析|批改|答案)/.test(head);
+    if (!isQuestion || hasChoice) return '';
+    const isCode = /编程题|代码题|实现(一个|以下|这个|上述|如上)|编写(一个|代码|方法|类)|写出(代码|一个)|补全|void\s+\w+\s*\(|public\s+class|@Override|static\s+(void|int)\s+main/.test(text);
+    const isFill = /填空题|填空|____/.test(text);
+    const isJudge = /判断题|判断.{0,6}(正确|对错|是否)/.test(text);
+    const isShort = /简答题|简答|简述|请说明|请解释|谈谈/.test(text);
+    // 显式题型字样优先（判断/填空/简答题面常含代码片段，不能让代码特征抢先），
+    // 无显式题型词时再按内容特征回退
+    const explicit = /编程题/.test(text) ? 'code' : /填空题/.test(text) ? 'fill'
+      : /判断题/.test(text) ? 'judge' : /简答题|问答题/.test(text) ? 'short' : null;
+    const kind = explicit || (isCode ? 'code' : isFill ? 'fill' : isJudge ? 'judge' : isShort ? 'short' : null);
+    if (!kind) return '';
+    if ((State.quizDone || {})[m.id] || quizAnswered(m)) return '';
+    State.quizReply = State.quizReply || {};
+    const saved = State.quizReply[m.id] || '';
+    let input = '';
+    if (kind === 'judge') {
+      input = `<div style="display:flex;gap:10px">
+        ${['正确', '错误'].map((x, i) => `<button class="btn ${saved === x ? 'primary' : ''}" data-act="quizPick" data-id="${m.id}" data-val="${x}">${x}</button>`).join('')}
+      </div>`;
+    } else if (kind === 'fill') {
+      input = `<input class="input" placeholder="填写你的答案" value="${h(saved)}" data-bind="quizReply" data-id="${m.id}">`;
+    } else if (kind === 'code') {
+      input = `<textarea class="textarea" style="min-height:140px;font-family:Consolas,monospace;font-size:12.5px;line-height:1.6" placeholder="在此编写你的代码…" data-bind="quizReply" data-id="${m.id}">${h(saved)}</textarea>`;
+    } else {
+      input = `<textarea class="textarea" style="min-height:90px" placeholder="在此输入你的答案…" data-bind="quizReply" data-id="${m.id}">${h(saved)}</textarea>`;
+    }
+    return `<div class="quiz-ans">
+      <div style="font-size:12px;font-weight:600;margin-bottom:8px">${icon('edit', 13)} 在此作答${kind === 'code' ? '（支持直接编写代码）' : ''}，提交后智能体会点评你的答案</div>
+      ${input}
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn sm primary" data-act="quizSubmit" data-id="${m.id}" ${kind === 'judge' ? (saved ? '' : 'disabled') : (saved.trim ? saved.trim() : saved) ? '' : 'disabled'}>提交作答</button>
+      </div>
+    </div>`;
   }
 
   function renderCard(c, msgId, s) {
@@ -511,35 +645,57 @@
       const ex = c.exercise || getEx(c.exId);
       if (!ex) return '';
       const graded = c.state === 'graded';
+      const grading = c.state === 'grading';
+      const locked = graded || grading;
+      const qType = String(ex.type || 'CHOICE').toUpperCase();
       const answer = c.answer != null ? c.answer : (ex.answer != null ? ex.answer : -1);
-      const opts = ex.options.map((o, i) => {
-        let cls = '';
-        if (c.selected === i) cls = 'sel';
-        if (graded) {
-          if (i === answer) cls = 'correct';
-          else if (c.selected === i) cls = 'wrong';
-        }
-        return `<div class="opt ${cls}" ${graded ? '' : 'data-act="opt" data-id="' + msgId + '" data-val="' + i + '"'}>
-          <div class="opt-key">${'ABCD'[i]}</div><div>${h(o)}</div></div>`;
-      }).join('');
       const hints = (c.hintTexts || []).map((x, i) =>
         `<div class="hint-box"><b>提示 ${i + 1}：</b>${h(x)}</div>`).join('');
+      let ansArea = '';
+      if (qType === 'CHOICE') {
+        const opts = ex.options.map((o, i) => {
+          let cls = '';
+          if (c.selected === i) cls = 'sel';
+          if (graded) {
+            if (i === answer) cls = 'correct';
+            else if (c.selected === i) cls = 'wrong';
+          }
+          return `<div class="opt ${cls}" ${graded ? '' : 'data-act="opt" data-id="' + msgId + '" data-val="' + i + '"'}>
+            <div class="opt-key">${'ABCD'[i]}</div><div>${h(o)}</div></div>`;
+        }).join('');
+        ansArea = `<div style="margin-top:10px">${opts}</div>`;
+      } else if (qType === 'JUDGE') {
+        ansArea = `<div style="display:flex;gap:10px;margin-top:10px">
+          ${[0, 1].map(i => `<div class="opt judge ${c.selected === i ? 'sel' : ''}" style="flex:1;justify-content:center;cursor:${locked ? 'default' : 'pointer'}" ${locked ? '' : 'data-act="opt" data-id="' + msgId + '" data-val="' + i + '"'}>
+            <div class="opt-key">${'AB'[i]}</div><div>${i === 0 ? '正确' : '错误'}</div></div>`).join('')}
+        </div>`;
+      } else if (qType === 'FILL') {
+        ansArea = `<input class="input ex-ans" style="margin-top:10px" placeholder="填写答案" value="${h(c.textAnswer || '')}" data-bind="exAns" data-id="${msgId}" ${locked ? 'disabled' : ''}>`;
+      } else if (qType === 'SHORT') {
+        ansArea = `<textarea class="textarea ex-ans" style="min-height:100px;margin-top:10px" placeholder="在此输入你的答案…" data-bind="exAns" data-id="${msgId}" ${locked ? 'disabled' : ''}>${h(c.textAnswer || '')}</textarea>`;
+      } else {
+        // CODE：代码编辑区（预填题目模板供补全），等宽字体
+        ansArea = `<textarea class="textarea ex-ans ex-code" style="min-height:180px;margin-top:10px;font-family:Consolas,monospace;font-size:12.5px;line-height:1.6" placeholder="在此编写代码…" data-bind="exAns" data-id="${msgId}" ${locked ? 'disabled' : ''}>${h(c.textAnswer != null ? c.textAnswer : (ex.code || ''))}</textarea>`;
+      }
+      const submitReady = qType === 'CHOICE' || qType === 'JUDGE' ? c.selected != null : !!(c.textAnswer || '').trim();
       return `<div class="work">
-        <div class="work-head">${icon('edit', 15)}<span class="wt">${ex.type === 'code' ? '代码陪练题' : '随堂练习'} · ${kpName(ex.kp)}</span>
+        <div class="work-head">${icon('edit', 15)}<span class="wt">${qType === 'CODE' ? '代码陪练题' : qType === 'JUDGE' ? '判断题' : qType === 'FILL' ? '填空题' : qType === 'SHORT' ? '简答题' : '随堂练习'} · ${kpName(ex.kp)}</span>
           <div class="spacer"></div><span class="badge ${ex.difficulty === '困难' ? 'danger' : ex.difficulty === '中等' ? 'warn' : 'ok'}">${ex.difficulty}</span></div>
         <div class="work-body">
           <div style="font-size:13.5px;line-height:1.7;margin-bottom:10px">${h(ex.stem)}</div>
           ${ex.code ? '<pre class="code-block cb">' + h(ex.code) + '</pre>' : ''}
-          <div style="margin-top:10px">${opts}</div>
+          ${ansArea}
           ${hints ? '<div style="margin-top:12px">' + hints + '</div>' : ''}
         </div>
         <div class="work-foot">
           ${graded
             ? '<span class="badge ok">' + icon('check', 12) + ' 已作答，掌握度已更新</span>'
-            : `<button class="btn sm primary" data-act="submitEx" data-id="${msgId}" ${c.selected === null ? 'disabled' : ''}>提交答案</button>
-               <button class="btn sm" data-act="hint" data-id="${msgId}" ${c.hintLevel >= 3 ? 'disabled' : ''}>${icon('flame', 14)} 再要一级提示 (${c.hintLevel}/3)</button>`}
+            : grading
+              ? '<span class="badge brand">' + icon('sparkles', 12) + ' 智能体正在点评你的作答…</span>'
+              : `<button class="btn sm primary" data-act="submitEx" data-id="${msgId}" ${submitReady ? '' : 'disabled'}>提交答案</button>
+                 <button class="btn sm" data-act="hint" data-id="${msgId}" ${c.hintLevel >= 3 ? 'disabled' : ''}>${icon('flame', 14)} 再要一级提示 (${c.hintLevel}/3)</button>`}
           <div style="flex:1"></div>
-          <span style="font-size:11.5px;color:var(--text-3)">提示使用次数教师端可见</span>
+          <span style="font-size:11.5px;color:var(--text-3)">${qType === 'CODE' || qType === 'SHORT' ? '提交后智能体将按题干点评你的作答' : '提示使用次数教师端可见'}</span>
         </div>
       </div>`;
     }
@@ -1229,8 +1385,9 @@
   // 避免搜索时整窗 innerHTML 重建重放弹窗入场动画（闪屏）并丢失输入焦点。
   function newSessionPickList() {
     const d = (State.modal && State.modal.data) || {};
+    const kps = d.kps || [];
     const list = DB.knowledgePoints.filter(k => !d.q || k.name.indexOf(d.q) >= 0);
-    return list.map(k => `<div class="pick ${d.kp === k.id ? 'on' : ''}" data-act="pickKp" data-val="${k.id}">
+    return list.map(k => `<div class="pick ${kps.indexOf(k.id) >= 0 ? 'on' : ''}" data-act="pickKp" data-val="${k.id}">
       <div class="pm"><div class="pn">${k.name}</div><div class="pd">${h(k.desc.slice(0, 34))}…</div></div>
       <div style="text-align:right">
         <div style="font-size:16px;font-weight:700;color:${k.mastery >= 60 ? 'var(--ok)' : 'var(--danger)'}">${k.mastery}</div>
@@ -1242,12 +1399,14 @@
     const m = State.modal, d = m.data || {};
     let title = '', body = '', foot = '';
     if (m.type === 'newSession') {
-      title = '新建学习会话 · 选择知识点';
-      body = `<div class="field" style="margin-bottom:12px">${icon('search', 15)}
+      const n = (d.kps || []).length;
+      title = '新建学习会话 · 选择知识点（可多选 / 可不选）';
+      body = `<div class="note" style="margin-bottom:10px">选择 <b>1 个</b>知识点攻克单一短板；选择 <b>多个</b>生成跨知识点路径；<b>不选</b>则由智能体按你的学习数据生成覆盖全部知识点的学习路径。${n ? '（已选 ' + n + ' 个）' : ''}</div>
+        <div class="field" style="margin-bottom:12px">${icon('search', 15)}
           <input placeholder="搜索知识点，如：并发、集合、JVM" value="${h(d.q || '')}" data-bind="modal" data-key="q"></div>
         <div class="pick-list">${newSessionPickList()}</div>`;
       foot = `<button class="btn" data-act="closeModal">取消</button>
-        <button class="btn primary" data-act="createSession" ${d.kp ? '' : 'disabled'}>${icon('sparkles', 15)} 创建并生成学习路径</button>`;
+        <button class="btn primary" data-act="createSession">${icon('sparkles', 15)} 创建并生成学习路径${n ? '（' + n + ' 个知识点）' : '（全部知识点）'}</button>`;
 
     } else if (m.type === 'changePassword') {
       title = '账号设置 · 修改密码';
@@ -2273,30 +2432,36 @@
     },
 
     /* --- 学生：会话 --- */
-    newSession() { State.modal = { type: 'newSession', data: { kp: null, q: '' } }; renderOverlays(); },
+    newSession() { State.modal = { type: 'newSession', data: { kps: [], q: '' } }; renderOverlays(); },
     pickKp(v, id, t) {
-      State.modal.data.kp = v;
+      // 多选切换：点选/取消任意知识点；不选（空）= 覆盖全部知识点的学习路径
+      const d = State.modal.data;
+      d.kps = d.kps || [];
+      const i = d.kps.indexOf(v);
+      if (i >= 0) d.kps.splice(i, 1); else d.kps.push(v);
       // 局部切换选中态：整窗 innerHTML 重建会重放 mask/modal 入场动画（闪屏），
       // 且 .pick-list 的 scrollTop 会归零（弹窗列表跳回顶部）；改为直接改 class。
       if (t && t.classList && t.closest('.pick-list')) {
-        const list = t.closest('.pick-list');
-        const prev = list.querySelector('.pick.on');
-        if (prev) prev.classList.remove('on');
-        t.classList.add('on');
+        t.classList.toggle('on', i < 0);
       }
-      // 同步「创建」按钮可用态（原先由整窗重渲染负责，局部更新后需手动刷新）
+      // 同步「创建」按钮文案（原先由整窗重渲染负责，局部更新后需手动刷新）
       const btn = document.querySelector('.modal [data-act="createSession"]');
-      if (btn) btn.disabled = !v;
+      if (btn) {
+        const n = d.kps.length;
+        btn.innerHTML = icon('sparkles', 15) + ' 创建并生成学习路径' + (n ? '（' + n + ' 个知识点）' : '（全部知识点）');
+      }
     },
     async createSession() {
-      const kid = State.modal.data.kp;
-      if (!kid) return;
+      const kps = (State.modal.data.kps || []).slice();
+      const single = kps.length === 1 ? kps[0] : null;
       State.modal = null; renderOverlays();
-      toast('智能体正在诊断并规划学习路径…');
+      toast(kps.length > 1 || !kps.length
+        ? '智能体正在诊断并规划' + (kps.length > 1 ? '多知识点' : '全知识点') + '学习路径…'
+        : '智能体正在诊断并规划学习路径…');
       try {
-        const s = await API.post('/sessions', { kpId: kid });
+        const s = await API.post('/sessions', single ? { kpId: single, kpIds: null } : { kpId: null, kpIds: kps });
         DB.sessions.unshift(s);
-        State.sessionId = s.id; State.activeKp = kid; State.scrollBottom = true;
+        State.sessionId = s.id; State.activeKp = single || (s.kps && s.kps[0]) || s.kp; State.scrollBottom = true;
         render();
         toast('会话已创建，路径已生成', 'ok');
       } catch (e) { toast(e.message); }
@@ -2344,6 +2509,29 @@
       State.draft = '这个知识点再出一道变式题练练';
       Actions.send();
     },
+    // Agent Markdown 生成题目：判断题选「正确 / 错误」
+    quizPick(v, id, t) {
+      State.quizReply = State.quizReply || {};
+      State.quizReply[id] = v;
+      // 局部更新两个按钮的选中态与提交按钮可用态（不重渲染）
+      const box = t.closest('.quiz-ans');
+      if (box) {
+        box.querySelectorAll('[data-act="quizPick"]').forEach(b => {
+          b.classList.toggle('primary', b.dataset.val === v);
+        });
+        const submit = box.querySelector('[data-act="quizSubmit"]');
+        if (submit) submit.disabled = !v;
+      }
+    },
+    // Agent Markdown 生成题目：提交作答 → 作为用户消息发送，由 Agent 在对话中点评
+    quizSubmit(v, id) {
+      State.quizReply = State.quizReply || {};
+      const ans = (State.quizReply[id] || '').trim();
+      if (!ans) { toast('请先完成作答'); return; }
+      State.quizDone[id] = true;
+      State.draft = '我的作答：\n' + ans + '\n请点评我的答案（对错/正确性 + 改进建议）。';
+      Actions.send();
+    },
     opt(v, id) {
       const s = session(); if (!s) return;
       const m = s.messages.find(x => x.id === id);
@@ -2367,16 +2555,22 @@
     async submitEx(v, id) {
       const s = session(); if (!s) return;
       const m = s.messages.find(x => x.id === id);
-      if (!m || m.card.selected == null || m.card.state !== 'answering') return;
+      if (!m || m.card.state !== 'answering') return;
       const ex = m.card.exercise || getEx(m.card.exId);
       if (!ex) { toast('题目数据缺失，请重新获取练习'); return; }
+      const qType = String(ex.type || 'CHOICE').toUpperCase();
+      const isText = qType !== 'CHOICE' && qType !== 'JUDGE';
+      if (isText) {
+        if (!(m.card.textAnswer || '').trim()) { toast('请输入作答内容'); return; }
+      } else if (m.card.selected == null) {
+        toast('请先选择答案'); return;
+      }
       m.card.state = 'grading';
       render();
       try {
-        const r = await API.post('/exercises/' + m.card.exId + '/attempt', {
-          selected: m.card.selected,
-          hintUsed: m.card.hintLevel || 0
-        });
+        const r = await API.post('/exercises/' + m.card.exId + '/attempt', isText
+          ? { answer: m.card.textAnswer, hintUsed: m.card.hintLevel || 0 }
+          : { selected: m.card.selected, hintUsed: m.card.hintLevel || 0 });
         setMastery(ex.kp, r.newMastery);
         const resultMsg = {
           id: 'r-' + Date.now(), from: 'agent', agent: r.correct ? 'tutor' : 'code', time: now(),
@@ -2395,6 +2589,7 @@
           if (srvMsg) {
             Object.assign(srvMsg.card, {
               state: 'graded', answer: r.answer, selected: m.card.selected,
+              textAnswer: m.card.textAnswer || '',
               hintLevel: m.card.hintLevel || 0, hintTexts: m.card.hintTexts || []
             });
           }
@@ -3322,6 +3517,24 @@
       c.answers[Number(t.dataset.qi)] = t.value;
       clearTimeout(ansTextTimer);
       ansTextTimer = setTimeout(refreshAnswerPanels, 400);
+    }
+    else if (b === 'exAns') {
+      // 会话练习卡：非选择题文本作答写回卡片（不重渲染保焦点），提交按钮可用态联动
+      const sm = session();
+      if (!sm) return;
+      const m = sm.messages.find(x => String(x.id) === String(t.dataset.id));
+      if (m && m.card) {
+        m.card.textAnswer = t.value;
+        const btn = document.querySelector('[data-act="submitEx"][data-id="' + t.dataset.id + '"]');
+        if (btn) btn.disabled = !t.value.trim();
+      }
+    }
+    else if (b === 'quizReply') {
+      // Agent Markdown 生成题目的作答框输入（本地暂存，不重渲染）
+      State.quizReply = State.quizReply || {};
+      State.quizReply[t.dataset.id] = t.value;
+      const btn = document.querySelector('[data-act="quizSubmit"][data-id="' + t.dataset.id + '"]');
+      if (btn) btn.disabled = !t.value.trim();
     }
     else if (b === 'rubricTotal') {
       // 题目型作业：教师录入总分，仅更新合计预览（不重渲染保输入焦点）

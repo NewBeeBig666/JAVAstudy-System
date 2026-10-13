@@ -20,6 +20,9 @@ public class SessionEntity {
 
     private Long kpId;
 
+    /** 多知识点会话的所选编码列表（逗号分隔），单选时为空 */
+    private String kps;
+
     /** ACTIVE / DONE */
     private String status;
 

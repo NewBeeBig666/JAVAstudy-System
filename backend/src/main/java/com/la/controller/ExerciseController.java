@@ -40,9 +40,13 @@ public class ExerciseController {
         return ApiResponse.ok(exerciseService.hint(id, req.getLevel()));
     }
 
-    @Operation(summary = "提交答案（判分+掌握度回写+错题本+SM-2入队，单事务）")
+    @Operation(summary = "提交答案（判分+掌握度回写+错题本+SM-2入队，单事务；非选择题传 answer 文本）")
     @PostMapping("/exercises/{id}/attempt")
     public ApiResponse<AttemptResponse> attempt(@PathVariable Long id, @RequestBody AttemptRequest req) {
+        if (req.getSelected() == null && req.getAnswer() != null && !req.getAnswer().isBlank()) {
+            return ApiResponse.ok(exerciseService.attemptText(CurrentUser.id(), id,
+                    req.getAnswer(), req.getHintUsed()));
+        }
         return ApiResponse.ok(exerciseService.attempt(CurrentUser.id(), id,
                 req.getSelected(), req.getHintUsed()));
     }
@@ -68,5 +72,7 @@ public class ExerciseController {
     public static class AttemptRequest {
         private Integer selected;
         private Integer hintUsed;
+        /** 非选择题型（编程/填空/简答/判断）的文本作答 */
+        private String answer;
     }
 }

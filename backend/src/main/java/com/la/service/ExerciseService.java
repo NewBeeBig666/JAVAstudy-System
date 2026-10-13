@@ -2,6 +2,8 @@ package com.la.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.la.ai.ChatMessage;
+import com.la.ai.LlmClient;
 import com.la.dto.response.AttemptResponse;
 import com.la.dto.response.ExerciseDto;
 import com.la.entity.Exercise;
@@ -36,6 +38,7 @@ public class ExerciseService {
     private final MasteryService masteryService;
     private final ReviewService reviewService;
     private final ObjectMapper objectMapper;
+    private final LlmClient llmClient;
 
     /**
      * 知识点下的题目（不泄露 answer / analysis / hints）
@@ -135,6 +138,136 @@ public class ExerciseService {
 
         return new AttemptResponse(correct, ex.getAnswer(), ex.getAnalysis(), applied,
                 newMastery, wrongBookAdded, reviewNext);
+    }
+
+    /**
+     * 非选择题型的文本作答（编程/填空/简答/判断）：判分 → 掌握度回写 → 记录 → 错题本 → SM-2。
+     * 判断/填空按预设答案精确比对；编程/简答交由 AI 按题干点评，AI 不可用时兜底为完成度判定。
+     */
+    @Transactional
+    public AttemptResponse attemptText(Long userId, Long exerciseId, String answer, Integer hintUsed) {
+        Exercise ex = exerciseMapper.selectById(exerciseId);
+        if (ex == null) {
+            throw new BizException("题目不存在");
+        }
+        if (answer == null || answer.isBlank()) {
+            throw new BizException("请输入作答内容");
+        }
+        String type = ex.getType() == null ? "" : ex.getType().toUpperCase();
+        boolean correct;
+        String analysis;
+        if ("JUDGE".equals(type)) {
+            // 预设答案 0=正确 / 1=错误；学生作答"正确/对/true/A" 视为选正确
+            boolean studentSaysTrue = answer.trim().matches("(?i)(正确|对|true|是|√|A)");
+            boolean keyIsTrue = ex.getAnswer() != null && ex.getAnswer() == 0;
+            correct = studentSaysTrue == keyIsTrue;
+            analysis = ex.getAnalysis() != null ? ex.getAnalysis() : (keyIsTrue ? "正确答案：正确。" : "正确答案：错误。");
+        } else if ("FILL".equals(type) && ex.getAnalysis() != null && ex.getAnalysis().contains("=")) {
+            // 填空题参考答案约定写在解析里（"参考答案：xxx"），按文本归一化比对
+            String ref = extractFillRef(ex.getAnalysis());
+            correct = ref != null && normalize(answer).equals(ref);
+            analysis = ex.getAnalysis();
+        } else {
+            // 编程/简答：AI 点评（题干 + 学生作答 → 判定 + 解析）；AI 不可用兜底按完成度给通过
+            AiJudgeResult judge = judgeByAi(ex, answer);
+            correct = judge.correct;
+            analysis = judge.comment != null && !judge.comment.isBlank() ? judge.comment
+                    : (ex.getAnalysis() != null ? ex.getAnalysis() : "已记录你的作答，可对照参考要点复盘。");
+        }
+        int applied = correct ? ex.getMasteryDelta() : -3;
+
+        // 练习记录（selected 记 -1 标记文本作答，answer 存原文）
+        ExerciseRecord record = new ExerciseRecord();
+        record.setUserId(userId);
+        record.setExerciseId(exerciseId);
+        record.setKpId(ex.getKpId());
+        record.setSelected(-1);
+        record.setAnswer(answer);
+        record.setIsCorrect(correct);
+        record.setDelta(applied);
+        record.setHintUsed(hintUsed != null ? hintUsed : 0);
+        record.setCreatedAt(LocalDateTime.now());
+        recordMapper.insert(record);
+
+        int newMastery = masteryService.adjust(userId, ex.getKpId(), applied);
+
+        boolean wrongBookAdded = false;
+        LocalDate reviewNext = null;
+        if (!correct) {
+            WrongBook wb = wrongBookMapper.selectOne(new LambdaQueryWrapper<WrongBook>()
+                    .eq(WrongBook::getUserId, userId).eq(WrongBook::getExerciseId, exerciseId));
+            if (wb == null) {
+                wb = new WrongBook();
+                wb.setUserId(userId);
+                wb.setExerciseId(exerciseId);
+                wb.setKpId(ex.getKpId());
+                wb.setWrongCount(1);
+                wb.setLastWrongAt(LocalDateTime.now());
+                wrongBookMapper.insert(wb);
+                wrongBookAdded = true;
+            } else {
+                wb.setWrongCount(wb.getWrongCount() + 1);
+                wb.setLastWrongAt(LocalDateTime.now());
+                wrongBookMapper.updateById(wb);
+            }
+            reviewNext = reviewService.enqueueForWrong(userId, ex);
+        }
+        masteryService.addMinutes(userId, 3);
+
+        return new AttemptResponse(correct, null, analysis, applied, newMastery, wrongBookAdded, reviewNext);
+    }
+
+    /** 编程/简答题 AI 点评：判定是否达到要求并给出解析性反馈 */
+    private AiJudgeResult judgeByAi(Exercise ex, String answer) {
+        AiJudgeResult r = new AiJudgeResult();
+        try {
+            String system = "你是 Java 编程助教。根据题干与学生作答判断作答是否基本正确，并给一段简短解析性点评。"
+                    + "严格只输出 JSON：{\"correct\":true或false,\"comment\":\"一句话判定理由 + 关键改进点\"}。";
+            String user = "题干：" + null2(ex.getStem()) + "\n\n学生作答：\n" + answer;
+            String raw = llmClient.chat(List.of(ChatMessage.system(system), ChatMessage.user(user)), 0.2);
+            String json = raw == null ? "" : raw.trim()
+                    .replace("```json", "").replace("```", "").trim();
+            int s = json.indexOf('{'), e = json.lastIndexOf('}');
+            if (s >= 0 && e > s) {
+                var node = objectMapper.readTree(json.substring(s, e + 1));
+                r.correct = node.path("correct").asBoolean(false);
+                r.comment = node.path("comment").asText("");
+            }
+        } catch (Exception ignore) {
+            // AI 不可用：兜底按完成度判定（已认真作答即通过），避免阻塞学生流程
+            r.correct = answer.trim().length() >= 10;
+            r.comment = "AI 点评暂不可用。已记录你的作答，可对照参考要点自行复盘。";
+        }
+        return r;
+    }
+
+    private static class AiJudgeResult {
+        boolean correct;
+        String comment;
+    }
+
+    /** 从解析文本中提取"参考答案：xxx"（填空题约定格式） */
+    private String extractFillRef(String analysis) {
+        int i = analysis.indexOf("参考答案");
+        if (i < 0) {
+            return null;
+        }
+        int c = analysis.indexOf('：', i);
+        if (c < 0) {
+            return null;
+        }
+        String rest = analysis.substring(c + 1).trim();
+        int end = rest.indexOf("。") >= 0 ? rest.indexOf("。") : rest.length();
+        return normalize(rest.substring(0, end));
+    }
+
+    /** 文本归一化：去空白与标点，小写 */
+    private String normalize(String s) {
+        return s == null ? "" : s.replaceAll("[\\s，。、；;：:\"'（）()]", "").toLowerCase();
+    }
+
+    private String null2(String s) {
+        return s == null ? "" : s;
     }
 
     private ExerciseDto toDto(Exercise ex) {

@@ -17,6 +17,8 @@ public class SessionDto {
     private String id;
     private String title;
     private String kp;
+    /** 多知识点会话的所选知识点编码列表（单选会话为空数组） */
+    private List<String> kps;
     private String status;
     private String createdAt;
     private String updatedAt;

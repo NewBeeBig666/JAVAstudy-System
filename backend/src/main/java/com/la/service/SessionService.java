@@ -123,6 +123,141 @@ public class SessionService {
         return detail(userId, session.getId());
     }
 
+    /**
+     * 多知识点 / 全知识点学习会话：
+     *  - 不选（空列表）：覆盖整个学习系统——按掌握度取最薄弱的前 3 个知识点生成全局补弱路径；
+     *  - 多选：所选知识点依次规划「概念精讲 + 代码陪练」，首尾配全局诊断与巩固测验。
+     * 单个知识点仍走原 create()（诊断/路径逻辑零改动）。
+     */
+    @Transactional
+    public SessionDto createMulti(Long userId, List<String> kpCodes) {
+        List<KnowledgePoint> all = kpMapper.selectList(new LambdaQueryWrapper<KnowledgePoint>()
+                .eq(KnowledgePoint::getLevel, 2).orderByAsc(KnowledgePoint::getSortOrder));
+        if (all.isEmpty()) {
+            throw new BizException("知识点数据缺失");
+        }
+        boolean global = kpCodes == null || kpCodes.isEmpty();
+
+        List<KnowledgePoint> chosen = new ArrayList<>();
+        if (global) {
+            Map<Long, Integer> masteryMap = knowledgeService.masteryMap(userId);
+            chosen = all.stream()
+                    .sorted(Comparator.comparingInt(k -> masteryMap.getOrDefault(k.getId(), 0)))
+                    .limit(3).collect(Collectors.toList());
+        } else {
+            Map<String, KnowledgePoint> byCode = new LinkedHashMap<>();
+            for (String code : kpCodes) {
+                KnowledgePoint kp = all.stream()
+                        .filter(k -> code != null && code.equals(k.getKpCode())).findFirst().orElse(null);
+                if (kp != null) {
+                    byCode.put(kp.getKpCode(), kp);
+                }
+            }
+            if (byCode.isEmpty()) {
+                throw new BizException("所选知识点不存在");
+            }
+            chosen.addAll(byCode.values());
+        }
+        if (chosen.size() == 1) {
+            return create(userId, chosen.get(0).getKpCode());
+        }
+
+        String names = chosen.stream().map(KnowledgePoint::getName).collect(Collectors.joining("、"));
+        String title = (global ? "全知识点（" + names + " 补弱优先）" : names) + "：个性化攻克路径";
+
+        // 多知识点诊断：逐个追溯所选知识点的掌握度与薄弱根因
+        List<Map<String, Object>> items = new ArrayList<>();
+        StringBuilder diagText = new StringBuilder(
+                global ? "你没有指定知识点，我按你的学习数据做了一次全局诊断，锁定最值得补的薄弱点：\n\n"
+                        : "你选择了 " + chosen.size() + " 个知识点，我逐个调了你的练习记录做快速诊断：\n\n");
+        for (KnowledgePoint kp : chosen) {
+            TraceChainResponse chain = knowledgeService.traceChain(kp.getKpCode(), userId);
+            TraceChainResponse.ChainNode node = chain.getChain().isEmpty() ? null : chain.getChain().get(0);
+            if (node != null) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("kp", node.getId());
+                item.put("mastery", node.getMastery());
+                item.put("note", node.getNote());
+                items.add(item);
+                diagText.append("「").append(node.getName()).append("」掌握度 **")
+                        .append(node.getMastery()).append(" 分**")
+                        .append(chain.getRootCause() != null ? "，前置链上存在薄弱根因，规划中已优先补强。"
+                                : "，前置链达标，可直接攻克。").append('\n');
+            }
+        }
+        if (items.isEmpty()) {
+            throw new BizException("诊断失败：未获取到所选知识点的学习数据");
+        }
+        diagText.append("\n路径已按「先补地基 → 再逐点攻克」的顺序排好，从第 1 步开始。");
+
+        // 多知识点路径：全局诊断 → 每个知识点（概念精讲 + 代码陪练）→ 巩固测验
+        List<PathPlanService.PlannedStep> plan = new ArrayList<>();
+        plan.add(new PathPlanService.PlannedStep(
+                "诊断定位：" + (global ? "全局摸底" : names) + (global ? "（最薄弱知识点）" : ""),
+                global ? "锁定掌握度最低的知识点，先补最大短板，再逐点推进。"
+                        : "综合判断所选知识点中哪些存在前置薄弱，优先补强。",
+                5, chosen.get(0).getKpCode()));
+        for (KnowledgePoint kp : chosen) {
+            plan.add(new PathPlanService.PlannedStep(
+                    "概念精讲：" + kp.getName(),
+                    "围绕「" + kp.getName() + "」的高频考点做渐进式讲解，配代码示例与反例。",
+                    15, kp.getKpCode()));
+            plan.add(new PathPlanService.PlannedStep(
+                    "代码陪练：" + kp.getName(),
+                    "针对「" + kp.getName() + "」给出测试用例，分三级提示引导补全核心逻辑，不直接给完整答案。",
+                    25, kp.getKpCode()));
+        }
+        plan.add(new PathPlanService.PlannedStep(
+                "巩固测验 + 错题归档",
+                "对所学知识点做变式题即时评测，错题自动进入间隔重复（SM-2）复习队列。",
+                10, chosen.get(chosen.size() - 1).getKpCode()));
+
+        SessionEntity session = new SessionEntity();
+        session.setUserId(userId);
+        session.setTitle(title);
+        session.setKpId(chosen.get(0).getId());
+        session.setKps(chosen.stream().map(KnowledgePoint::getKpCode).collect(Collectors.joining(",")));
+        session.setStatus("ACTIVE");
+        session.setStepIndex(0);
+        session.setCreatedAt(LocalDateTime.now());
+        session.setUpdatedAt(LocalDateTime.now());
+        sessionMapper.insert(session);
+
+        int totalMin = plan.stream().mapToInt(p -> p.durationMin).sum();
+        List<SessionStep> steps = new ArrayList<>();
+        for (int i = 0; i < plan.size(); i++) {
+            PathPlanService.PlannedStep ps = plan.get(i);
+            SessionStep st = new SessionStep();
+            st.setSessionId(session.getId());
+            st.setSortOrder(i + 1);
+            st.setTitle(ps.title);
+            st.setDescription(ps.description);
+            st.setDurationMin(ps.durationMin);
+            st.setStatus(i == 0 ? "ACTIVE" : "PENDING");
+            stepMapper.insert(st);
+            steps.add(st);
+        }
+
+        insertMessage(session.getId(), "SYS", null, "会话已创建 · 已载入你的知识图谱快照（"
+                + countKps() + " 个知识点）", null, null);
+        Map<String, Object> diagCard = new LinkedHashMap<>();
+        diagCard.put("type", "diagnosis");
+        diagCard.put("items", items);
+        diagCard.put("conclusion", global
+                ? "全局模式：已锁定最薄弱的 " + chosen.size() + " 个知识点并按优先级排序。"
+                : "多知识点模式：已按依赖关系排定攻克顺序。");
+        insertMessage(session.getId(), "AGENT", "diagnosis", diagText.toString(), "diagnosis", diagCard);
+
+        String planText = "按诊断结果，我给你排了一条 " + totalMin + " 分钟的路径，共 "
+                + plan.size() + " 步，覆盖 " + names + "。每一步都可以点开看详情。";
+        Map<String, Object> pathCard = new LinkedHashMap<>();
+        pathCard.put("type", "path");
+        pathCard.put("kp", chosen.get(0).getKpCode());
+        insertMessage(session.getId(), "AGENT", "planning", planText, "path", pathCard);
+
+        return detail(userId, session.getId());
+    }
+
     public List<SessionDto> list(Long userId) {
         List<SessionEntity> sessions = sessionMapper.selectList(new LambdaQueryWrapper<SessionEntity>()
                 .eq(SessionEntity::getUserId, userId)
@@ -332,8 +467,10 @@ public class SessionService {
                         parseCard(m.getCardType(), m.getCardPayload())))
                 .toList();
 
+        List<String> kps = s.getKps() == null || s.getKps().isBlank() ? List.of()
+                : Arrays.stream(s.getKps().split(",")).map(String::trim).filter(x -> !x.isEmpty()).toList();
         return new SessionDto(String.valueOf(s.getId()), s.getTitle(),
-                kp != null ? kp.getKpCode() : null,
+                kp != null ? kp.getKpCode() : null, kps,
                 s.getStatus().toLowerCase(),
                 s.getCreatedAt() != null ? s.getCreatedAt().format(DT) : null,
                 s.getUpdatedAt() != null ? s.getUpdatedAt().format(DT) : null,
