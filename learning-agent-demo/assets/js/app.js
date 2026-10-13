@@ -719,12 +719,10 @@
         <div class="card-head">${icon('clipboard', 15)}<h3>${h(a.title)}</h3>
           <div class="spacer"></div><span class="badge ${st.cls}">${st.label}</span></div>
         <div class="card-body">
-          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
             ${a.kp.map(k => '<span class="badge brand">' + kpName(k) + '</span>').join('')}
             <span class="badge">${icon('clock', 12)} 截止 ${h(a.due)}</span>
           </div>
-          <div style="font-size:13px;color:var(--text-2);line-height:1.7">${h(a.desc)}</div>
-          ${hwQuestionList(a)}
           ${st.key === 'todo' ? `<div style="margin-top:12px">
             <button class="btn primary" data-act="${a.questionCount ? 'openAnswer' : 'submitHw'}" data-val="${a.id}">${icon('send', 14)} ${a.questionCount ? '进入作业详情作答' : '提交作业'}</button></div>` : ''}
           ${extra ? '<div style="margin-top:12px">' + extra + '</div>' : ''}
@@ -1989,23 +1987,6 @@
       if (State.compose) { State.compose.busy = false; renderOverlays(); }
       toast(e.message);
     }
-  }
-
-  /* ---------- 学生端：题目型作业的只读题目列表（不含答案） ---------- */
-  function hwQuestionList(a) {
-    const qs = a.questions || [];
-    if (!a.questionCount || !qs.length) return '';
-    const per = Math.round(1000 / qs.length) / 10;
-    return `<div class="hw-qlist">
-      <div class="hw-qlist-head">${icon('file', 14)} 题目 · 共 ${a.questionCount} 题 · 总分 ${a.totalScore}</div>
-      ${qs.map((q, i) => `<div class="hw-q">
-        <div class="hw-q-head"><span class="badge brand">${QTYPES[q.type] ? QTYPES[q.type].label : q.type}</span>
-          <span class="hw-q-score">${a.scoreMode === 'custom' && q.score != null ? q.score + ' 分' : per + ' 分'}</span></div>
-        <div class="hw-q-title">${i + 1}. ${h(q.title)}</div>
-        ${q.type === 'JUDGE' ? '<div class="hw-q-opt">A. 正确　B. 错误</div>' : ''}
-        ${(q.options || []).map(o => `<div class="hw-q-opt">${o.key}. ${h(o.text)}</div>`).join('')}
-      </div>`).join('')}
-    </div>`;
   }
 
   /* ===========================================================
