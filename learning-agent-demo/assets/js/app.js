@@ -1534,14 +1534,14 @@
         ${(a.questions || []).map((q, i) => gradeQCompareCard(q, i, ansMap, a)).join('')}`;
     } else {
       main = `${a.desc ? `<div style="margin-bottom:14px">
-          <div style="font-size:12px;font-weight:600;margin-bottom:6px">作业要求</div>
-          <div style="font-size:13px;color:var(--text-2);line-height:1.8;white-space:pre-wrap">${h(a.desc)}</div></div>` : ''}
+          <div style="font-size:12.5px;font-weight:650;letter-spacing:.4px;margin-bottom:6px">作业要求</div>
+          <div style="font-size:13.5px;color:var(--text-2);line-height:1.85;letter-spacing:.1px;white-space:pre-wrap">${h(a.desc)}</div></div>` : ''}
         <div style="margin-bottom:14px">
-          <div style="font-size:12px;font-weight:600;margin-bottom:6px">提交代码</div>
+          <div style="font-size:12.5px;font-weight:650;letter-spacing:.4px;margin-bottom:6px">提交代码</div>
           <pre class="code-block">${h(sub.code)}</pre></div>
         <div class="note warn" style="margin-bottom:14px"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || '尚未初评，可稍后重试')}</div>
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
-          <div style="font-size:12px;font-weight:600">相似度检测</div>
+          <div style="font-size:12.5px;font-weight:650;letter-spacing:.4px">相似度检测</div>
           <div class="bar ${sub.similarity > 60 ? 'danger' : sub.similarity > 30 ? 'warn' : 'ok'}" style="flex:1"><i style="width:${sub.similarity}%"></i></div>
           <span style="font-weight:700;color:${sub.similarity > 60 ? 'var(--danger)' : 'var(--text)'}">${sub.similarity}%</span>
         </div>`;
@@ -1562,17 +1562,17 @@
     const side = `<div class="grade-student">
         <div class="grade-avatar">${h((sub.name || '学').slice(0, 1))}</div>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:700;font-size:14px">${h(sub.name)}</div>
-          <div style="font-size:12px;color:var(--text-3);margin-top:2px">${sub.submittedAt ? '提交于 ' + h(sub.submittedAt) + '（第 ' + sub.attempts + ' 次）' : '未提交'}</div>
+          <div style="font-weight:700;font-size:15px;letter-spacing:.2px">${h(sub.name)}</div>
+          <div style="font-size:12px;line-height:1.5;color:var(--text-3);margin-top:3px">${sub.submittedAt ? '提交于 ' + h(sub.submittedAt) + '（第 ' + sub.attempts + ' 次）' : '未提交'}</div>
         </div>
         <span class="badge ${graded ? 'ok' : sub.status === 'missing' ? '' : 'warn'}">${graded ? '已批改 ' + sub.score : sub.status === 'missing' ? '未提交' : '待批改'}</span>
       </div>
-      <div style="font-size:12px;font-weight:600;margin:14px 0 8px">${isQ ? '题目评分' : 'Rubric 评分'}</div>
+      <div style="font-size:12.5px;font-weight:700;letter-spacing:.4px;margin:16px 0 10px">${isQ ? '题目评分' : 'Rubric 评分'}</div>
       ${scoreArea}
       <div style="display:flex;align-items:center;gap:10px;margin:12px 0 14px">
-        <span style="font-size:13px;font-weight:600">合计</span>
+        <span style="font-size:13.5px;font-weight:650;letter-spacing:.4px">合计</span>
         <span class="score-big" id="scorePreview">${scorePreview}</span>
-        <span style="color:var(--text-3)">/ 100</span>
+        <span style="font-size:12px;color:var(--text-3)">/ 100</span>
         <div style="flex:1"></div>
         ${graded ? '' : '<button class="btn sm ghost" data-act="useAi">采用 AI 初评</button>'}
       </div>
@@ -1599,7 +1599,7 @@
           ? '<span class="badge ok">' + icon('check', 12) + ' 已发布反馈（得分 ' + sub.score + '）</span>'
           : `<button class="btn" data-act="doGradeZero">记 0 分（未提交）</button>`}
         <div style="flex:1"></div>
-        <span style="font-size:13px;font-weight:600;margin-right:12px">总分：<span class="score-big" style="font-size:18px">${graded ? sub.score : scorePreview}</span><span style="color:var(--text-3);font-size:12px"> / 100</span></span>
+        <span style="font-size:13.5px;font-weight:650;letter-spacing:.4px;margin-right:12px">总分：<span class="score-big" style="font-size:20px">${graded ? sub.score : scorePreview}</span><span style="color:var(--text-3);font-size:12px"> / 100</span></span>
         ${graded
             ? '<button class="btn" data-act="closeGradePage">关闭</button>'
             : `<button class="btn" data-act="doGrade">${icon('send', 15)} 提交</button>

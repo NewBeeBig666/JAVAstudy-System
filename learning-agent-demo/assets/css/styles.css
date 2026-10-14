@@ -905,6 +905,36 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   display: flex; align-items: flex-start; gap: 6px; word-break: break-word;
 }
 .grade-stu-ans svg { flex: none; margin-top: 3px; color: var(--brand); }
+/* ---------- 二级批阅页：字体层级与阅读排版优化（仅排版参数，不改功能布局） ----------
+   字体层级规范：
+   一级标题（页头 学生名 · 作业标题）   16px / 700 / 行高 1.4 / 字距 .2px
+   二级区块标题（对照表头 / 评分区 / 合计 / 底部总分栏） 12.5–13px / 650–700 / 字距 .4px
+   题干正文（题目内容）                 14px / 600 / 行高 1.75 / 字距 .1px
+   正文内容（选项 / 学生作答 / 评语）    13.5px / 行高 1.7–1.85
+   辅助说明（解析 / 参考答案 / 时间戳 / 分母） 12–12.5px / 三级灰 / 行高 ≥1.6 */
+.grade-top h3 { font-size: 16px; line-height: 1.4; letter-spacing: .2px; }
+.grade-main .note.warn { font-size: 13px; line-height: 1.8; letter-spacing: .1px; }
+.grade-main .hw-qlist-head { font-size: 13px; font-weight: 700; letter-spacing: .4px; color: var(--text); }
+.grade-main .hw-q { padding: 13px 0 11px; }
+.grade-main .hw-q-head { margin-bottom: 8px; }
+.grade-main .hw-q-score { font-size: 12.5px; letter-spacing: .2px; }
+.grade-main .hw-q-title { font-size: 14px; font-weight: 600; line-height: 1.75; letter-spacing: .1px; margin-bottom: 6px; color: var(--text); }
+.grade-main .hw-q-opt { font-size: 13.5px; line-height: 1.7; letter-spacing: .1px; padding: 3px 0 3px 10px; }
+.grade-main .grade-stu-ans { font-size: 13.5px; line-height: 1.85; padding: 11px 13px; margin-top: 12px; }
+.grade-side .rubric-row { padding: 11px 0; }
+.grade-side .rubric-row .rn b { font-size: 13.5px; letter-spacing: .1px; }
+.grade-side .rubric-row .rn span { font-size: 12px; line-height: 1.6; }
+.grade-side .score-big { font-size: 32px; letter-spacing: .5px; }
+.grade-side .form-row label { font-size: 13px; font-weight: 650; letter-spacing: .3px; }
+.grade-side .input { font-size: 13.5px; }
+.grade-side .textarea { font-size: 13.5px; line-height: 1.8; }
+.grade-foot .score-big { font-size: 20px; }
+/* 平板端单列布局（≤980px）：保持正文字号下限，仅收紧次要信息行高，避免长文本拥挤 */
+@media (max-width: 980px) {
+  .grade-top h3 { white-space: normal; line-height: 1.45; }
+  .grade-main .hw-q-opt { line-height: 1.75; }
+  .grade-main .grade-stu-ans { line-height: 1.9; }
+}
 /* ---------- Markdown 渲染（Agent 回复）：标题层级 / 列表缩进 / 表格 / 代码高亮 ---------- */
 .agent-text .md-h { font-weight: 700; color: var(--text); line-height: 1.5; }
 .agent-text .md-h1 { font-size: 16px; margin: 14px 0 8px; padding-bottom: 6px; border-bottom: 2px solid var(--brand-soft); }
