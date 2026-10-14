@@ -283,6 +283,7 @@
       </div>
       <div class="topbar-spacer"></div>
       <div class="top-meta">
+        <button class="fb-chip" data-act="${st ? 'openFeedback' : 'openFeedbackList'}" title="${st ? '提交你的建议或问题反馈' : '查看学生提交的建议反馈'}">${icon(st ? 'edit' : 'inbox', 13)} <span class="fb-txt">${st ? '建议反馈' : '查看反馈'}</span></button>
         ${DB.llmMock != null ? `<span class="env-chip">${icon('layers', 12)} ${DB.llmMock ? '离线演示模式' : 'DeepSeek 已接入'}</span>` : ''}
         ${st && unread() ? `<button class="icon-btn" style="position:relative" data-act="gotoHw">${icon('bell', 17)}<span class="act-dot"></span></button>` : ''}
         <button class="icon-btn" data-act="toggleCtx" title="上下文面板">${icon('panel', 17)}</button>
@@ -1395,6 +1396,32 @@
     </div>`).join('') || '<div class="empty"><div class="empty-title">没有匹配的知识点</div></div>';
   }
 
+  /* 教师端反馈浮窗内容区 HTML（列表 + AI 总结区块）。
+     供 renderModal 首次渲染与后续「局部刷新」共用：局部刷新只重写 .modal-body、
+     保留弹窗外壳，避免整窗 innerHTML 重建重放 pop 入场动画导致闪屏 */
+  function fbListBodyHtml(d) {
+    const FB = { BUG: ['系统bug', 'danger'], SUGGESTION: ['功能优化建议', 'warn'], FEATURE: ['新增功能需求', 'brand'] };
+    const list = d.list;
+    let body = list == null
+      ? '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:13px">反馈加载中…</div>'
+      : list.length
+        ? `<div class="fb-list">${list.map(f => {
+            const [tl, bc] = FB[f.type] || [f.type, ''];
+            return `<div class="fb-item">
+              <div class="fb-item-head">
+                <span class="fb-who">${h(f.studentName)}</span>
+                <span style="font-size:11.5px;color:var(--text-3)">${h(f.studentNo)}</span>
+                <span class="badge ${bc}">${tl}</span>
+                <span class="fb-time">${h(f.createdAt)}</span>
+              </div>
+              <div class="fb-content">${h(f.content)}</div>
+            </div>`;
+          }).join('')}</div>`
+        : '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:13px">暂无学生反馈</div>';
+    if (d.summary) body += `<div class="fb-summary"><h5>${icon('sparkles', 13)} AI 总结（共 ${list ? list.length : 0} 条）</h5><div class="agent-text" style="font-size:13px">${md(d.summary)}</div></div>`;
+    return body;
+  }
+
   function renderModal() {
     const m = State.modal, d = m.data || {};
     let title = '', body = '', foot = '';
@@ -1476,6 +1503,24 @@
         </div>`;
       foot = `<button class="btn" data-act="closeModal">取消</button>
         <button class="btn primary" data-act="doImportClass" ${f && !d.uploading ? '' : 'disabled'}>${icon('send', 15)} ${d.uploading ? '上传中…' : '开始导入'}</button>`;
+
+    } else if (m.type === 'feedback') {
+      title = '建议反馈';
+      const FB = [['BUG', '系统bug'], ['SUGGESTION', '功能优化建议'], ['FEATURE', '新增功能需求']];
+      body = `<div class="note" style="margin-bottom:12px">你的反馈会直达教师端，帮助我们把平台做得更好。仅用于本系统教学改进。</div>
+        <div class="form-row"><label>反馈类型</label>
+          <div class="fb-types">${FB.map(([v, l]) => `<button class="fb-type ${d.type === v ? 'on' : ''}" data-act="fbPickType" data-val="${v}">${l}</button>`).join('')}</div></div>
+        <div class="form-row"><label>反馈内容</label>
+          <textarea class="textarea" style="min-height:120px" placeholder="请描述你遇到的问题或建议（必填）…" data-bind="modal" data-key="content">${h(d.content || '')}</textarea>
+          <div class="hint">内容不能为空，最多 1000 字</div></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doSubmitFeedback" ${d.busy ? 'disabled' : ''}>${icon('send', 15)} ${d.busy ? '提交中…' : '提交反馈'}</button>`;
+
+    } else if (m.type === 'feedbackList') {
+      title = '学生反馈';
+      body = fbListBodyHtml(d);
+      foot = `<button class="btn" data-act="closeModal">关闭</button>
+        <button class="btn primary" data-act="doFeedbackSummary" ${(!d.list || !d.list.length || d.summarizing) ? 'disabled' : ''}>${icon('sparkles', 15)} ${d.summarizing ? 'AI 总结中…' : 'AI 一键总结'}</button>`;
 
     } else if (m.type === 'settings') {
       title = '系统设置';
@@ -2702,6 +2747,83 @@
         DB.assignments = await API.get('/assignments/my');
         render();
       } catch (e) { toast(e.message); }
+    },
+
+    /* --- 建议反馈（学生提交 / 教师查看 + AI 总结）。
+       交互约定：弹窗内的选项切换、异步加载/总结等状态变化一律「局部更新」，
+       禁止调用 renderOverlays 整窗重建——整窗重建会重放 pop 入场动画并重置 DOM，导致闪屏 */
+    openFeedback() {
+      State.modal = { type: 'feedback', data: { type: 'BUG', content: '', busy: false } };
+      renderOverlays();
+    },
+    fbPickType(v, id, t) {
+      if (State.modal) State.modal.data.type = v;
+      // 局部更新选中态（与 quizPick 同法），不整窗重渲染
+      const box = t && t.closest ? t.closest('.fb-types') : null;
+      if (box) {
+        box.querySelectorAll('.fb-type').forEach(b => { b.classList.toggle('on', b.dataset.val === v); });
+      } else {
+        renderOverlays();
+      }
+    },
+    async doSubmitFeedback(v, id, t) {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      const content = (d.content || '').trim();
+      if (!content) { toast('请填写反馈内容'); return; }
+      d.busy = true;
+      // 局部更新按钮为「提交中」，不重渲染弹窗
+      const btn = t || document.querySelector('[data-act="doSubmitFeedback"]');
+      if (btn) { btn.disabled = true; btn.innerHTML = icon('send', 15) + ' 提交中…'; }
+      try {
+        await API.post('/feedback', { type: d.type, content });
+        State.modal = null; renderOverlays();
+        toast('反馈已提交，感谢你的建议', 'ok');
+      } catch (e) {
+        d.busy = false;
+        if (btn) { btn.disabled = false; btn.innerHTML = icon('send', 15) + ' 提交反馈'; }
+        toast(e.message);
+      }
+    },
+    async openFeedbackList() {
+      State.modal = { type: 'feedbackList', data: { list: null, summary: '', summarizing: false } };
+      renderOverlays(); // 首次打开弹窗，入场动画仅此一次
+      try {
+        const list = await API.get('/teacher/feedback');
+        if (State.modal && State.modal.type === 'feedbackList') {
+          State.modal.data.list = list;
+          // 局部刷新：仅重写弹窗内容区，外壳与动画状态不动
+          const bodyEl = document.querySelector('.modal .modal-body');
+          if (bodyEl) bodyEl.innerHTML = fbListBodyHtml(State.modal.data);
+          // 同步局部解除底部「AI 一键总结」按钮的禁用态：
+          // 首次渲染时列表未加载（d.list 为空）按钮按初始置灰，
+          // 局部刷新内容区不会触及底部栏，须在此就地恢复，否则按钮永久不可点
+          const fbtn = document.querySelector('[data-act="doFeedbackSummary"]');
+          if (fbtn) fbtn.disabled = !(list && list.length);
+        }
+      } catch (e) {
+        State.modal = null; renderOverlays();
+        toast(e.message);
+      }
+    },
+    async doFeedbackSummary(v, id, t) {
+      const d = State.modal && State.modal.data;
+      if (!d || d.summarizing) return;
+      d.summarizing = true;
+      // 局部更新按钮为「总结中」，不重渲染弹窗
+      const btn = t || document.querySelector('[data-act="doFeedbackSummary"]');
+      if (btn) { btn.disabled = true; btn.innerHTML = icon('sparkles', 15) + ' AI 总结中…'; }
+      try {
+        const r = await API.post('/teacher/feedback/summary', {});
+        d.summary = (r && r.summary) || '';
+        // 局部刷新内容区展示总结（fbListBodyHtml 含总结区块）
+        const bodyEl = document.querySelector('.modal .modal-body');
+        if (bodyEl) bodyEl.innerHTML = fbListBodyHtml(d);
+      } catch (e) {
+        toast(e.message);
+      }
+      d.summarizing = false;
+      if (btn) { btn.disabled = !(d.list && d.list.length); btn.innerHTML = icon('sparkles', 15) + ' AI 一键总结'; }
     },
 
     /* --- 教师：班级名单导入 --- */
