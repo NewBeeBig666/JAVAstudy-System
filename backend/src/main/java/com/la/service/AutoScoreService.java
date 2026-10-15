@@ -55,7 +55,11 @@ public class AutoScoreService {
         List<Map<String, Object>> detail = new ArrayList<>();
         for (int i = 0; i < questions.size(); i++) {
             Question q = questions.get(i);
-            double max = q.getScore() != null ? q.getScore().doubleValue() : 0;
+            // 题目满分：CUSTOM 自定义模式取题目自带 score；AVERAGE 百分制（平均分配）模式
+            // 下 score 为空，须按前端同口径以 100 分均摊（Math.round(1000/n)/10），
+            // 否则答对也得 0 分（曾导致自动评分临时分数全零）
+            double max = q.getScore() != null ? q.getScore().doubleValue()
+                    : (questions.isEmpty() ? 0 : Math.round(1000.0 / questions.size()) / 10.0);
             full += max;
             Map<String, Object> d = new LinkedHashMap<>();
             d.put("no", i + 1);

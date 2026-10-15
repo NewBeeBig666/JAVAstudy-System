@@ -110,11 +110,12 @@ public class TeacherController {
         return ApiResponse.ok(assignmentService.saveCompose(CurrentUser.id(), req));
     }
 
-    @Operation(summary = "出题组卷：一键 AI 生成题目（基于关联知识点与已有题目参考，优先填充空白题）")
+    @Operation(summary = "出题组卷：一键 AI 生成题目（数量与题型完全由教师添加的空白题决定）")
     @PostMapping("/compose/ai-generate")
     public ApiResponse<List<Map<String, Object>>> aiGenerate(@RequestBody AiGenerateRequest req) {
-        int count = req.getCount() != null ? req.getCount() : 3;
-        return ApiResponse.ok(composeAiService.generate(req.getKpCodes(), req.getExisting(), count, req.getBlanks()));
+        // 生成数量与题型唯一依据 = blanks（教师界面上添加的空白题序列），不使用任何默认数量
+        return ApiResponse.ok(composeAiService.generate(req.getKpCodes(), req.getExisting(),
+                req.getBlanks(), req.getTypes()));
     }
 
     @Operation(summary = "出题组卷：导入作业——解析粘贴的题目文本")
@@ -146,8 +147,8 @@ public class TeacherController {
         private List<Map<String, Object>> existing;
         /** 待填充空白题的题型列表（按顺序），生成结果前 N 道按此题型出题 */
         private List<String> blanks;
-        /** 追加生成题量（1-5，默认 3） */
-        private Integer count;
+        /** 教师选定的题型范围：生成题目的 type 只能从中选择（空则不限制） */
+        private List<String> types;
     }
 
     @Operation(summary = "作业的提交列表（含相似度/AI初评）")

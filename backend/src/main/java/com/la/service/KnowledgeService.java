@@ -2,6 +2,7 @@ package com.la.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.la.dto.response.KnowledgeGraphResponse;
 import com.la.dto.response.KnowledgeTreeResponse;
 import com.la.dto.response.TraceChainResponse;
 import com.la.entity.KpDependency;
@@ -142,6 +143,59 @@ public class KnowledgeService {
                 ? "建议优先补「" + rootCause.getName() + "」，再回到「" + target.getName() + "」。"
                 : "前置链整体达标，可直接攻克「" + target.getName() + "」。";
         return new TraceChainResponse(nodes, rootCause != null ? rootCause.getKpCode() : null, conclusion);
+    }
+
+    /**
+     * 知识图谱全层级（数据源：课程知识点 Excel 全量树，source=XLSX）：
+     * 一级模块 + 平铺节点（parentCode 组树）+ PRE 依赖边 + 本人掌握度。
+     * 旧 LEGACY 节点不进入图谱与出题选项，保证与 Excel 源一致。
+     */
+    public KnowledgeGraphResponse graph(Long userId) {
+        List<KnowledgePoint> all = kpMapper.selectList(new LambdaQueryWrapper<KnowledgePoint>()
+                .eq(KnowledgePoint::getSource, "XLSX")
+                .orderByAsc(KnowledgePoint::getSortOrder));
+        Map<Long, KnowledgePoint> byId = all.stream()
+                .collect(Collectors.toMap(KnowledgePoint::getId, k -> k));
+        Map<Long, Integer> masteryMap = masteryMap(userId);
+        List<String> moduleColors = List.of("#a78bfa", "#f472b6", "#fbbf24", "#22d3ee", "#60a5fa");
+
+        List<KnowledgeGraphResponse.ModuleDto> modules = new ArrayList<>();
+        List<KnowledgeGraphResponse.NodeDto> nodes = new ArrayList<>();
+        int mi = 0;
+        for (KnowledgePoint k : all) {
+            if (k.getLevel() == 1) {
+                modules.add(new KnowledgeGraphResponse.ModuleDto(
+                        k.getKpCode(), k.getName(),
+                        moduleColors.get(Math.min(mi++, moduleColors.size() - 1))));
+            }
+        }
+        for (KnowledgePoint k : all) {
+            KnowledgePoint parent = k.getParentId() != null ? byId.get(k.getParentId()) : null;
+            Integer mastery = masteryMap.get(k.getId());
+            nodes.add(new KnowledgeGraphResponse.NodeDto(
+                    k.getKpCode(), k.getName(),
+                    parent != null ? parent.getKpCode() : null,
+                    k.getModuleCode() != null ? k.getModuleCode() : (k.getLevel() == 1 ? k.getKpCode() : null),
+                    k.getLevel(), k.getSortOrder(),
+                    mastery != null ? mastery : null,
+                    k.getDescription() != null ? k.getDescription() : ""));
+        }
+
+        List<KnowledgeGraphResponse.EdgeDto> edges = new ArrayList<>();
+        Set<Long> xlsxIds = all.stream().map(KnowledgePoint::getId).collect(Collectors.toSet());
+        for (Map.Entry<Long, List<Long>> e : depMap().entrySet()) {
+            if (!xlsxIds.contains(e.getKey())) {
+                continue;
+            }
+            for (Long depId : e.getValue()) {
+                KnowledgePoint dep = byId.get(depId);
+                if (dep != null) {
+                    edges.add(new KnowledgeGraphResponse.EdgeDto(
+                            byId.get(e.getKey()).getKpCode(), dep.getKpCode()));
+                }
+            }
+        }
+        return new KnowledgeGraphResponse(modules, nodes, edges);
     }
 
     /**

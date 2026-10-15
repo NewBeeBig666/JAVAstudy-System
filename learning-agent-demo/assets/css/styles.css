@@ -219,6 +219,8 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .mh-actions { display: flex; align-items: center; gap: 6px; }
 .main-body { flex: 1; overflow-y: auto; min-height: 0; }
 .main-inner { max-width: 980px; margin: 0 auto; padding: 18px 20px 28px; }
+/* 知识图谱视图：左侧「知识模块」面板移除后，解除宽度上限以占满全部横向空间 */
+.main-inner.kg-inner-wide { max-width: none; }
 
 /* ---------------- 右侧上下文区 ---------------- */
 .ctx {
@@ -849,11 +851,22 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   padding: 12px 14px; margin-bottom: 12px;
 }
 .kp-panel-head {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
   font-size: 13px; font-weight: 650; margin-bottom: 10px;
 }
 .kp-panel-head span { font-size: 12px; font-weight: 400; color: var(--text-3); flex: 1; }
 .kp-panel-body { display: flex; flex-wrap: wrap; gap: 7px; }
+/* 知识点面板搜索框：高度/字号与同行 .btn.sm（27px）对齐；窄屏可换行 */
+.kp-search-input {
+  width: 200px; height: 27px; padding: 0 9px;
+  font-size: 12.5px; flex: none;
+}
+/* 搜索无结果：友好空状态 + 一键清除 */
+.kp-search-empty {
+  width: 100%; padding: 22px 10px; text-align: center;
+  font-size: 12.5px; color: var(--text-3); line-height: 2;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
 /* 导入作业：左编辑 / 右预览分栏 */
 .ci-body { flex: 1; display: flex; gap: 14px; min-height: 0; padding: 14px 16px; }
 .ci-pane {
@@ -894,6 +907,14 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .ans-opt > span { line-height: 1.6; }
 .ans-opt .opt-key { font-weight: 700; color: var(--text-2); flex: none; }
 .ans-text { width: 100%; }
+/* 作业详情只读态（已批改查看）：输入组件 disabled 后保持可读，
+   去掉悬停高亮与手型光标，明确“仅查看”语义 */
+.ans-main .ans-opt:has(> input:disabled) { cursor: default; }
+.ans-main .ans-opt:has(> input:disabled):hover { border-color: var(--border-2); background: transparent; }
+.ans-main .ans-text:disabled {
+  background: var(--panel-2); color: var(--text-2);
+  cursor: default; opacity: 1; -webkit-text-fill-color: var(--text-2);
+}
 .ans-nav {
   flex: none; width: 200px; overflow-y: auto;
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px;
@@ -1022,6 +1043,190 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   border-radius: 10px; background: var(--panel-2);
 }
 .quiz-ans .btn.primary { min-width: 88px; }
+/* ---------- 代码编辑器（编程题作答）：行号 + 语法高亮 + 自动补全 ---------- */
+.code-editor { position: relative; width: 100%; }
+.ce-frame { display: flex; border: 1px solid var(--border); border-radius: var(--r-sm); background: #fff; overflow: hidden; }
+.code-editor:focus-within .ce-frame { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.ce-gutter {
+  flex: none; width: 38px; overflow: hidden;
+  background: var(--panel-2); border-right: 1px solid var(--border-2);
+  user-select: none; pointer-events: none;
+}
+.ce-gutter-inner { padding: 10px 8px 10px 0; font-family: Consolas, monospace; font-size: 12.5px; line-height: 1.6; color: var(--text-3); }
+.ce-gutter-inner div { text-align: right; }
+.ce-area { position: relative; flex: 1; min-width: 0; }
+.ce-hl {
+  position: absolute; inset: 0; margin: 0; padding: 10px 12px;
+  font-family: Consolas, monospace; font-size: 12.5px; line-height: 1.6;
+  white-space: pre; overflow: hidden; pointer-events: none;
+}
+.ce-hl code { font: inherit; }
+.ce-input {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  border: none; outline: none; resize: none;
+  background: transparent; color: transparent; caret-color: var(--brand);
+  padding: 10px 12px;
+  font-family: Consolas, monospace; font-size: 12.5px; line-height: 1.6;
+  white-space: pre; overflow: auto;
+}
+.ce-input::placeholder { color: var(--text-3); }
+.ce-input::selection { background: rgba(99, 102, 241, .28); }
+.code-editor.ro .ce-hl { background: var(--panel-2); }
+.code-editor.ro .ce-input { caret-color: transparent; }
+/* 只读态（已批改查看） */
+/* token 配色：VS Code Light 风格 */
+.ce-kw { color: #0000ff; }
+.ce-ctl { color: #af00db; }
+.ce-type { color: #267f99; }
+.ce-str { color: #a31515; }
+.ce-com { color: #008000; font-style: italic; }
+.ce-num { color: #098658; }
+.ce-fn { color: #795e26; }
+/* 自动补全弹窗：显示/隐藏完全由 JS 内联 style 控制（初始 none），
+   样式表不写 display，避免内联样式被清除时回落到 none 导致弹窗永不显示 */
+.ce-ac {
+  position: absolute; z-index: 60;
+  min-width: 230px; max-width: 330px; max-height: 224px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: var(--sh-3); padding: 4px;
+}
+.ce-ac-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 6px; cursor: pointer;
+  font-size: 12.5px;
+}
+.ce-ac-item.on { background: var(--brand-soft); }
+.ce-ac-ico {
+  flex: none; width: 18px; height: 15px; line-height: 15px;
+  font-size: 10px; font-weight: 700; text-align: center; color: #fff; border-radius: 3px;
+}
+.ce-ac-ico.kK { background: #2563eb; }
+.ce-ac-ico.kT { background: #0d9488; }
+.ce-ac-ico.kS { background: #ea580c; }
+.ce-ac-ico.kM { background: #7c3aed; }
+.ce-ac-ico.kV { background: #16a34a; }
+.ce-ac-name { font-family: Consolas, monospace; color: var(--text); white-space: nowrap; }
+.ce-ac-desc {
+  margin-left: auto; max-width: 138px;
+  color: var(--text-3); font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* ---------- 知识图谱（超星风格 · 太空主题） ---------- */
+/* 知识点选择分组（教师出题面板 / 学生新建会话）：模块标题 + chip/pick 流式布局 */
+.kp-group, .ns-group { margin-bottom: 12px; }
+.kp-group-title, .ns-group-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 700; color: var(--text);
+  padding: 3px 0 3px 8px; margin-bottom: 7px;
+}
+.kp-group-title span, .ns-group-title span {
+  font-size: 10.5px; font-weight: 600; color: var(--text-3);
+  background: var(--panel-3); border-radius: 999px; padding: 1px 7px;
+}
+.kp-group-body { display: flex; flex-wrap: wrap; gap: 6px; }
+.kg-wrap { display: flex; gap: 12px; height: 66vh; min-height: 420px; }
+.kg-side {
+  flex: none; width: 216px; display: flex; flex-direction: column; gap: 6px;
+  padding: 12px 10px; border-radius: 12px;
+  background: linear-gradient(180deg, rgba(23,32,72,.92), rgba(13,18,48,.92));
+  border: 1px solid rgba(120,140,220,.25);
+}
+.kg-search {
+  display: flex; align-items: center; gap: 7px;
+  padding: 0 10px; height: 34px; border-radius: 9px;
+  background: rgba(255,255,255,.08); border: 1px solid rgba(140,160,240,.25);
+  color: #aab6e8;
+}
+.kg-search input {
+  flex: 1; border: none; outline: none; background: transparent;
+  color: #e8ecff; font-size: 12.5px; min-width: 0;
+}
+.kg-search input::placeholder { color: rgba(170,182,232,.55); }
+.kg-side-hint { font-size: 11px; color: rgba(170,182,232,.6); padding: 2px 4px 6px; }
+.kg-nav-item {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; border-radius: 9px; border: 1px solid transparent;
+  background: transparent; color: #cdd6f4; font-size: 12.5px; text-align: left;
+  cursor: pointer; transition: .15s;
+}
+.kg-nav-item:hover { background: rgba(120,140,220,.16); }
+.kg-nav-item.on { background: rgba(99,102,241,.35); border-color: rgba(129,140,248,.5); color: #fff; font-weight: 600; }
+.kg-nav-no {
+  flex: none; width: 20px; height: 20px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #0b1230; font-size: 11px; font-weight: 700;
+}
+.kg-search-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
+.kg-hit {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 6px 9px; border-radius: 8px; background: rgba(120,140,220,.14);
+  border: 1px solid rgba(140,160,240,.2); cursor: pointer; text-align: left;
+}
+.kg-hit:hover { background: rgba(120,140,220,.28); }
+.kg-hit-name { font-size: 12px; color: #e8ecff; }
+.kg-hit-mod { font-size: 10.5px; color: rgba(170,182,232,.65); }
+.kg-canvas {
+  flex: 1; min-width: 0; position: relative; border-radius: 12px; overflow: hidden;
+  background:
+    radial-gradient(1.5px 1.5px at 18% 22%, rgba(255,255,255,.35) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 72% 12%, rgba(255,255,255,.28) 50%, transparent 51%),
+    radial-gradient(2px 2px at 86% 66%, rgba(255,255,255,.22) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 34% 82%, rgba(255,255,255,.3) 50%, transparent 51%),
+    radial-gradient(ellipse 60% 45% at 70% 18%, rgba(76,81,191,.28), transparent 70%),
+    radial-gradient(ellipse 55% 50% at 22% 78%, rgba(34,211,238,.14), transparent 70%),
+    linear-gradient(160deg, #0b1230 0%, #101645 52%, #131a4a 100%);
+  border: 1px solid rgba(120,140,220,.28);
+}
+.kg-svg {
+  width: 100%; height: 100%; display: block;
+  /* 拖拽平移：触摸手势交给 Pointer Events 处理，禁掉默认滚动/文本选择 */
+  touch-action: none; cursor: grab;
+  -webkit-user-select: none; user-select: none;
+}
+.kg-svg.kg-dragging { cursor: grabbing; }
+.kg-export {
+  position: absolute; top: 10px; left: 10px; z-index: 5;
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 12px; border-radius: 8px; cursor: pointer;
+  background: rgba(16,22,69,.75); border: 1px solid rgba(140,160,240,.3);
+  color: #cdd6f4; font-size: 12px; transition: .15s;
+}
+.kg-export:hover { background: rgba(99,102,241,.4); color: #fff; }
+/* 缩放控制条（画布右下角）：放大 / 当前百分比 / 缩小 / 重置 */
+.kg-zoom-bar {
+  position: absolute; right: 12px; bottom: 12px; z-index: 5;
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 7px; border-radius: 10px;
+  background: rgba(16,22,69,.78); border: 1px solid rgba(140,160,240,.3);
+}
+.kg-zoom-btn {
+  width: 26px; height: 26px; border-radius: 7px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(120,140,220,.18); border: 1px solid rgba(140,160,240,.22);
+  color: #cdd6f4; font-size: 13px; transition: .15s;
+}
+.kg-zoom-btn:hover { background: rgba(99,102,241,.45); color: #fff; }
+.kg-zoom-pct { min-width: 42px; text-align: center; font-size: 11.5px; color: #aab6e8; }
+/* SVG 元素样式（节点 / 连线 / 发光） */
+.kg-link { stroke: rgba(190,200,255,.32); stroke-width: 1.2; }
+.kg-dep { stroke: rgba(251,146,60,.55); stroke-width: 1.6; stroke-dasharray: 6 5; }
+.kg-glow { filter: drop-shadow(0 0 6px rgba(129,140,248,.55)); }
+.kg-bubble { cursor: pointer; }
+.kg-bubble:hover circle { filter: drop-shadow(0 0 14px rgba(129,140,248,.8)); }
+.kg-bubble-no { fill: rgba(232,236,255,.85); font-size: 15px; text-anchor: middle; }
+.kg-bubble-name { fill: #fff; font-size: 15px; font-weight: 700; text-anchor: middle; }
+.kg-bubble-sub { fill: rgba(232,236,255,.62); font-size: 10.5px; text-anchor: middle; }
+.kg-node { cursor: pointer; }
+.kg-node:hover { filter: drop-shadow(0 0 8px rgba(255,255,255,.55)); }
+.kg-node-label { fill: rgba(232,236,255,.82); font-size: 10.5px; text-anchor: middle; }
+.kg-node-label.big { fill: #fff; font-size: 12px; font-weight: 600; }
+.kg-node-level1 { fill: #fff; font-size: 17px; font-weight: 700; text-anchor: middle; }
+@media (max-width: 900px) {
+  .kg-wrap { flex-direction: column; height: auto; }
+  .kg-side { width: auto; flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .kg-canvas { height: 400px; }
+  .kg-search-list { max-height: 120px; }
+}
 @media (max-width: 980px) {
   .grade-body { flex-direction: column; overflow-y: auto; }
   .grade-main { overflow-y: visible; }

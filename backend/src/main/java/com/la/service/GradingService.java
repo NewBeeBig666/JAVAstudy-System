@@ -123,7 +123,7 @@ public class GradingService {
             Question q = questions.get(i);
             JsonNode val = ansMap.get(String.valueOf(q.getId()));
             if (isObjective(q.getType())) {
-                double s = composeObjectiveScore(q, val);
+                double s = composeObjectiveScore(q, val, questions);
                 scores.put(i + 1, s);
                 objective += s;
             } else {
@@ -223,8 +223,9 @@ public class GradingService {
         return out;
     }
 
-    /** 客观题程序判分（单选/多选/判断），与提交时的判分口径一致 */
-    private double composeObjectiveScore(Question q, JsonNode val) {
+    /** 客观题程序判分（单选/多选/判断），与提交时的判分口径一致；
+     *  all 为整卷题目列表，用于 AVERAGE 模式下按题数均摊满分 */
+    private double composeObjectiveScore(Question q, JsonNode val, List<Question> all) {
         if (val == null || val.isNull()) {
             return 0;
         }
@@ -251,7 +252,7 @@ public class GradingService {
                 }
             }
         }
-        return ok ? scoreOf(q, null) : 0;
+        return ok ? scoreOf(q, all) : 0;
     }
 
     private boolean nodeEquals(JsonNode a, JsonNode b) {
@@ -259,9 +260,14 @@ public class GradingService {
         return a.asText().equals(b.asText());
     }
 
-    /** 题目满分：题目自带 score（出题时已按评分机制分配） */
+    /** 题目满分：CUSTOM 自定义模式下题目自带 score；AVERAGE 百分制（平均分配）模式下
+     *  score 为空，须按前端同口径以 100 分均摊（Math.round(1000/n)/10，保留 1 位小数），
+     *  否则答对也得 0 分（曾导致 AI 初评全零分误判） */
     private double scoreOf(Question q, List<Question> all) {
-        return q.getScore() != null ? q.getScore().doubleValue() : 0;
+        if (q.getScore() != null) {
+            return q.getScore().doubleValue();
+        }
+        return all != null && !all.isEmpty() ? Math.round(1000.0 / all.size()) / 10.0 : 0;
     }
 
     private boolean isObjective(String type) {

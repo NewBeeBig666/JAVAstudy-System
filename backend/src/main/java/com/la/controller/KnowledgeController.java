@@ -1,6 +1,7 @@
 package com.la.controller;
 
 import com.la.dto.ApiResponse;
+import com.la.dto.response.KnowledgeGraphResponse;
 import com.la.dto.response.KnowledgeTreeResponse;
 import com.la.dto.response.TraceChainResponse;
 import com.la.security.CurrentUser;
@@ -22,6 +23,12 @@ public class KnowledgeController {
     @GetMapping("/tree")
     public ApiResponse<KnowledgeTreeResponse> tree() {
         return ApiResponse.ok(knowledgeService.tree(CurrentUser.id()));
+    }
+
+    @Operation(summary = "知识图谱全层级（课程知识点 Excel 全量树，含掌握度与依赖边）")
+    @GetMapping("/graph")
+    public ApiResponse<KnowledgeGraphResponse> graph() {
+        return ApiResponse.ok(knowledgeService.graph(CurrentUser.id()));
     }
 
     @Operation(summary = "知识点详情")

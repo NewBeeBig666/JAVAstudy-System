@@ -206,7 +206,7 @@
     quizReply: {},
     quizDone: {},
     insight: null,
-    filters: { hw: 'all', warn: 'all', kpModule: 'all', subAs: 'as-2', exKp: 'all', classId: 'c1', report: 'overview' },
+    filters: { hw: 'all', warn: 'all', subAs: 'as-2', exKp: 'all', classId: 'c1', report: 'overview' },
     search: ''
   };
 
@@ -326,19 +326,6 @@
         (done.length ? '<div class="side-group">已完成 · ' + done.length + '</div>' + done.map(sItem).join('') : '') +
         (!DB.sessions.length ? '<div class="empty" style="padding:28px 12px"><div class="empty-ico">' + icon('chat', 22) + '</div><div class="empty-title">还没有会话</div><div class="empty-desc">点击左下角「新建学习会话」，选一个 Java 知识点开始。</div></div>' : '');
 
-    } else if (sec === 'knowledge') {
-      head = '<div class="side-head"><div class="side-title">知识模块</div></div>';
-      body = `<button class="list-item ${State.filters.kpModule === 'all' ? 'on' : ''}" data-act="kpModule" data-val="all">
-          <div class="li-main"><div class="li-title">全部知识点</div><div class="li-sub">${DB.knowledgePoints.length} 个 · 平均 ${DB.student ? DB.student.avgMastery : '-'} 分</div></div></button>` +
-        DB.modules.map(m => {
-          const ks = DB.knowledgePoints.filter(k => k.module === m.id);
-          const avg = Math.round(ks.reduce((a, b) => a + b.mastery, 0) / ks.length);
-          return `<button class="list-item ${State.filters.kpModule === m.id ? 'on' : ''}" data-act="kpModule" data-val="${m.id}">
-            <div class="li-main"><div class="li-title">${m.name}</div><div class="li-sub">${ks.length} 个知识点 · 平均 ${avg} 分</div></div>
-            <div class="li-extra"><span class="badge ${bcls(avg) === 'ok' ? 'ok' : bcls(avg) === 'danger' ? 'danger' : bcls(avg) === 'warn' ? 'warn' : 'brand'}">${avg}</span></div>
-          </button>`;
-        }).join('');
-
     } else if (sec === 'homework') {
       head = '<div class="side-head"><div class="side-title">我的作业</div></div>';
       const f = [['all', '全部'], ['todo', '待提交'], ['pending', '待批改'], ['graded', '已批改']];
@@ -449,7 +436,9 @@
       else if (sec === 'warnings') { const r = viewWarnings(); head = r.head; body = r.body; }
       else if (sec === 'students') { const r = viewStudents(); head = r.head; body = r.body; }
     }
-    box.innerHTML = head + '<div class="main-body"><div class="main-inner">' + body + '</div></div>';
+    // 知识图谱视图使用加宽容器（kg-inner-wide 解除 980px 上限），配合左侧面板移除后的全宽布局
+    const innerCls = (State.role === 'student' && sec === 'knowledge') ? ' class="main-inner kg-inner-wide"' : ' class="main-inner"';
+    box.innerHTML = head + '<div class="main-body"><div' + innerCls + '>' + body + '</div></div>';
     afterRender();
   }
 
@@ -551,6 +540,379 @@
       </div></div>`;
   }
 
+  /* ===========================================================
+   * 代码编辑器组件（编程题作答，专业编辑体验，无外部依赖）
+   * 结构：透明 textarea（保留 data-bind 原生输入绑定，草稿/状态联动零改动）
+   * 叠加在着色层上；外挂行号栏与自动补全弹窗。
+   * 能力：实时语法高亮 / 行号 / 自动缩进对齐 / 括号引号自动闭合与跨越 /
+   *       智能补全（关键字·类型·方法·代码片段·文档词，含说明与键盘导航）
+   * 挂载：页面渲染后由 mountCodeEditors() 统一装饰 textarea[data-code-editor]
+   * =========================================================== */
+  const CE_INDENT = '    ';
+  const CE_PAIRS = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'" };
+  // 顶层候选：关键字 K / 类型 T / 片段 S（t 文本, d 说明, k 类别）
+  const CE_TOP = [
+    ['public', '访问修饰符 · 公有', 'K'], ['private', '访问修饰符 · 私有', 'K'], ['protected', '访问修饰符 · 受保护', 'K'],
+    ['static', '关键字 · 静态成员', 'K'], ['final', '关键字 · 不可变 / 终态', 'K'], ['void', '关键字 · 无返回值', 'K'],
+    ['class', '关键字 · 定义类', 'K'], ['interface', '关键字 · 定义接口', 'K'], ['abstract', '关键字 · 抽象', 'K'],
+    ['enum', '关键字 · 定义枚举', 'K'], ['extends', '关键字 · 继承父类', 'K'], ['implements', '关键字 · 实现接口', 'K'],
+    ['import', '关键字 · 导入类 / 包', 'K'], ['package', '关键字 · 包声明', 'K'],
+    ['new', '关键字 · 创建对象', 'K'], ['this', '关键字 · 当前实例', 'K'], ['super', '关键字 · 父类引用', 'K'],
+    ['int', '基本类型 · 整型', 'K'], ['long', '基本类型 · 长整型', 'K'], ['double', '基本类型 · 双精度浮点', 'K'],
+    ['float', '基本类型 · 单精度浮点', 'K'], ['char', '基本类型 · 字符型', 'K'], ['boolean', '基本类型 · 布尔', 'K'],
+    ['byte', '基本类型 · 字节', 'K'], ['short', '基本类型 · 短整型', 'K'], ['var', '关键字 · 局部变量类型推断', 'K'],
+    ['if', '流程控制 · 条件分支', 'K'], ['else', '流程控制 · 否则分支', 'K'],
+    ['for', '流程控制 · 循环', 'K'], ['while', '流程控制 · while 循环', 'K'], ['do', '流程控制 · do-while', 'K'],
+    ['switch', '流程控制 · 多分支', 'K'], ['case', '流程控制 · 分支标签', 'K'], ['default', '流程控制 · 默认分支', 'K'],
+    ['break', '流程控制 · 跳出循环', 'K'], ['continue', '流程控制 · 下一轮循环', 'K'], ['return', '流程控制 · 返回', 'K'],
+    ['try', '异常处理 · 监视块', 'K'], ['catch', '异常处理 · 捕获', 'K'], ['finally', '异常处理 · 收尾块', 'K'],
+    ['throw', '异常处理 · 抛出异常', 'K'], ['throws', '异常处理 · 声明异常', 'K'],
+    ['String', '常用类 · 字符串', 'T'], ['System', '系统类 · 标准流与工具', 'T'],
+    ['ArrayList', '集合类 · 动态数组', 'T'], ['HashMap', '集合类 · 哈希表', 'T'],
+    ['List', '集合接口 · 列表', 'T'], ['Map', '集合接口 · 键值对', 'T'],
+    ['Scanner', '输入类 · 读取控制台输入', 'T'], ['Math', '工具类 · 数学运算', 'T'],
+    ['Integer', '包装类 · 整型', 'T'], ['Double', '包装类 · 双精度', 'T'], ['Boolean', '包装类 · 布尔', 'T'],
+    ['Exception', '异常类 · 所有异常基类', 'T'], ['Runnable', '接口 · 线程任务', 'T'],
+    ['sout', '片段 · System.out.println()', 'S'], ['sysout', '片段 · System.out.println()', 'S'],
+    ['psvm', '片段 · main 方法骨架', 'S'], ['main', '片段 · main 方法骨架', 'S'],
+    ['fori', '片段 · for 循环骨架', 'S'], ['foreach', '片段 · 增强 for 循环', 'S'], ['tryc', '片段 · try-catch 骨架', 'S']
+  ];
+  // 代码片段模板：| 为补全后光标落点
+  const CE_SNIPPETS = {
+    sout: 'System.out.println();', sysout: 'System.out.println();',
+    psvm: 'public static void main(String[] args) {\n' + CE_INDENT + '|\n' + CE_INDENT + '}',
+    main: 'public static void main(String[] args) {\n' + CE_INDENT + '|\n' + CE_INDENT + '}',
+    fori: 'for (int i = 0; i < |; i++) {\n' + CE_INDENT + '\n}',
+    foreach: 'for (var item : list) {\n' + CE_INDENT + '|\n}',
+    tryc: 'try {\n' + CE_INDENT + '|\n} catch (Exception e) {\n' + CE_INDENT + 'e.printStackTrace();\n}'
+  };
+  // 成员补全：receiver → [名称, 说明]（M 方法补 '()'，T 常量/字段原样）
+  const CE_MEMBERS = {
+    'System.out': [['println', '打印并换行', 'M'], ['print', '打印不换行', 'M'], ['printf', '格式化打印', 'M'], ['flush', '刷新缓冲区', 'M']],
+    'System.err': [['println', '打印到错误流', 'M'], ['print', '打印到错误流', 'M']],
+    'System': [['out', '标准输出流', 'T'], ['err', '标准错误流', 'T'], ['currentTimeMillis', '当前毫秒时间戳', 'M'],
+      ['arraycopy', '数组复制', 'M'], ['exit', '退出 JVM', 'M'], ['lineSeparator', '系统换行符', 'M']],
+    'Math': [['max', '两者较大值', 'M'], ['min', '两者较小值', 'M'], ['abs', '绝对值', 'M'], ['sqrt', '平方根', 'M'],
+      ['pow', 'x 的 y 次幂', 'M'], ['random', '[0,1) 随机小数', 'M'], ['round', '四舍五入', 'M'], ['floor', '向下取整', 'M']],
+    'Integer': [['parseInt', '字符串 → int', 'M'], ['valueOf', '包装为 Integer', 'M'], ['toString', '转字符串', 'M'],
+      ['MAX_VALUE', 'int 最大值', 'T'], ['MIN_VALUE', 'int 最小值', 'T']],
+    'Double': [['parseDouble', '字符串 → double', 'M'], ['valueOf', '包装为 Double', 'M'], ['MAX_VALUE', 'double 最大值', 'T']],
+    'String': [['valueOf', '转换为字符串', 'M'], ['format', '格式化字符串', 'M'], ['join', '拼接字符串', 'M'], ['copyValueOf', '字符数组 → 字符串', 'M']],
+    'Scanner': [['nextInt', '读取整数', 'M'], ['nextLine', '读取一行', 'M'], ['next', '读取一个词', 'M'],
+      ['hasNext', '是否还有输入', 'M'], ['hasNextInt', '是否还有整数', 'M'], ['close', '关闭输入流', 'M']],
+    'ArrayList': [['add', '追加元素', 'M'], ['get', '按下标取值', 'M'], ['size', '元素个数', 'M'], ['remove', '移除元素', 'M'],
+      ['isEmpty', '是否为空', 'M'], ['contains', '是否包含', 'M'], ['clear', '清空', 'M'], ['set', '替换元素', 'M']],
+    'List': [['add', '追加元素', 'M'], ['get', '按下标取值', 'M'], ['size', '元素个数', 'M'], ['remove', '移除元素', 'M'], ['isEmpty', '是否为空', 'M']],
+    'HashMap': [['put', '写入键值对', 'M'], ['get', '按键取值', 'M'], ['containsKey', '是否包含键', 'M'],
+      ['keySet', '键集合', 'M'], ['values', '值集合', 'M'], ['size', '元素个数', 'M'], ['getOrDefault', '取值或默认', 'M'], ['remove', '按键移除', 'M']],
+    'Map': [['put', '写入键值对', 'M'], ['get', '按键取值', 'M'], ['containsKey', '是否包含键', 'M'], ['keySet', '键集合', 'M'], ['getOrDefault', '取值或默认', 'M']],
+    'str': [['length', '字符串长度', 'M'], ['charAt', '取指定字符', 'M'], ['substring', '截取子串', 'M'],
+      ['indexOf', '查找位置', 'M'], ['equals', '内容比较', 'M'], ['equalsIgnoreCase', '忽略大小写比较', 'M'],
+      ['toUpperCase', '转大写', 'M'], ['toLowerCase', '转小写', 'M'], ['split', '按分隔符拆分', 'M'], ['trim', '去除首尾空白', 'M'], ['isEmpty', '是否为空', 'M']]
+  };
+  // 任意 receiver. 之后的通用成员建议
+  const CE_GENERIC_MEMBERS = [
+    ['toString', '转字符串', 'M'], ['equals', '内容相等比较', 'M'], ['hashCode', '哈希码', 'M'],
+    ['size', '元素个数', 'M'], ['length', '长度（数组/字符串）', 'T'], ['isEmpty', '是否为空', 'M'],
+    ['get', '取值', 'M'], ['add', '追加', 'M'], ['close', '关闭资源', 'M'], ['next', '下一个元素', 'M']
+  ];
+  const CE_KW_SET = new Set(CE_TOP.map(x => x[0]));
+  // 候选条目防御：条目意外损坏（非数组/首项非字符串）时跳过该条，
+  // 避免一条坏数据让整个补全过滤抛错、功能失效
+  const ceOkItem = x => Array.isArray(x) && typeof x[0] === 'string';
+
+  // Java 语法高亮（亮色主题 · VS Code Light 配色）：注释 / 字符串 / 数字 / 控制关键字 / 关键字 / 方法调用 / 类型
+  function ceHighlight(code) {
+    const CTL = new Set('if else for while do switch case default break continue return try catch finally throw throws new'.split(' '));
+    const KW = new Set('abstract assert boolean byte char class const double enum extends final float implements import instanceof int interface long native package private protected public short static strictfp super synchronized this transient volatile void true false null var'.split(' '));
+    const re = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|\b(\d+(?:\.\d+)?[LlDdFf]?)\b|\b([A-Za-z_$][\w$]*)\b/g;
+    const out = [];
+    let last = 0, m;
+    while ((m = re.exec(code))) {
+      if (m.index > last) out.push(h(code.slice(last, m.index)));
+      const s = m[0];
+      if (m[1]) out.push('<span class="ce-com">' + h(s) + '</span>');
+      else if (m[2]) out.push('<span class="ce-str">' + h(s) + '</span>');
+      else if (m[3]) out.push('<span class="ce-num">' + h(s) + '</span>');
+      else if (CTL.has(s)) out.push('<span class="ce-ctl">' + h(s) + '</span>');
+      else if (KW.has(s)) out.push('<span class="ce-kw">' + h(s) + '</span>');
+      else if (/^\s*\(/.test(code.slice(m.index + s.length))) out.push('<span class="ce-fn">' + h(s) + '</span>');
+      else if (/^[A-Z]/.test(s)) out.push('<span class="ce-type">' + h(s) + '</span>');
+      else out.push(h(s));
+      last = m.index + s.length;
+    }
+    out.push(h(code.slice(last)));
+    return out.join('');
+  }
+
+  // 生成代码编辑器 HTML：textarea 保留调用方传入的 data-bind 等属性，原输入联动机制不变
+  function codeEditorHtml(attrs, value, opts) {
+    opts = opts || {};
+    return `<div class="code-editor${opts.ro ? ' ro' : ''}" style="min-height:${opts.minHeight || 140}px">
+      <div class="ce-frame">
+        <div class="ce-gutter"><div class="ce-gutter-inner"></div></div>
+        <div class="ce-area">
+          <pre class="ce-hl"><code></code></pre>
+          <textarea class="ce-input" data-code-editor="1" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"
+            placeholder="${h(opts.placeholder || '在此编写代码…')}" ${attrs}${opts.ro ? ' disabled' : ''}>${h(value == null ? '' : String(value))}</textarea>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // 渲染后统一装饰：为尚未挂载的代码 textarea 附加高亮 / 行号 / 补全行为
+  function mountCodeEditors() {
+    document.querySelectorAll('textarea[data-code-editor]:not([data-ce-mounted])').forEach(ta => {
+      ta.dataset.ceMounted = '1';
+      ceAttach(ta);
+    });
+  }
+
+  function ceAttach(ta) {
+    const root = ta.closest('.code-editor');
+    if (!root) return;
+    const frame = root.querySelector('.ce-frame');
+    const gutter = root.querySelector('.ce-gutter-inner');
+    const hl = root.querySelector('.ce-hl');
+    const codeEl = root.querySelector('.ce-hl code');
+    const ac = document.createElement('div');
+    ac.className = 'ce-ac';
+    ac.style.display = 'none';
+    root.appendChild(ac);
+    const ACS = { items: [], active: -1, start: 0 };
+    let ime = false;
+
+    const ceSync = () => {
+      const v = ta.value || '';
+      codeEl.innerHTML = ceHighlight(v);
+      const n = v.split('\n').length;
+      let g = '';
+      for (let i = 1; i <= Math.max(n, 1); i++) g += '<div>' + i + '</div>';
+      gutter.innerHTML = g;
+      hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft;
+      gutter.style.transform = 'translateY(' + (-ta.scrollTop) + 'px)';
+    };
+
+    const ceDispatch = () => ta.dispatchEvent(new Event('input', { bubbles: true }));
+    const ceSet = (text, caret) => {
+      ta.value = text;
+      ta.selectionStart = ta.selectionEnd = caret == null ? text.length : caret;
+      ceSync(); ceDispatch();
+    };
+    // 光标像素位置（镜像测量，用于定位补全弹窗）
+    const caretXY = () => {
+      const cs = getComputedStyle(ta);
+      const div = document.createElement('div');
+      div.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;box-sizing:border-box;';
+      div.style.font = cs.font; div.style.lineHeight = cs.lineHeight;
+      div.style.padding = cs.padding; div.style.width = cs.width;
+      div.style.letterSpacing = cs.letterSpacing;
+      div.textContent = (ta.value || '').slice(0, ta.selectionStart);
+      const sp = document.createElement('span');
+      sp.textContent = '\u200b';
+      div.appendChild(sp);
+      root.appendChild(div);
+      const x = sp.offsetLeft - ta.scrollLeft, y = sp.offsetTop - ta.scrollTop;
+      root.removeChild(div);
+      return { x, y };
+    };
+
+    const acClose = () => { ac.style.display = 'none'; ACS.items = []; ACS.active = -1; };
+    const acRender = () => {
+      if (!ACS.items.length) { acClose(); return; }
+      ac.innerHTML = ACS.items.map((it, i) => `<div class="ce-ac-item${i === ACS.active ? ' on' : ''}" data-i="${i}">
+        <span class="ce-ac-ico k${it.k}">${it.k}</span>
+        <span class="ce-ac-name">${h(it.t)}</span>
+        <span class="ce-ac-desc">${h(it.d || '')}</span>
+      </div>`).join('');
+      // 显式写 'block'：CSS 中 .ce-ac 默认 display:none，若用 style.display='' 清除内联样式
+      // 会回落到样式表的 none，导致弹窗永远不显示
+      ac.style.display = 'block';
+      // 定位兜底：光标测量异常时弹窗仍显示在编辑器左下角，不因定位失败而整体不可见
+      try {
+        const p = caretXY();
+        const areaX = frame.querySelector('.ce-area').offsetLeft;
+        const lh = 20; // 行高 12.5px * 1.6
+        ac.style.left = Math.max(4, Math.min(areaX + p.x + 2, root.clientWidth - ac.offsetWidth - 4)) + 'px';
+        ac.style.top = (p.y + lh + 4) + 'px';
+        ac.style.bottom = '';
+      } catch (err) { ac.style.left = '4px'; ac.style.bottom = '4px'; }
+      const on = ac.querySelector('.ce-ac-item.on');
+      if (on) on.scrollIntoView({ block: 'nearest' });
+    };
+    const acAccept = idx => {
+      const it = ACS.items[idx];
+      if (!it) { acClose(); return; }
+      const end = ta.selectionStart, start = ACS.start;
+      let text = it.t, caret = null;
+      if (it.k === 'S') {
+        const snip = CE_SNIPPETS[it.t] || '';
+        const ci = snip.indexOf('|');
+        text = snip.replace(/\|/g, '');
+        caret = start + (ci >= 0 ? ci : text.length);
+      } else if (it.k === 'M') {
+        text = it.t + '()';
+        caret = start + it.t.length + 1;
+      } else {
+        caret = start + text.length;
+      }
+      acClose();
+      ceSet(ta.value.slice(0, start) + text + ta.value.slice(end), caret);
+      ta.focus();
+    };
+    // 计算当前输入前缀的候选列表
+    const acUpdate = () => {
+      const pos = ta.selectionStart;
+      const before = ta.value.slice(0, pos);
+      const wm = /([A-Za-z_$][\w$]*)$/.exec(before);
+      if (!wm) { acClose(); return; }
+      const prefix = wm[0];
+      const ctx = before.slice(0, before.length - prefix.length);
+      const isMember = ctx.endsWith('.');
+      if (!isMember && prefix.length < 2) { acClose(); return; }
+      let items = [];
+      if (isMember) {
+        // ctx 以 '.' 结尾：receiver 检测正则必须包含结尾的点，否则词典永远选不中
+        let list = CE_GENERIC_MEMBERS;
+        if (/System\s*\.\s*out\s*\.\s*$/.test(ctx)) list = CE_MEMBERS['System.out'];
+        else if (/System\s*\.\s*err\s*\.\s*$/.test(ctx)) list = CE_MEMBERS['System.err'];
+        else {
+          const rm = /([A-Za-z_$][\w$]*)\s*\.\s*$/.exec(ctx);
+          if (rm && CE_MEMBERS[rm[1]]) list = CE_MEMBERS[rm[1]];
+          else if (rm && /^(s|str)\d*$/i.test(rm[1])) list = CE_MEMBERS['str'];
+        }
+        items = list.filter(x => ceOkItem(x) && x[0].toLowerCase().startsWith(prefix.toLowerCase()))
+          .map(x => ({ t: x[0], d: x[1], k: x[2] }));
+      } else {
+        const low = prefix.toLowerCase();
+        items = CE_TOP.filter(x => ceOkItem(x) && x[0].toLowerCase().startsWith(low)).map(x => ({ t: x[0], d: x[1], k: x[2] }));
+        // 文档词：当前代码中已出现的标识符（变量 / 自定义方法）
+        // 注意：items 元素已被映射为对象 {t,d,k}，判重须取 x.t（此前误取 x[0] 导致 toLowerCase 抛错、补全整体失效）
+        const seen = new Set(items.map(x => x.t.toLowerCase()));
+        const docRe = /[A-Za-z_$][\w$]*/g;
+        let dm, count = 0;
+        while ((dm = docRe.exec(ta.value)) && count < 6) {
+          const w = dm[0];
+          if (w !== prefix && w.toLowerCase().startsWith(low) && w.length > 2
+            && !CE_KW_SET.has(w) && !seen.has(w.toLowerCase())) {
+            seen.add(w.toLowerCase());
+            items.push({ t: w, d: '当前代码中的标识符', k: 'V' });
+            count++;
+          }
+        }
+        items.sort((a, b) => (a.k === 'S' ? 1 : 0) - (b.k === 'S' ? 1 : 0) || a.t.length - b.t.length);
+      }
+      if (!items.length) { acClose(); return; }
+      ACS.items = items.slice(0, 9);
+      ACS.active = 0;
+      ACS.start = pos - prefix.length;
+      acRender();
+    };
+
+    ta.addEventListener('input', () => { ceSync(); if (!ta.disabled) acUpdate(); });
+    ta.addEventListener('scroll', () => {
+      hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft;
+      gutter.style.transform = 'translateY(' + (-ta.scrollTop) + 'px)';
+      if (ac.style.display !== 'none') acRender();
+    });
+    ta.addEventListener('compositionstart', () => { ime = true; acClose(); });
+    ta.addEventListener('compositionend', () => { ime = false; ceSync(); });
+    ta.addEventListener('blur', () => setTimeout(acClose, 120));
+    ac.addEventListener('mousedown', e => {
+      const item = e.target.closest('.ce-ac-item');
+      e.preventDefault();
+      if (item) acAccept(Number(item.dataset.i));
+    });
+    ta.addEventListener('keydown', e => {
+      if (ta.disabled) return;
+      const open = ac.style.display !== 'none' && ACS.items.length;
+      // 补全弹窗打开时的键盘导航：上下选择 / 回车与 Tab 补全 / Esc 关闭
+      if (open && !ime) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          ACS.active = (ACS.active + 1) % ACS.items.length;
+          acRender(); return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          ACS.active = (ACS.active - 1 + ACS.items.length) % ACS.items.length;
+          acRender(); return;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          acAccept(ACS.active); return;
+        }
+        if (e.key === 'Escape') { e.preventDefault(); acClose(); return; }
+      }
+      if (ime) return;
+      const pos = ta.selectionStart, s0 = ta.selectionEnd;
+      const val = ta.value;
+      const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+      const indent = (val.slice(lineStart, pos).match(/^[ \t]*/) || [''])[0];
+      // 回车：自动缩进对齐；行尾为 { 且下一字符为 } 时展开代码块
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        const lineEnd = val.slice(lineStart, pos).trimEnd();
+        const after = val.slice(s0);
+        if (lineEnd.endsWith('{') && after.startsWith('}')) {
+          ceSet(val.slice(0, pos) + '\n' + indent + CE_INDENT + '\n' + indent + after, pos + 1 + indent.length + CE_INDENT.length);
+          return;
+        }
+        const add = (lineEnd.endsWith('{') || lineEnd.endsWith('(')) ? CE_INDENT : '';
+        ceSet(val.slice(0, pos) + '\n' + indent + add + after, pos + 1 + indent.length + add.length);
+        return;
+      }
+      // Tab：补全确认（上方已处理）/ 插入缩进
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        ceSet(val.slice(0, pos) + CE_INDENT + val.slice(s0), pos + CE_INDENT.length);
+        return;
+      }
+      // Ctrl+Space：手动唤起补全
+      if (e.key === ' ' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        acUpdate();
+        if (!ACS.items.length && !/([A-Za-z_$][\w$]*)$/.test(ta.value.slice(0, pos))) {
+          ACS.items = CE_TOP.slice(0, 9).map(x => ({ t: x[0], d: x[1], k: x[2] }));
+          ACS.active = 0; ACS.start = pos; acRender();
+        }
+        return;
+      }
+      // 括号 / 引号自动闭合（选中文本时包裹）
+      if (CE_PAIRS[e.key]) {
+        const next = val.slice(s0, s0 + 1);
+        if (pos !== s0) {
+          e.preventDefault();
+          ceSet(val.slice(0, pos) + e.key + CE_PAIRS[e.key] + val.slice(s0), pos + 1);
+          return;
+        }
+        if (next === '' || /[\s)\]}:;"'@.,]/.test(next)) {
+          e.preventDefault();
+          ceSet(val.slice(0, pos) + e.key + CE_PAIRS[e.key] + val.slice(s0), pos + 1);
+          return;
+        }
+      }
+      // 闭合符跨越：已存在同名闭合符时仅移动光标
+      if (e.key === ')' || e.key === ']' || e.key === '}' || e.key === '"' || e.key === "'") {
+        if (val.slice(s0, s0 + 1) === e.key && pos === s0) {
+          e.preventDefault();
+          ta.selectionStart = ta.selectionEnd = pos + 1;
+          return;
+        }
+      }
+      // Backspace：空括号对整体删除
+      if (e.key === 'Backspace' && pos === s0 && pos > 0) {
+        const prev = val.slice(pos - 1, pos), next = val.slice(pos, pos + 1);
+        if (CE_PAIRS[prev] && CE_PAIRS[prev] === next) {
+          e.preventDefault();
+          ceSet(val.slice(0, pos - 1) + val.slice(pos + 1), pos - 1);
+          return;
+        }
+      }
+    });
+    ceSync();
+  }
+
   /* Agent Markdown 生成题目的作答框：按题目关键词适配题型（编程/填空/判断/简答），
      提交后作为用户消息发送，由 Agent 在对话中点评。仅识别非选择题（选择题已有卡片交互）。 */
   // 该题是否已在对话中提交过作答（从服务端消息推导：题面消息之后出现「我的作答」用户消息），
@@ -591,7 +953,7 @@
     } else if (kind === 'fill') {
       input = `<input class="input" placeholder="填写你的答案" value="${h(saved)}" data-bind="quizReply" data-id="${m.id}">`;
     } else if (kind === 'code') {
-      input = `<textarea class="textarea" style="min-height:140px;font-family:Consolas,monospace;font-size:12.5px;line-height:1.6" placeholder="在此编写你的代码…" data-bind="quizReply" data-id="${m.id}">${h(saved)}</textarea>`;
+      input = codeEditorHtml(`data-bind="quizReply" data-id="${m.id}"`, saved, { minHeight: 140, placeholder: '在此编写你的代码…' });
     } else {
       input = `<textarea class="textarea" style="min-height:90px" placeholder="在此输入你的答案…" data-bind="quizReply" data-id="${m.id}">${h(saved)}</textarea>`;
     }
@@ -674,9 +1036,10 @@
         ansArea = `<input class="input ex-ans" style="margin-top:10px" placeholder="填写答案" value="${h(c.textAnswer || '')}" data-bind="exAns" data-id="${msgId}" ${locked ? 'disabled' : ''}>`;
       } else if (qType === 'SHORT') {
         ansArea = `<textarea class="textarea ex-ans" style="min-height:100px;margin-top:10px" placeholder="在此输入你的答案…" data-bind="exAns" data-id="${msgId}" ${locked ? 'disabled' : ''}>${h(c.textAnswer || '')}</textarea>`;
-      } else {
-        // CODE：代码编辑区（预填题目模板供补全），等宽字体
-        ansArea = `<textarea class="textarea ex-ans ex-code" style="min-height:180px;margin-top:10px;font-family:Consolas,monospace;font-size:12.5px;line-height:1.6" placeholder="在此编写代码…" data-bind="exAns" data-id="${msgId}" ${locked ? 'disabled' : ''}>${h(c.textAnswer != null ? c.textAnswer : (ex.code || ''))}</textarea>`;
+      } else if (qType === 'CODE') {
+        // CODE：内置代码编辑器（语法高亮 / 行号 / 自动补全），预填题目模板供补全
+        ansArea = codeEditorHtml(`data-bind="exAns" data-id="${msgId}"`,
+          c.textAnswer != null ? c.textAnswer : (ex.code || ''), { ro: locked, minHeight: 180, placeholder: '在此编写代码…' });
       }
       const submitReady = qType === 'CHOICE' || qType === 'JUDGE' ? c.selected != null : !!(c.textAnswer || '').trim();
       return `<div class="work">
@@ -771,62 +1134,295 @@
     return '';
   }
 
-  /* ---------------- 学生：知识图谱 ---------------- */
+  /* ---------------- 学生：知识图谱（超星风格 · 课程知识点 Excel 全量树） ---------------- */
+  // graph 接口数据 → 前端兼容结构（id/module/mastery/deps 等），新旧功能共用
+  function applyKnowledgeGraph(graph) {
+    DB.modules = (graph.modules || []).map(m => ({ id: m.code, name: m.name, color: m.color || '#a78bfa' }));
+    const edgeByFrom = {};
+    (graph.edges || []).forEach(e => { (edgeByFrom[e.from] = edgeByFrom[e.from] || []).push(e.to); });
+    DB.knowledgePoints = (graph.nodes || []).map(n => ({
+      id: n.code, name: n.name, module: n.moduleCode || null, level: n.level || 2,
+      parent: n.parentCode || null, sortOrder: n.sortOrder || 0,
+      mastery: n.mastery != null ? n.mastery : 0, hasData: n.mastery != null,
+      deps: edgeByFrom[n.code] || [], desc: n.desc || '', resources: []
+    }));
+  }
+
+  // 掌握度配色（图谱节点描边/发光）
+  function kgMasteryColor(k) {
+    if (!k.hasData) return 'rgba(148,163,184,.9)';
+    return k.mastery >= 80 ? '#34d399' : k.mastery >= 60 ? '#fbbf24' : '#f87171';
+  }
+
+  // 模块视图太阳图布局：二级均匀分环，子树按节点数占扇区向外辐射（椭圆坐标适配画布比例）。
+  // 防重叠（V2）：① 逐环加大径向间距，为深环小节点留足空间；
+  // ② 每环节点按角度排序后做"向前推进"消解，保证相邻节点弧长间距 ≥ 节点直径+间隙，
+  //    彻底解决密集子树（如 数据类型→基本数据类型→整数类型→六种范围）末端节点堆叠遮挡。
+  function kgLayoutModule(mcode) {
+    const nodes = DB.knowledgePoints.filter(k => k.module === mcode);
+    // 父子索引：仅挂"真实子节点"（parent 为空的模块根不进索引）——
+    // 否则根会作为自己的子节点参与递归布局，造成无限递归栈溢出，
+    // render() 异常中断后表现为"点击模块/气泡切换无响应"。
+    const children = {};
+    nodes.forEach(k => { if (k.parent && k.parent !== k.id) (children[k.parent] = children[k.parent] || []).push(k); });
+    const root = nodes.find(k => k.level === 1) || nodes[0];
+    if (!root) return { pos: {}, nodes: [], lines: [] };
+    const size = {};
+    const subSize = k => { let n = 1; (children[k.id] || []).forEach(c => n += subSize(c)); return size[k.id] = n; };
+    const pos = {};
+    pos[root.id] = { x: 0, y: 0, a: 0 };
+    // 环半径（X/Y 半轴）：由内向外逐环扩张；半径体系满足两类约束——
+    // ① 相邻环径向间距 ≥ 两环节点半径之和+6（环间不挤压）；
+    // ② 环弧长容量足够容纳该环全部节点（含文字标签净空），弧长需求按弦长精确换算。
+    const RX = [0, 320, 470, 580, 665, 730, 775, 810];
+    const RY = [0, 180, 295, 345, 375, 405, 435, 465];
+    const l2 = children[root.id] || [];
+    l2.forEach(c => subSize(c));
+    const ringOf = {};
+    const place = (k, a0, a1, ring, depth) => {
+      if (depth > 9) return; // 防环兜底
+      const r = Math.min(ring, RX.length - 1);
+      ringOf[k.id] = r;
+      const mid = (a0 + a1) / 2;
+      pos[k.id] = { x: RX[r] * Math.cos(mid), y: RY[r] * Math.sin(mid), a: mid };
+      const kids = children[k.id] || [];
+      if (!kids.length) return;
+      const total = kids.reduce((s, c) => s + (size[c.id] || 1), 0);
+      const pad = (a1 - a0) * 0.1;
+      let acc = a0 + pad;
+      const span = (a1 - a0) - pad * 2;
+      kids.forEach(c => {
+        const share = span * (size[c.id] || 1) / total;
+        place(c, acc, acc + share, ring + 1, depth + 1);
+        acc += share;
+      });
+    };
+    l2.forEach((k, i) => place(k, (i / l2.length) * Math.PI * 2, ((i + 1) / l2.length) * Math.PI * 2, 1, 0));
+    // ---- 每环防重叠消解：同环节点按角度排序，向前推进保证最小弧长间距 ----
+    const nodeR = k => { const lv = k.level || 3; return lv === 1 ? 46 : lv === 2 ? 24 : lv === 3 ? 15 : 11; };
+    const byRing = {};
+    nodes.forEach(k => { const r = ringOf[k.id]; if (r > 0) (byRing[r] = byRing[r] || []).push(k); });
+    Object.keys(byRing).map(Number).forEach(r => {
+      const list = byRing[r].sort((a, b) => pos[a.id].a - pos[b.id].a);
+      if (list.length < 2) { finalize(); return; }
+      // 末端细分环（含 lv4+ 小节点，现已全部渲染名称标签）：按「节点直径 / 标签宽度」较大者
+      // 留净空，避免相邻名称文字互叠（标签宽 ≈ 字数 × 10.5px）；
+      // 三级及以下的密集环保持原有净空（直径+20），防止超容量触发环绕压缩回挤
+      //（如编程基础 44 个 L3 节点同环已近容量极限）。
+      const hasLeaf = list.some(k => (k.level || 3) >= 4);
+      const gap = hasLeaf
+        ? Math.max(Math.max.apply(null, list.map(nodeR)) * 2, Math.max.apply(null, list.map(k => String(k.name || '').length * 10.5))) + 14
+        : Math.max.apply(null, list.map(nodeR)) * 2 + 20;
+      // 椭圆在角度 a 处的弧长变化率（局部半径）；按弦长精确反推所需最小角间距
+      const rho = a => Math.sqrt(Math.pow(RX[r] * Math.sin(a), 2) + Math.pow(RY[r] * Math.cos(a), 2));
+      const needAt = a => 2 * Math.asin(Math.min(0.99, gap / (2 * Math.max(60, rho(a)))));
+      // 两轮"推进 + 环绕闭合校验"，保证环上任意相邻节点（含首尾环绕）间距达标
+      for (let pass = 0; pass < 2; pass++) {
+        for (let i = 1; i < list.length; i++) {
+          const need = needAt((pos[list[i - 1].id].a + pos[list[i].id].a) / 2);
+          if (pos[list[i].id].a - pos[list[i - 1].id].a < need) {
+            pos[list[i].id].a = pos[list[i - 1].id].a + need;
+          }
+        }
+        // 环绕闭合：末节点与首节点(+2π)间距不足时等比压缩整环角跨度
+        const fa = pos[list[0].id].a, la = pos[list[list.length - 1].id].a;
+        const avail = Math.PI * 2 - needAt((fa + la) / 2);
+        if (la - fa > avail && la - fa > 0) {
+          const scale = avail / (la - fa);
+          for (let i = 1; i < list.length; i++) {
+            pos[list[i].id].a = fa + (pos[list[i].id].a - fa) * scale;
+          }
+        }
+      }
+      finalize();
+      function finalize() {
+        (list.length ? list : byRing[r]).forEach(k => {
+          const a = pos[k.id].a;
+          pos[k.id] = { x: RX[r] * Math.cos(a), y: RY[r] * Math.sin(a) };
+        });
+      }
+    });
+    // 连线：父子边
+    const lines = [];
+    nodes.forEach(k => { if (pos[k.id] && pos[k.parent] && k.parent !== k.id) lines.push([k.parent, k.id]); });
+    return { pos, nodes, lines, root };
+  }
+
+  // SVG 图谱渲染：首页气泡视图 / 模块太阳图视图
+  // 注意：viewBox 已以画布中心为原点（-W/2,-H/2 起），内容坐标直接以 (0,0) 为中心，
+  // 不得再叠加 translate(W/2,H/2)——否则图形被推出可视区（板块切换"看似无响应"的根因）。
+  // 内层 #kgViewport 承载缩放变换（滚轮 / 按钮），切换视图时重置为 1。
+  function kgSvg(view) {
+    // 画布 1660×1000（V2 扩容）：为七级深环留足径向空间，杜绝密集子树末端节点挤压
+    const W = 1660, H = 1000;
+    const zoom = State.kgZoom || 1;
+    let inner = '';
+    if (!view || view.mode === 'home') {
+      // 首页：五大模块发光气泡 + 模块间递进箭头（编号顺序 1→5）
+      const mods = DB.modules;
+      const pts = mods.map((m, i) => {
+        const a = (-Math.PI / 2) + (i / mods.length) * Math.PI * 2;
+        return { m, x: 500 * Math.cos(a), y: 320 * Math.sin(a) };
+      });
+      for (let i = 0; i + 1 < pts.length; i++) {
+        inner += `<line x1="${pts[i].x}" y1="${pts[i].y}" x2="${pts[i + 1].x}" y2="${pts[i + 1].y}" class="kg-link"/>`;
+      }
+      pts.forEach((p, i) => {
+        const cnt = DB.knowledgePoints.filter(k => k.module === p.m.id).length;
+        const avg = (() => { const arr = DB.knowledgePoints.filter(k => k.module === p.m.id && k.hasData); return arr.length ? Math.round(arr.reduce((s, k) => s + k.mastery, 0) / arr.length) : null; })();
+        const color = avg != null ? (avg >= 80 ? '#34d399' : avg >= 60 ? '#fbbf24' : '#f87171') : p.m.color;
+        inner += `<g class="kg-bubble" data-act="kgModule" data-val="${p.m.id}">
+          <circle cx="${p.x}" cy="${p.y}" r="86" fill="${p.m.color}22" stroke="${p.m.color}" stroke-width="1.5" class="kg-glow"/>
+          <circle cx="${p.x}" cy="${p.y}" r="60" fill="${p.m.color}55" stroke="${color}" stroke-width="2"/>
+          <text x="${p.x}" y="${p.y - 26}" class="kg-bubble-no">${i + 1}</text>
+          <text x="${p.x}" y="${p.y + 4}" class="kg-bubble-name">${h(p.m.name)}</text>
+          <text x="${p.x}" y="${p.y + 26}" class="kg-bubble-sub">${cnt} 个知识点${avg != null ? ' · 均分 ' + avg : ''}</text>
+        </g>`;
+      });
+      inner = `<g>${inner}</g>`;
+    } else {
+      const L = kgLayoutModule(view.module);
+      const mcolor = (DB.modules.find(m => m.id === view.module) || {}).color || '#a78bfa';
+      let links = '';
+      L.lines.forEach(([a, b]) => {
+        links += `<line x1="${L.pos[a].x}" y1="${L.pos[a].y}" x2="${L.pos[b].x}" y2="${L.pos[b].y}" class="kg-link"/>`;
+      });
+      let shapes = '';
+      L.nodes.forEach(k => {
+        const p = L.pos[k.id];
+        if (!p) return;
+        const lv = k.level || 3;
+        const focus = view.focus === k.id;
+        const active = State.activeKp === k.id;
+        const r = lv === 1 ? 46 : lv === 2 ? 24 : lv === 3 ? 15 : 11;
+        const stroke = focus ? '#ffffff' : active ? '#c7d2fe' : kgMasteryColor(k);
+        const sw = focus ? 3.5 : active ? 3 : 2;
+        const glow = lv <= 2 || focus ? 'kg-glow' : '';
+        const shape = lv <= 2
+          ? `<rect x="${-r}" y="${-r}" width="${r * 2}" height="${r * 2}" rx="6" transform="rotate(45)" fill="${lv === 1 ? mcolor + '66' : mcolor + '33'}" stroke="${stroke}" stroke-width="${sw}" class="${glow}"/>`
+          : `<circle r="${r}" fill="${mcolor}26" stroke="${stroke}" stroke-width="${sw}" class="${glow}"/>`;
+        // 末端细分节点（lv≥4）同样渲染名称标签：所有节点文字说明完整可见，杜绝"无字圆圈"
+        const label = `<text y="${lv <= 2 ? (lv === 1 ? 34 : 6 + r) : r + 11}" class="kg-node-label ${lv <= 2 ? 'big' : ''}">${h(k.name)}</text>`;
+        shapes += `<g class="kg-node" transform="translate(${p.x},${p.y})" data-act="kpCell" data-val="${k.id}">
+          <title>${h(k.name)}${k.hasData ? ' · 掌握度 ' + k.mastery : ''}</title>
+          ${shape}
+          ${lv === 1 ? `<text y="6" class="kg-node-level1">${h(k.name)}</text>` : ''}
+          ${lv === 1 ? '' : label}
+        </g>`;
+      });
+      // 模块内 PRE 依赖边（虚线橙）
+      let deps = '';
+      DB.knowledgePoints.filter(k => k.module === view.module && k.deps && k.deps.length).forEach(k => {
+        k.deps.forEach(d => {
+          const t = DB.knowledgePoints.find(x => x.id === d);
+          if (t && t.module === view.module && L.pos[k.id] && L.pos[t.id]) {
+            deps += `<line x1="${L.pos[k.id].x}" y1="${L.pos[k.id].y}" x2="${L.pos[t.id].x}" y2="${L.pos[t.id].y}" class="kg-dep"/>`;
+          }
+        });
+      });
+      inner = `<g>${links}${deps}${shapes}</g>`;
+    }
+    const pan = State.kgPan || { x: 0, y: 0 };
+    return `<svg id="kgSvg" viewBox="${-W / 2} ${-H / 2} ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="kg-svg"><g id="kgViewport" transform="translate(${pan.x} ${pan.y}) scale(${zoom})">${inner}</g></svg>`;
+  }
+
+  // 拖拽平移边界：内容安全范围（最大环半径 + 标签余量）经缩放后必须与画布保持至少
+  // 160 viewBox 单位重叠，防止拖动把图谱整体移出可视区；图谱完全可见时锁定居中。
+  // V2 画布扩容为 1660×1000、最大环 RX=810/RY=465，边界同步调整。
+  function kgClampPan(x, y, zoom) {
+    const W = 1660, H = 1000, EX = 860, EY = 540;
+    const mx = Math.max(0, EX * zoom - W / 2 + 160);
+    const my = Math.max(0, EY * zoom - H / 2 + 160);
+    return { x: Math.max(-mx, Math.min(mx, x)), y: Math.max(-my, Math.min(my, y)) };
+  }
+
+  // 局部更新平移+缩放变换（不整页重渲染）
+  function kgApplyPan() {
+    const vp = document.getElementById('kgViewport');
+    if (!vp) return;
+    const pan = State.kgPan || { x: 0, y: 0 };
+    vp.setAttribute('transform', 'translate(' + pan.x + ' ' + pan.y + ') scale(' + (State.kgZoom || 1) + ')');
+  }
+
+  // 搜索结果（局部刷新，不重渲染）
+  function kgSearchResults(q) {
+    q = (q || '').trim().toLowerCase();
+    if (!q) return '';
+    const hits = DB.knowledgePoints.filter(k => k.name.toLowerCase().indexOf(q) >= 0).slice(0, 12);
+    return hits.map(k => {
+      const m = DB.modules.find(x => x.id === k.module);
+      return `<button class="kg-hit" data-act="kgFocus" data-val="${k.id}">
+        <span class="kg-hit-name">${h(k.name)}</span>
+        <span class="kg-hit-mod">${m ? h(m.name) : ''} · L${k.level}${k.hasData ? ' · ' + k.mastery + '分' : ''}</span>
+      </button>`;
+    }).join('');
+  }
+
   function viewKnowledge() {
-    const mod = State.filters.kpModule;
-    const list = DB.knowledgePoints.filter(k => mod === 'all' || k.module === mod);
     const cur = kp(State.activeKp);
-    const head = mainHead('知识图谱与掌握度', '共 ' + DB.knowledgePoints.length + ' 个知识点 · 点击卡片查看依赖链溯源');
+    const kg = State.kgView || { mode: 'home' };
+    const head = mainHead('知识图谱', '课程知识点全景 · 共 ' + DB.knowledgePoints.length + ' 个节点 · 点击节点查看掌握情况与依赖链');
 
-    const cells = list.map(k => `<div class="kp-cell ${mcls(k.mastery)} ${State.activeKp === k.id ? 'on' : ''}" data-act="kpCell" data-val="${k.id}">
-      <div class="nm">${k.name}</div>
-      <div class="mv" style="color:${k.mastery >= 80 ? 'var(--ok)' : k.mastery >= 60 ? 'var(--info)' : k.mastery >= 40 ? 'var(--warn)' : 'var(--danger)'}">${k.mastery}</div>
-      <div class="bar ${bcls(k.mastery)}"><i style="width:${k.mastery}%"></i></div>
-      <div style="font-size:11px;color:var(--text-3);margin-top:6px">${mtext(k.mastery)}</div>
-    </div>`).join('');
+    const side = `<div class="kg-search">${icon('search', 14)}
+        <input id="kgSearchInput" placeholder="搜索知识点…" value="${h(State.kgQ || '')}" data-bind="kgq"></div>
+      <div class="kg-side-hint">点击选项定位到对应的知识单元</div>
+      <button class="kg-nav-item ${kg.mode === 'home' ? 'on' : ''}" data-act="kgHome">${icon('home', 14)}<span>首页</span></button>
+      ${DB.modules.map((m, i) => `<button class="kg-nav-item ${kg.mode === 'module' && kg.module === m.id ? 'on' : ''}" data-act="kgModule" data-val="${m.id}">
+        <span class="kg-nav-no" style="background:${m.color}">${i + 1}</span><span>${h(m.name)}</span></button>`).join('')}
+      <div style="flex:1"></div>
+      <button class="kg-nav-item" data-act="kgHome">${icon('grid', 14)}<span>全部显示</span></button>
+      <div id="kgSearchList" class="kg-search-list"></div>`;
 
-    // 依赖链溯源
+    const body = `
+      <div class="kg-wrap">
+        <aside class="kg-side">${side}</aside>
+        <div class="kg-canvas">
+          <button class="kg-export" data-act="kgExport">${icon('download', 13)} 导出图片</button>
+          <div class="kg-zoom-bar">
+            <button class="kg-zoom-btn" data-act="kgZoomIn" title="放大">＋</button>
+            <span id="kgZoomPct" class="kg-zoom-pct">${Math.round((State.kgZoom || 1) * 100)}%</span>
+            <button class="kg-zoom-btn" data-act="kgZoomOut" title="缩小">－</button>
+            <button class="kg-zoom-btn" data-act="kgZoomReset" title="重置">⟲</button>
+          </div>
+          ${(() => { try { return kgSvg(kg); } catch (e) { return '<div style="padding:40px;color:#f87171;font-size:13px">图谱渲染异常：' + h(e.message) + '</div>'; } })()}
+        </div>
+      </div>
+      <div class="split" style="margin-top:12px">
+      ${kgChainCard(cur)}
+      </div>`;
+    return { head, body };
+  }
+
+  // 图7原有功能（完整保留）：依赖链溯源卡 + 最薄弱 TOP3 卡
+  function kgChainCard(cur) {
     const chain = traceChain(cur.id);
     const chainHtml = chain.map((c, i) =>
       (i ? '<span class="chain-arrow">' + icon('chevronR', 15) + '</span>' : '') +
       `<span class="chain-node ${c.root ? 'root' : ''}" data-act="kpCell" data-val="${c.id}">${kpName(c.id)} · ${kp(c.id).mastery} 分</span>`
     ).join('');
-
-    const weak = DB.knowledgePoints.slice().sort((a, b) => a.mastery - b.mastery).slice(0, 3);
-
-    const body = `
-      <div class="card"><div class="card-head">${icon('target', 15)}<h3>掌握度热力图</h3><div class="spacer"></div>
-        <span class="badge">${mod === 'all' ? '全部' : DB.modules.find(m => m.id === mod).name}</span></div>
-        <div class="card-body"><div class="kp-grid">${cells}</div></div></div>
-
-      <div class="split">
-        <div class="card"><div class="card-head">${icon('route', 15)}<h3>依赖链溯源 · ${cur.name}</h3><div class="spacer"></div>
-          <span class="badge ${bcls(cur.mastery) === 'danger' ? 'danger' : bcls(cur.mastery) === 'warn' ? 'warn' : 'ok'}">${cur.mastery} 分 · ${mtext(cur.mastery)}</span></div>
-          <div class="card-body">
-            <div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:10px">${h(cur.desc)}</div>
-            <div class="chain">${chainHtml}</div>
-            <div class="note ${chain.find(c => c.root) ? 'warn' : 'ok'}">
-              ${chain.find(c => c.root)
-                ? '溯源结论：真正卡住你的是 <b>' + kpName(chain.find(c => c.root).id) + '</b>（' + kp(chain.find(c => c.root).id).mastery + ' 分），先补它再回到「' + cur.name + '」收益才高。'
-                : '该知识点前置依赖均已达标，可以直接推进。'}
-            </div>
-            <div style="margin-top:12px">
-              <div style="font-size:12px;font-weight:600;margin-bottom:6px">参考资源</div>
-              ${(cur.resources || []).map(r => '<div style="font-size:12.5px;color:var(--text-2);padding:3px 0">· ' + h(r) + '</div>').join('') || '<div style="font-size:12.5px;color:var(--text-3)">暂无</div>'}
-            </div>
-          </div></div>
-
-        <div class="card"><div class="card-head">${icon('flame', 15)}<h3>最薄弱 TOP 3</h3></div>
-          <div class="card-body"><div class="mini-list">
-            ${weak.map(k => `<div class="mini-row" data-act="kpCell" data-val="${k.id}" style="cursor:pointer">
-              <span class="nm">${k.name}</span>
-              <div class="bar ${bcls(k.mastery)}"><i style="width:${k.mastery}%"></i></div>
-              <span class="vl">${k.mastery}</span></div>`).join('')}
+    const weak = DB.knowledgePoints.filter(k => k.hasData).slice().sort((a, b) => a.mastery - b.mastery).slice(0, 3);
+    return `
+      <div class="card"><div class="card-head">${icon('route', 15)}<h3>依赖链溯源 · ${cur.name}</h3><div class="spacer"></div>
+          <span class="badge ${cur.hasData ? (cur.mastery >= 80 ? 'ok' : cur.mastery >= 60 ? '' : 'danger') : ''}">${cur.hasData ? cur.mastery + ' 分 · ' + mtext(cur.mastery) : '暂无掌握数据'}</span></div>
+        <div class="card-body">
+          <div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:10px">${h(cur.desc)}</div>
+          <div class="chain">${chainHtml}</div>
+          <div class="note ${chain.find(c => c.root) ? 'warn' : 'ok'}">
+            ${chain.find(c => c.root)
+              ? '溯源结论：真正卡住你的是 <b>' + kpName(chain.find(c => c.root).id) + '</b>（' + kp(chain.find(c => c.root).id).mastery + ' 分），先补它再回到「' + cur.name + '」收益才高。'
+              : '该知识点前置依赖均已达标，可以直接推进。'}
           </div>
-          <div class="note warn" style="margin-top:12px">薄弱点会自动进入每日复习队列，并按 SM-2 间隔重复推送。</div>
-          </div></div>
-      </div>`;
-    return { head, body };
+        </div></div>
+
+      <div class="card"><div class="card-head">${icon('flame', 15)}<h3>最薄弱 TOP 3</h3></div>
+        <div class="card-body"><div class="mini-list">
+          ${weak.map(k => `<div class="mini-row" data-act="kpCell" data-val="${k.id}" style="cursor:pointer">
+            <span class="nm">${k.name}</span>
+            <div class="bar ${bcls(k.mastery)}"><i style="width:${k.mastery}%"></i></div>
+            <span class="vl">${k.mastery}</span></div>`).join('')}
+        </div>
+        <div class="note warn" style="margin-top:12px">薄弱点会自动进入每日复习队列，并按 SM-2 间隔重复推送。</div>
+        </div></div>`;
   }
 
   function traceChain(id, seen) {
@@ -885,7 +1481,9 @@
             <span class="badge">${icon('clock', 12)} 截止 ${h(a.due)}</span>
           </div>
           ${st.key === 'todo' ? `<div style="margin-top:12px">
-            <button class="btn primary" data-act="${a.questionCount ? 'openAnswer' : 'submitHw'}" data-val="${a.id}">${icon('send', 14)} ${a.questionCount ? '进入作业详情作答' : '提交作业'}</button></div>` : ''}
+            <button class="btn primary" data-act="${a.questionCount ? 'openAnswer' : 'submitHw'}" data-val="${a.id}">${icon('send', 14)} ${a.questionCount ? '进入作业详情作答' : '提交作业'}</button></div>`
+          : a.questionCount ? `<div style="margin-top:12px">
+            <button class="btn ${st.key === 'graded' ? '' : 'primary'}" data-act="openAnswer" data-val="${a.id}">${icon(st.key === 'graded' ? 'eye' : 'edit', 14)} ${st.key === 'graded' ? '查看作业详情' : '查看 / 修改作答'}</button></div>` : ''}
           ${extra ? '<div style="margin-top:12px">' + extra + '</div>' : ''}
         </div></div>`;
     }).join('');
@@ -1127,6 +1725,8 @@
     }
     const list = DB.submissions.filter(s => s.asId === a.id);
     const pend = list.filter(s => s.status === 'pending').length;
+    // AI 批量初评完成后进入 ai_reviewed（待教师复核）——单列计数，与待批改区分
+    const reviewed = list.filter(s => s.status === 'ai_reviewed').length;
     const head = mainHead('提交批改', h(a.title) + ' · 共 ' + list.length + ' 条记录 · ' + pend + ' 份待批改');
 
     if (!list.length) {
@@ -1134,11 +1734,13 @@
     }
     const body = `<div class="card"><div class="card-head">${icon('inbox', 15)}<h3>提交列表</h3><div class="spacer"></div>
       <span class="badge warn">${pend} 待批改</span>
+      ${reviewed ? `<span class="badge brand">${reviewed} AI初评待复核</span>` : ''}
       ${pend ? '<button class="btn sm primary" data-act="batchAi">AI 批量初评</button>' : ''}</div>
       <div style="overflow-x:auto"><table class="table">
         <thead><tr><th>学生</th><th>提交时间</th><th class="num">次数</th><th class="num">相似度</th><th>时段</th><th class="num">AI 初评</th><th class="num">最终分</th><th>状态</th></tr></thead>
         <tbody>${list.map(s => {
           const stb = s.status === 'graded' ? '<span class="badge ok">已批改</span>'
+            : s.status === 'ai_reviewed' ? '<span class="badge brand">AI初评完成 · 待复核</span>'
             : s.status === 'pending' ? '<span class="badge warn">待批改</span>' : '<span class="badge danger">未提交</span>';
           return `<tr data-act="openSub" data-val="${s.id}">
             <td><b>${s.name}</b>${s.sid === String(DB.me.id) ? ' <span class="badge brand">示例学生</span>' : ''}</td>
@@ -1380,6 +1982,8 @@
     if (State.modal) html += renderModal();
     if (State.drawer) html += renderDrawer();
     box.innerHTML = html;
+    // 装载代码编辑器（作业答题页 / 弹窗内的编程题输入框）
+    mountCodeEditors();
   }
 
   // newSession 弹窗的知识点列表（按 d.q 过滤）：初始渲染与搜索输入的局部刷新共用，
@@ -1388,12 +1992,21 @@
     const d = (State.modal && State.modal.data) || {};
     const kps = d.kps || [];
     const list = DB.knowledgePoints.filter(k => !d.q || k.name.indexOf(d.q) >= 0);
-    return list.map(k => `<div class="pick ${kps.indexOf(k.id) >= 0 ? 'on' : ''}" data-act="pickKp" data-val="${k.id}">
-      <div class="pm"><div class="pn">${k.name}</div><div class="pd">${h(k.desc.slice(0, 34))}…</div></div>
-      <div style="text-align:right">
-        <div style="font-size:16px;font-weight:700;color:${k.mastery >= 60 ? 'var(--ok)' : 'var(--danger)'}">${k.mastery}</div>
-        <div style="font-size:11px;color:var(--text-3)">${mtext(k.mastery)}</div></div>
-    </div>`).join('') || '<div class="empty"><div class="empty-title">没有匹配的知识点</div></div>';
+    // 按一级模块分组展示课程知识点全集；选中态高亮，点击多选（含细化层级节点）
+    const groups = DB.modules.map(m => {
+      const ks = list.filter(k => k.module === m.id);
+      if (!ks.length) return '';
+      return `<div class="ns-group">
+        <div class="ns-group-title" style="border-left:3px solid ${m.color}">${h(m.name)}<span>${ks.length}</span></div>
+        ${ks.map(k => `<div class="pick ${kps.indexOf(k.id) >= 0 ? 'on' : ''}" data-act="pickKp" data-val="${k.id}">
+          <div class="pm"><div class="pn">${k.name}</div><div class="pd">L${k.level} · ${h(m.name)}</div></div>
+          <div style="text-align:right">
+            <div style="font-size:15px;font-weight:700;color:${!k.hasData ? 'var(--text-3)' : k.mastery >= 60 ? 'var(--ok)' : 'var(--danger)'}">${k.hasData ? k.mastery : '—'}</div>
+            <div style="font-size:11px;color:var(--text-3)">${k.hasData ? mtext(k.mastery) : '暂无数据'}</div></div>
+        </div>`).join('')}
+      </div>`;
+    }).join('');
+    return groups || '<div class="empty"><div class="empty-title">没有匹配的知识点</div></div>';
   }
 
   /* 教师端反馈浮窗内容区 HTML（列表 + AI 总结区块）。
@@ -1466,7 +2079,7 @@
       title = '提交作业 · ' + a.title;
       body = `<div class="note" style="margin-bottom:12px">提交后会进入教师侧的「提交批改」队列，批改完成将实时回流到你的作业页与会话。</div>
         <div class="form-row"><label>代码 / 答卷</label>
-          <textarea class="textarea" style="min-height:220px;font-family:var(--mono);font-size:12.5px" data-bind="modal" data-key="code">${h(d.code || '')}</textarea>
+          ${codeEditorHtml('data-bind="modal" data-key="code"', d.code || '', { minHeight: 220, placeholder: '在此编写代码 / 答卷…' })}
           <div class="hint">提交后可等待 AI 初评与教师复核，支持多次重新提交（次数教师端可见）。</div></div>`;
       foot = `<button class="btn" data-act="closeModal">取消</button>
         <button class="btn primary" data-act="doSubmitHw">${icon('send', 15)} 确认提交</button>`;
@@ -1610,7 +2223,7 @@
           <div style="font-weight:700;font-size:15px;letter-spacing:.2px">${h(sub.name)}</div>
           <div style="font-size:12px;line-height:1.5;color:var(--text-3);margin-top:3px">${sub.submittedAt ? '提交于 ' + h(sub.submittedAt) + '（第 ' + sub.attempts + ' 次）' : '未提交'}</div>
         </div>
-        <span class="badge ${graded ? 'ok' : sub.status === 'missing' ? '' : 'warn'}">${graded ? '已批改 ' + sub.score : sub.status === 'missing' ? '未提交' : '待批改'}</span>
+        <span class="badge ${graded ? 'ok' : sub.status === 'ai_reviewed' ? 'brand' : sub.status === 'missing' ? '' : 'warn'}">${graded ? '已批改 ' + sub.score : sub.status === 'ai_reviewed' ? 'AI初评完成 · 待复核' : sub.status === 'missing' ? '未提交' : '待批改'}</span>
       </div>
       <div style="font-size:12.5px;font-weight:700;letter-spacing:.4px;margin:16px 0 10px">${isQ ? '题目评分' : 'Rubric 评分'}</div>
       ${scoreArea}
@@ -1829,18 +2442,48 @@
     return !!(c && c.kps && c.kps.length && c.questions && c.questions.length);
   }
 
-  // 知识点选择面板（图1 规范：标题 + pill 标签流式多选）
+  // 知识点选择面板（图1 规范：标题 + pill 标签流式多选；支持关键词模糊搜索快速定位）
   function composeKpPanelHtml() {
     const c = State.compose;
     return `<div class="kp-panel">
       <div class="kp-panel-head">${icon('target', 14)} 关联知识点
         <span>选中的知识点将作为「一键 AI 生成题目」的依据</span>
+        ${c._kpSearch ? `<input class="input kp-search-input" placeholder="输入关键词过滤知识点…" value="${h(c._kpQuery || '')}" data-bind="kpsearch">` : ''}
+        <button class="btn sm" data-act="kpSearchToggle" title="搜索知识点">${icon('search', 13)} 搜索</button>
         <button class="btn sm" data-act="kpPanelClose">${icon('check', 13)} 完成</button>
       </div>
-      <div class="kp-panel-body">
-        ${DB.knowledgePoints.map(k => `<button class="chip ${c.kps.indexOf(k.id) >= 0 ? 'on' : ''}" data-act="kpToggle" data-val="${k.id}">${k.name}</button>`).join('')}
-      </div>
+      <div class="kp-panel-body">${composeKpGroupsHtml()}</div>
     </div>`;
+  }
+
+  // 面板分组列表：按一级模块分组展示课程知识点全集（Excel 体系）；
+  // 搜索态下按关键词模糊过滤（知识点名称包含匹配；命中模块名时展示该模块全部），
+  // 独立拆分以便输入时仅局部刷新列表（不整窗重渲染，避免闪屏与输入丢焦点）
+  function composeKpGroupsHtml() {
+    const c = State.compose;
+    const q = (c._kpQuery || '').trim().toLowerCase();
+    const groups = DB.modules.map(m => {
+      let ks = DB.knowledgePoints.filter(k => k.module === m.id);
+      if (q) {
+        const modHit = m.name.toLowerCase().indexOf(q) >= 0;
+        ks = modHit ? ks : ks.filter(k => k.name.toLowerCase().indexOf(q) >= 0);
+      }
+      if (!ks.length) return '';
+      return `<div class="kp-group">
+        <div class="kp-group-title" style="border-left:3px solid ${m.color}">${h(m.name)}<span>${ks.length}</span></div>
+        <div class="kp-group-body">
+          ${ks.map(k => `<button class="chip ${c.kps.indexOf(k.id) >= 0 ? 'on' : ''}" data-act="kpToggle" data-val="${k.id}" title="L${k.level}">${h(k.name)}</button>`).join('')}
+        </div>
+      </div>`;
+    }).join('');
+    if (q && !groups) {
+      return `<div class="kp-search-empty">
+        <div>${icon('search', 20)}</div>
+        <div>没有找到与「${h(c._kpQuery.trim())}」匹配的知识点</div>
+        <button class="btn sm ghost" data-act="kpSearchClear">清除搜索</button>
+      </div>`;
+    }
+    return groups;
   }
 
   // 学生视角预览：以学生端「我的作业」的呈现与交互展示当前编辑中的作业（数据实时取自草稿）
@@ -2206,18 +2849,30 @@
 
   function openAnswerEditor(a) {
     if (!a || !a.questionCount) { toast('该作业不支持在线作答'); return; }
-    let draft = {};
-    try { draft = JSON.parse(localStorage.getItem(ansDraftKey(a.id)) || '{}') || {}; } catch (e) { draft = {}; }
+    const sub = a.mySubmission;
+    // 已批改 → 只读查看模式；待提交 / 已提交待批改 → 作答模式（待批改支持修改后重新提交）
+    const mode = sub && sub.status === 'graded' ? 'view' : 'answer';
+    // 已提交：以提交内容为准回填（提交时草稿已清除）；未提交：沿用本地草稿
+    let prefill = {};
+    if (sub && Array.isArray(sub.answers) && sub.answers.length) {
+      (a.questions || []).forEach((q, i) => {
+        const hit = sub.answers.find(x => String(x.questionId) === String(q.id));
+        if (hit && hit.value != null) prefill[i] = hit.value;
+      });
+    } else {
+      try { prefill = JSON.parse(localStorage.getItem(ansDraftKey(a.id)) || '{}') || {}; } catch (e) { prefill = {}; }
+    }
     State.answer = {
       asId: a.id, title: a.title || '',
       startAt: a.startAt || '', endAt: a.due || '', allowLate: !!a.allowLate,
-      scoreMode: a.scoreMode, totalScore: a.totalScore,
+      scoreMode: a.scoreMode, totalScore: a.totalScore, mode,
+      sub: sub ? { submittedAt: sub.submittedAt, attempts: sub.attempts, score: sub.score, teacherComment: sub.teacherComment, autoScore: sub.autoScore } : null,
       questions: (a.questions || []).map(q => ({
         id: q.id, type: q.type, title: q.title || '',
         options: (q.options || []).map(o => ({ key: o.key, text: o.text || '' })),
         score: q.score != null ? q.score : null
       })),
-      answers: draft, busy: false
+      answers: prefill, busy: false
     };
     renderOverlays();
   }
@@ -2259,24 +2914,31 @@
       return `<div class="ans-group"><span class="ans-group-title">${'一二三四五六'[secNo - 1] || secNo}. ${QTYPES[g.type] ? QTYPES[g.type].label : g.type}（共 ${g.idx.length} 题，${Math.round(score * 10) / 10} 分）</span></div>` +
         g.idx.map(i => answerQCard(c, i, per)).join('');
     }).join('');
+    const view = c.mode === 'view';
     return `<div class="compose-mask">
       <div class="compose-top">
         <button class="btn sm ghost" data-act="closeAnswer">${icon('chevronL', 15)} 返回</button>
         <span class="badge brand">${icon('clipboard', 13)} 作业详情</span>
-        <span class="badge" id="ansStat">已作答 ${ansAnsweredCount()}/${c.questions.length}</span>
-        ${c.endAt ? `<span class="badge">${icon('clock', 12)} 截止 ${h(c.endAt)}</span>` : ''}
-        ${c.allowLate ? '<span class="badge warn">允许补交</span>' : ''}
+        ${view
+          ? `<span class="badge ok">${icon('checkcircle', 13)} 已批改</span>
+             ${c.sub && c.sub.score != null ? `<span class="badge"><span style="font-weight:700;color:var(--brand)">${c.sub.score}</span> / ${c.totalScore != null ? c.totalScore : 100} 分</span>` : ''}`
+          : `<span class="badge" id="ansStat">已作答 ${ansAnsweredCount()}/${c.questions.length}</span>
+             ${c.sub ? `<span class="badge warn">已提交 · 待批改</span>` : ''}
+             ${c.endAt ? `<span class="badge">${icon('clock', 12)} 截止 ${h(c.endAt)}</span>` : ''}
+             ${c.allowLate ? '<span class="badge warn">允许补交</span>' : ''}`}
         <div class="spacer"></div>
-        <button class="btn sm" data-act="ansSaveDraft" ${c.busy ? 'disabled' : ''}>${icon('save', 14)} 临时保存</button>
-        <button class="btn primary sm" data-act="answerSubmit" ${c.busy ? 'disabled' : ''}>${c.busy ? '提交中…' : icon('send', 14) + ' 提交作业'}</button>
+        ${view ? '' : `<button class="btn sm" data-act="ansSaveDraft" ${c.busy ? 'disabled' : ''}>${icon('save', 14)} 临时保存</button>
+        <button class="btn primary sm" data-act="answerSubmit" ${c.busy ? 'disabled' : ''}>${c.busy ? '提交中…' : icon('send', 14) + ' 提交作业'}</button>`}
       </div>
       <div class="ans-info">
         <h3>${h(c.title)}</h3>
         <div class="ans-info-meta">
           <span>题量：${c.questions.length}</span>
           <span>满分：${c.totalScore != null ? c.totalScore : 100}</span>
-          <span>作答时段：${c.startAt ? h(c.startAt) + ' 至 ' : ''}${h(c.endAt || '不限')}</span>
+          ${c.sub ? `<span>已提交：${h(c.sub.submittedAt || '-')}（第 ${c.sub.attempts || 1} 次）</span>` : `<span>作答时段：${c.startAt ? h(c.startAt) + ' 至 ' : ''}${h(c.endAt || '不限')}</span>`}
         </div>
+        ${view && c.sub && c.sub.teacherComment ? `<div class="note ok" style="margin:10px 0 4px"><b>教师评语：</b>${h(c.sub.teacherComment)}</div>` : ''}
+        ${!view && c.sub ? `<div class="note" style="margin:10px 0 4px">批改完成前可修改作答并重新提交，重新提交后将以最新一次为准。</div>` : ''}
       </div>
       <div class="ans-body">
         <div class="ans-main">${body}</div>
@@ -2285,30 +2947,36 @@
     </div>`;
   }
 
-  // 单题答题卡：按题型渲染作答组件（答案实时写入 State.answer.answers）
+  // 单题答题卡：按题型渲染作答组件（答案实时写入 State.answer.answers）；
+  // 只读模式（已批改查看）下输入组件统一 disabled，仅作完整展示
   function answerQCard(c, i, per) {
     const q = c.questions[i];
     const t = QTYPES[q.type] || { label: q.type };
     const score = c.scoreMode === 'custom' && q.score != null ? q.score : per;
     const v = c.answers[i];
+    const ro = c.mode === 'view' ? ' disabled' : '';
     let input = '';
     if (q.type === 'SINGLE' || q.type === 'MULTI') {
       const multi = q.type === 'MULTI';
       const checked = k => Array.isArray(v) ? v.indexOf(k) >= 0 : (Array.isArray(v) ? false : v === k);
       input = (q.options || []).map(o => `
         <label class="ans-opt">
-          <input type="${multi ? 'checkbox' : 'radio'}" name="ansq-${i}" data-ans="${multi ? 'answerMulti' : 'answerSingle'}" data-qi="${i}" data-val="${o.key}" ${checked(o.key) ? 'checked' : ''}>
+          <input type="${multi ? 'checkbox' : 'radio'}" name="ansq-${i}" data-ans="${multi ? 'answerMulti' : 'answerSingle'}" data-qi="${i}" data-val="${o.key}"${checked(o.key) ? ' checked' : ''}${ro}>
           <span class="opt-key">${o.key}.</span><span>${h(o.text)}</span>
         </label>`).join('');
     } else if (q.type === 'JUDGE') {
       input = `
-        <label class="ans-opt"><input type="radio" name="ansq-${i}" data-ans="answerJudge" data-qi="${i}" data-val="true" ${v === true ? 'checked' : ''}><span class="opt-key">A.</span><span>正确</span></label>
-        <label class="ans-opt"><input type="radio" name="ansq-${i}" data-ans="answerJudge" data-qi="${i}" data-val="false" ${v === false ? 'checked' : ''}><span class="opt-key">B.</span><span>错误</span></label>`;
+        <label class="ans-opt"><input type="radio" name="ansq-${i}" data-ans="answerJudge" data-qi="${i}" data-val="true"${v === true ? ' checked' : ''}${ro}><span class="opt-key">A.</span><span>正确</span></label>
+        <label class="ans-opt"><input type="radio" name="ansq-${i}" data-ans="answerJudge" data-qi="${i}" data-val="false"${v === false ? ' checked' : ''}${ro}><span class="opt-key">B.</span><span>错误</span></label>`;
     } else if (q.type === 'FILL') {
-      input = `<input class="input ans-text" placeholder="填写答案" value="${v != null ? h(String(v)) : ''}" data-bind="answer" data-qi="${i}">`;
+      input = `<input class="input ans-text" placeholder="填写答案" value="${v != null ? h(String(v)) : ''}" data-bind="answer" data-qi="${i}"${ro}>`;
+    } else if (q.type === 'CODE') {
+      // CODE：内置代码编辑器（高亮 / 行号 / 自动补全）；只读模式下带配色的完整展示
+      input = codeEditorHtml(`data-bind="answer" data-qi="${i}"`, v != null ? String(v) : '',
+        { ro: !!ro, minHeight: 200, placeholder: '在此编写代码…' });
     } else {
-      input = `<textarea class="textarea ans-text" style="min-height:110px${q.type === 'CODE' ? ';font-family:Consolas,monospace' : ''}"
-        placeholder="${q.type === 'CODE' ? '在此编写代码…' : '在此输入答案…'}" data-bind="answer" data-qi="${i}">${v != null ? h(String(v)) : ''}</textarea>`;
+      input = `<textarea class="textarea ans-text" style="min-height:110px"
+        placeholder="在此输入答案…" data-bind="answer" data-qi="${i}"${ro}>${v != null ? h(String(v)) : ''}</textarea>`;
     }
     return `<div class="cp-qcard" id="ansq-${i}">
       <div class="cp-qhead">
@@ -2350,7 +3018,7 @@
   }
 
   function saveAnswerDraft(silent) {
-    const c = State.answer; if (!c) return;
+    const c = State.answer; if (!c || c.mode === 'view') return; // 只读查看不落草稿
     try {
       localStorage.setItem(ansDraftKey(c.asId), JSON.stringify(c.answers));
       if (!silent) toast('草稿已临时保存，下次进入自动恢复', 'ok');
@@ -2713,7 +3381,6 @@
     hwFilter(v) { State.filters.hw = v; render(); },
     exFilter(v) { State.filters.exKp = v; render(); },
     reportTab(v) { State.filters.report = v; render(); },
-    kpModule(v) { State.filters.kpModule = v; render(); },
     kpCell(v) {
       // 修复：render() 全量重建 main 区会令 .main-body 的 scrollTop 归零，
       // 表现为点击图谱卡片后内容区自动滚回顶部；渲染前记录位置、渲染后恢复。
@@ -2725,6 +3392,77 @@
       if (keepMain) {
         const nb = document.querySelector('.main-body');
         if (nb) nb.scrollTop = keepTop;
+      }
+    },
+    /* --- 知识图谱导航（超星风格：首页气泡 / 模块视图 / 搜索定位 / 导出图片） --- */
+    kgHome() {
+      State.kgView = { mode: 'home', module: null, focus: null };
+      State.kgZoom = 1;
+      State.kgPan = { x: 0, y: 0 };
+      render();
+    },
+    kgModule(v) {
+      State.kgView = { mode: 'module', module: v, focus: null };
+      State.kgZoom = 1;
+      State.kgPan = { x: 0, y: 0 };
+      render();
+    },
+    kgFocus(v) {
+      const k = kp(v);
+      if (!k) return;
+      State.kgView = { mode: 'module', module: k.module, focus: v };
+      State.kgZoom = 1;
+      State.kgPan = { x: 0, y: 0 };
+      State.activeKp = v;
+      render();
+    },
+    /* 缩放：滚轮与按钮共用；只改 #kgViewport 的 transform（局部更新，不整页重渲染），
+       缩放后同步钳制平移量防止内容越界 */
+    kgApplyZoom() {
+      const p0 = State.kgPan || { x: 0, y: 0 };
+      State.kgPan = kgClampPan(p0.x, p0.y, State.kgZoom || 1);
+      kgApplyPan();
+      const pct = document.getElementById('kgZoomPct');
+      if (pct) pct.textContent = Math.round((State.kgZoom || 1) * 100) + '%';
+    },
+    kgZoomIn() {
+      State.kgZoom = Math.min(3, Math.round(((State.kgZoom || 1) + 0.15) * 100) / 100);
+      Actions.kgApplyZoom();
+    },
+    kgZoomOut() {
+      State.kgZoom = Math.max(0.35, Math.round(((State.kgZoom || 1) - 0.15) * 100) / 100);
+      Actions.kgApplyZoom();
+    },
+    kgZoomReset() {
+      State.kgZoom = 1;
+      State.kgPan = { x: 0, y: 0 };
+      Actions.kgApplyZoom();
+    },
+    kgExport() {
+      const svg = document.getElementById('kgSvg');
+      if (!svg) { toast('未找到图谱画布'); return; }
+      try {
+        const xml = new XMLSerializer().serializeToString(svg);
+        const src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 1660; canvas.height = 1000;
+          const ctx = canvas.getContext('2d');
+          const grad = ctx.createLinearGradient(0, 0, 0, 1000);
+          grad.addColorStop(0, '#0b1230'); grad.addColorStop(1, '#131a4a');
+          ctx.fillStyle = grad; ctx.fillRect(0, 0, 1660, 1000);
+          ctx.drawImage(img, 0, 0, 1660, 1000);
+          const a = document.createElement('a');
+          a.download = '知识图谱-' + today() + '.png';
+          a.href = canvas.toDataURL('image/png');
+          a.click();
+          toast('图谱图片已导出', 'ok');
+        };
+        img.onerror = () => toast('导出失败：图片渲染异常');
+        img.src = src;
+      } catch (e) {
+        toast('导出失败：' + e.message);
       }
     },
     focusHw(v) {
@@ -2978,11 +3716,12 @@
       openAnswerEditor(a);
     },
     closeAnswer() {
-      // 返回时自动保存草稿，防止误退丢答案
+      const view = State.answer && State.answer.mode === 'view';
+      // 返回时自动保存草稿，防止误退丢答案（只读查看模式不落草稿）
       saveAnswerDraft(true);
       State.answer = null;
       renderOverlays();
-      toast('已返回，作答内容已自动保存为草稿');
+      if (!view) toast('已返回，作答内容已自动保存为草稿');
     },
     ansSaveDraft() { saveAnswerDraft(false); },
     answerSubmit() {
@@ -3118,6 +3857,28 @@
     },
     kpPanel() { State.compose._kpOpen = !State.compose._kpOpen; renderOverlays(); },
     kpPanelClose() { State.compose._kpOpen = false; renderOverlays(); },
+    // 知识点面板搜索：唤起/收起搜索框，唤起后自动聚焦
+    kpSearchToggle() {
+      const c = State.compose;
+      if (!c) return;
+      c._kpSearch = !c._kpSearch;
+      if (!c._kpSearch) c._kpQuery = '';
+      renderOverlays();
+      if (c._kpSearch) {
+        const inp = document.querySelector('[data-bind="kpsearch"]');
+        if (inp) inp.focus();
+      }
+    },
+    // 清除搜索词并局部恢复完整列表（不清输入框会导致过滤残留）
+    kpSearchClear() {
+      const c = State.compose;
+      if (!c) return;
+      c._kpQuery = '';
+      const inp = document.querySelector('[data-bind="kpsearch"]');
+      if (inp) inp.value = '';
+      const body = document.querySelector('.kp-panel .kp-panel-body');
+      if (body) body.innerHTML = composeKpGroupsHtml();
+    },
     kpToggle(v, id, t) {
       // 局部切换选中态（chip class）+ 同步按钮计数与 AI 按钮状态，不重渲染面板
       const c = State.compose;
@@ -3132,15 +3893,17 @@
       const c = State.compose;
       if (!c || c.aiBusy) return;
       if (!aiReady(c)) { toast('请先关联知识点，并添加至少一道题目'); return; }
-      // 优先填充教师已添加但未填写题干的空白题（按原题型生成），剩余配额追加新题
+      // 生成数量与题型的唯一依据 = 教师添加的空白题（题型与数量即生成配置），
+      // 不使用任何默认数量；无空白题时引导教师先添加
       const blanks = c.questions.filter(q => !q.title.trim());
+      if (!blanks.length) { toast('请先用上方题型按钮添加空白题目（添加几道、选什么题型，就生成几道什么题）'); return; }
       c.aiBusy = true; updateAiBtn();
       try {
         const qs = await API.post('/teacher/compose/ai-generate', {
           kpCodes: c.kps,
           existing: c.questions.map(q => ({ type: q.type, title: q.title })),
           blanks: blanks.map(q => q.type),
-          count: 3
+          types: [...new Set(c.questions.map(q => q.type))]
         });
         const normalize = q => ({
           type: q.type, title: q.title || '',
@@ -3151,12 +3914,17 @@
           kpCode: q.kpCode || '',
           score: c.scoreMode === 'CUSTOM' ? 0 : null
         });
-        let filled = 0, appended = 0;
-        (qs || []).forEach((q, idx) => {
-          if (idx < blanks.length) {
-            // 按空白题的原题型填充内容（界面题型保持教师所选）
-            const b = blanks[idx];
-            const n = normalize(Object.assign({}, q, { type: b.type }));
+        let filled = 0, appended = 0, bi = 0;
+        (qs || []).forEach(q => {
+          // 按题型匹配对位填充空白题：后端清洗可能减少题目数量，
+          // 严禁把生成内容硬塞进题型不符的空白题（如单选内容塞进编程题卡）
+          let b = null;
+          while (bi < blanks.length) {
+            if (blanks[bi].type === q.type) { b = blanks[bi]; bi++; break; }
+            bi++;
+          }
+          if (b) {
+            const n = normalize(q);
             Object.assign(b, n);
             filled++;
           } else {
@@ -3167,9 +3935,11 @@
         c.aiBusy = false;
         refreshComposePanels();
         const total = filled + appended;
+        // 后端保证生成数量 = 空白题数量，正常情况下恰好全部填充；
+        // appended > 0 属于异常兜底路径（题型对位溢出），如实提示
         const msg = total
-          ? '已基于「' + c.kps.map(kpName).join('、') + '」生成 ' + total + ' 道题目'
-            + (filled ? '（其中填充空白题 ' + filled + ' 道' + (appended ? '、新增 ' + appended + ' 道' : '') + '）' : '')
+          ? '已基于「' + c.kps.map(kpName).join('、') + '」生成 ' + total + ' 道题目并填充空白题'
+            + (appended ? '（另有 ' + appended + ' 道因题型对位溢出已追加为新题）' : '')
           : 'AI 未返回有效题目，请重试';
         toast(msg, total ? 'ok' : undefined);
       } catch (e) {
@@ -3315,9 +4085,9 @@
           totalScore: a.questionCount > 0 ? Number(g.total) : null
         });
         await loadSubmissions(sub.asId);
-        // 找当前的下一位（刷新后按列表顺序），优先待批改
+        // 找当前的下一位（刷新后按列表顺序），优先待批改 / AI初评完成待复核的提交
         const idx = DB.submissions.findIndex(s => s.id === sub.id);
-        const after = idx >= 0 ? DB.submissions.slice(idx + 1).find(s => s.status === 'pending') : null;
+        const after = idx >= 0 ? DB.submissions.slice(idx + 1).find(s => s.status === 'pending' || s.status === 'ai_reviewed') : null;
         const fallback = idx >= 0 ? DB.submissions.slice(idx + 1)[0] : null;
         const nextTarget = after || fallback;
         State.grading = null;
@@ -3465,8 +4235,8 @@
 
     if (me.role === 'TEACHER') {
       State.role = 'teacher'; State.section = 'dashboard';
-      const [tree, classes, students, dash, warnings, assignments, notifications] = await Promise.all([
-        API.get('/knowledge/tree'),
+      const [graph, classes, students, dash, warnings, assignments, notifications] = await Promise.all([
+        API.get('/knowledge/graph'),
         API.get('/teacher/classes'),
         API.get('/teacher/students'),
         API.get('/teacher/dashboard'),
@@ -3474,7 +4244,7 @@
         API.get('/teacher/assignments'),
         API.get('/notifications')
       ]);
-      DB.modules = tree.modules; DB.knowledgePoints = tree.knowledgePoints;
+      applyKnowledgeGraph(graph);
       DB.classes = classes; DB.students = students;
       DB.teacherDash = dash;
       DB.classStuckPoints = dash.stuckPoints || [];
@@ -3486,15 +4256,15 @@
       }
     } else {
       State.role = 'student'; State.section = 'chat';
-      const [tree, sessions, overview, assignments, notifications, records] = await Promise.all([
-        API.get('/knowledge/tree'),
+      const [graph, sessions, overview, assignments, notifications, records] = await Promise.all([
+        API.get('/knowledge/graph'),
         API.get('/sessions'),
         API.get('/reports/overview'),
         API.get('/assignments/my'),
         API.get('/notifications'),
         API.get('/exercise-records')
       ]);
-      DB.modules = tree.modules; DB.knowledgePoints = tree.knowledgePoints;
+      applyKnowledgeGraph(graph);
       DB.sessions = sessions;
       DB.student = overview;
       DB.assignments = assignments;
@@ -3517,7 +4287,10 @@
   function render() {
     $('#topbar').innerHTML = renderTopbar();
     $('#activity').innerHTML = renderActivity();
-    $('#side').innerHTML = renderSide();
+    const sideEl = $('#side');
+    sideEl.innerHTML = renderSide();
+    // 知识图谱视图已移除左侧「知识模块」面板：隐藏边栏，让图谱主区占满左侧释放的全部横向空间
+    sideEl.style.display = (State.role === 'student' && State.section === 'knowledge') ? 'none' : '';
     renderMain();
     renderCtx();
     renderOverlays();
@@ -3537,6 +4310,85 @@
   function scrollToBottom(sc) {
     // 超量赋值由浏览器 clamp 到真实底部，避免布局滞后导致的 ~100px 偏差
     sc.scrollTop = 1e9;
+  }
+
+  /* ---------------- 知识图谱画布拖拽平移 ----------------
+     Pointer Events 统一鼠标/触摸；生命周期：pointerdown（记录起点、取消惯性）
+     → pointermove（超 6px 阈值才进入拖拽，实时钳制边界）→ pointerup/cancel（惯性衰减、
+     抑制误触 click）。6px 阈值内的位移视为点击，保证节点点击/气泡跳转不受影响。 */
+  function kgBindPan(svg) {
+    let drag = null;    // { sx, sy, px, py, moved, lastT, lastX, lastY, vx, vy }
+    let inertiaRaf = 0;
+
+    const stopInertia = () => { if (inertiaRaf) { cancelAnimationFrame(inertiaRaf); inertiaRaf = 0; } };
+    // 屏幕像素 → viewBox 单位换算（meet 模式取两轴较小缩放比，画布 1660×1000）
+    const viewScale = () => {
+      const r = svg.getBoundingClientRect();
+      const k = Math.min((r.width || 1) / 1660, (r.height || 1) / 1000);
+      return k > 0 ? k : 1;
+    };
+
+    svg.addEventListener('pointerdown', e => {
+      if (e.button != null && e.button !== 0) return; // 仅主键/触摸
+      stopInertia();
+      const pan = State.kgPan || { x: 0, y: 0 };
+      drag = { sx: e.clientX, sy: e.clientY, px: pan.x, py: pan.y, moved: false,
+        lastT: performance.now(), lastX: e.clientX, lastY: e.clientY, vx: 0, vy: 0 };
+      // 注意：此处不能 setPointerCapture——捕获会把后续兼容鼠标事件（含 click）
+      // 重定向到 svg 根元素，导致节点点击（data-act 委托）失效、详情卡片不刷新。
+      // 捕获延迟到真正进入拖拽（位移超阈值）时才设置，纯点击全程无捕获。
+    });
+
+    svg.addEventListener('pointermove', e => {
+      if (!drag) return;
+      const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+      if (!drag.moved && Math.sqrt(dx * dx + dy * dy) < 6) return; // 阈值内视为点击
+      if (!drag.moved) {
+        drag.moved = true;
+        svg.classList.add('kg-dragging');
+        // 拖拽确认后才捕获指针：即使拖出画布仍持续接收事件；此时 click 已被
+        // _kgDragged 抑制，捕获重定向不再影响节点点击。
+        try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+      const now = performance.now(), dt = now - drag.lastT;
+      if (dt > 0) { drag.vx = (e.clientX - drag.lastX) / dt; drag.vy = (e.clientY - drag.lastY) / dt; }
+      drag.lastT = now; drag.lastX = e.clientX; drag.lastY = e.clientY;
+      const k = viewScale();
+      State.kgPan = kgClampPan(drag.px + dx / k, drag.py + dy / k, State.kgZoom || 1);
+      kgApplyPan();
+    });
+
+    const end = e => {
+      if (!drag) return;
+      const moved = drag.moved, vx = drag.vx, vy = drag.vy;
+      svg.classList.remove('kg-dragging');
+      try { svg.releasePointerCapture(e.pointerId); } catch (_) {}
+      drag = null;
+      if (moved) {
+        // 抑制本次拖拽紧随的 click（节点点击/气泡跳转等），仅屏蔽一次
+        State._kgDragged = true;
+        setTimeout(() => { State._kgDragged = false; }, 0);
+        // 惯性：速度 > 0.05px/ms 时启动，每帧衰减 8%，撞边界或低于阈值即停
+        if (Math.sqrt(vx * vx + vy * vy) > 0.05 && svg.isConnected) {
+          const k = viewScale();
+          let ivx = vx / k, ivy = vy / k; // viewBox 单位 / ms
+          let x = (State.kgPan || { x: 0 }).x, y = (State.kgPan || { y: 0 }).y;
+          const step = () => {
+            if (!svg.isConnected) { inertiaRaf = 0; return; } // 视图已切换重渲染，终止
+            ivx *= 0.92; ivy *= 0.92;
+            x += ivx * 16; y += ivy * 16;
+            const p = kgClampPan(x, y, State.kgZoom || 1);
+            if (p.x !== x || p.y !== y) { x = p.x; y = p.y; ivx = 0; ivy = 0; } // 撞边界即停
+            State.kgPan = { x, y };
+            kgApplyPan();
+            inertiaRaf = Math.sqrt(ivx * ivx + ivy * ivy) > 0.002 ? requestAnimationFrame(step) : 0;
+          };
+          inertiaRaf = requestAnimationFrame(step);
+        }
+      }
+    };
+    svg.addEventListener('pointerup', end);
+    svg.addEventListener('pointercancel', end);
   }
 
   function afterRender() {
@@ -3566,6 +4418,20 @@
     }
     // 路径入场动画标记仅在本次渲染生效，避免后续重渲染重复播放
     State.pathPopId = null;
+    // 装载代码编辑器（会话练习卡 / Agent 答题框等主区内的编程题输入框）
+    mountCodeEditors();
+    // 知识图谱：滚轮缩放（仅画布内生效，阻止页面滚动；DOM 为重建后的新元素，天然无重复绑定）
+    const kgCanvas = document.getElementById('kgCanvas') || document.querySelector('.kg-canvas');
+    if (kgCanvas) {
+      kgCanvas.addEventListener('wheel', e => {
+        e.preventDefault();
+        if (e.deltaY < 0) Actions.kgZoomIn();
+        else Actions.kgZoomOut();
+      }, { passive: false });
+    }
+    // 知识图谱：拖拽平移（鼠标/触摸统一 Pointer Events，含惯性与边界钳制）
+    const kgSvgEl = document.getElementById('kgSvg');
+    if (kgSvgEl) kgBindPan(kgSvgEl);
   }
 
   function autoGrow(t) {
@@ -3583,6 +4449,8 @@
 
   /* ---------------- 事件委托 ---------------- */
   document.addEventListener('click', e => {
+    // 知识图谱拖拽刚结束（位移超阈值）：本次 click 为拖拽余波，跳过以免误触节点/气泡跳转
+    if (State._kgDragged) return;
     const el = e.target;
     // 点击遮罩本身（而非弹窗/抽屉内容）时关闭
     if (el.classList && el.classList.contains('mask')) {
@@ -3604,6 +4472,20 @@
     const t = e.target, b = t.dataset.bind;
     if (!b) return;
     if (b === 'draft') { State.draft = t.value; autoGrow(t); }
+    else if (b === 'kgq') {
+      // 知识图谱搜索：仅局部刷新结果列表，不整页重渲染（避免输入丢焦点）
+      State.kgQ = t.value;
+      const box = document.getElementById('kgSearchList');
+      if (box) box.innerHTML = kgSearchResults(t.value);
+    }
+    else if (b === 'kpsearch') {
+      // 出题知识点面板搜索：仅局部刷新分组列表，避免整窗重渲染导致闪屏与输入丢焦点
+      if (State.compose) {
+        State.compose._kpQuery = t.value;
+        const body = document.querySelector('.kp-panel .kp-panel-body');
+        if (body) body.innerHTML = composeKpGroupsHtml();
+      }
+    }
     else if (b === 'modal') {
       if (State.modal) State.modal.data[t.dataset.key] = t.value;
       // newSession 搜索：仅局部刷新知识点列表，避免整窗重建重放弹窗动画（闪屏）并丢失输入焦点
