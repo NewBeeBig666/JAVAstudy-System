@@ -169,6 +169,7 @@
     file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
     layers: '<path d="m12 2 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>',
     panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/>',
+    menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
     edit: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
     bell: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
@@ -271,6 +272,7 @@
   function renderTopbar() {
     const st = State.role === 'student';
     return `
+      ${State.role === 'student' && State.section === 'knowledge' ? '' : `<button class="icon-btn mobile-only" data-act="toggleSide" title="功能面板">${icon('menu', 18)}</button>`}
       <div class="brand">
         <div class="brand-mark">${icon('sparkles', 17)}</div>
         <div>
@@ -3855,6 +3857,11 @@
       xhr.onerror = () => { im.busy = false; refreshImportPanels(); toast('上传失败，请重试'); };
       xhr.send(fd);
     },
+    // 移动端：顶栏汉堡按钮开关左侧功能抽屉（会话列表/筛选/班级名单等入口）
+    toggleSide() {
+      const s = document.getElementById('side');
+      if (s) s.classList.toggle('open');
+    },
     kpPanel() { State.compose._kpOpen = !State.compose._kpOpen; renderOverlays(); },
     kpPanelClose() { State.compose._kpOpen = false; renderOverlays(); },
     // 知识点面板搜索：唤起/收起搜索框，唤起后自动聚焦
@@ -4465,7 +4472,15 @@
     if (!Actions[act]) return;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return;
     // 约定：第一个参数为 data-val（目标值），第二个为 data-id（记录 id）
+    // 注意：inSide 必须在动作执行前捕获——render() 会重建侧栏 DOM，执行后再取
+    // t.closest('#side') 会因节点已脱离而得到 null
+    const inSide = !!(t.closest && t.closest('#side'));
     Actions[act](t.dataset.val, t.dataset.id, t);
+    // 移动端抽屉：侧栏内操作或底部标签切换后自动收起，避免面板遮挡主内容
+    if (window.innerWidth <= 640 && (inSide || act === 'section')) {
+      const sd = document.getElementById('side');
+      if (sd) sd.classList.remove('open');
+    }
   });
 
   document.addEventListener('input', e => {

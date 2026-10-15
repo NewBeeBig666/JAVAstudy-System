@@ -126,6 +126,8 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 }
 .icon-btn:hover { background: var(--panel-3); color: var(--text); }
 .icon-btn.active { background: var(--brand-soft); color: var(--brand); }
+/* 移动端专用元素（顶栏汉堡菜单等）：桌面端隐藏，≤640px 显示（见文末移动端适配块） */
+.mobile-only { display: none !important; }
 
 .body { flex: 1; display: flex; min-height: 0; }
 
@@ -1224,7 +1226,9 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 @media (max-width: 900px) {
   .kg-wrap { flex-direction: column; height: auto; }
   .kg-side { width: auto; flex-direction: row; flex-wrap: wrap; align-items: center; }
-  .kg-canvas { height: 400px; }
+  /* flex:none 必须显式声明：基础规则 flex:1 的 flex-basis:0% 在纵向 flex 布局中
+     优先于 height 属性，会导致 height:400px 被忽略、画布塌缩为 SVG 宽高比高度 */
+  .kg-canvas { height: 400px; flex: none; }
   .kg-search-list { max-height: 120px; }
 }
 @media (max-width: 980px) {
@@ -1310,3 +1314,63 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .hw-q-score { font-size: 12px; color: var(--text-3); }
 .hw-q-title { font-size: 13.5px; line-height: 1.6; margin-bottom: 4px; }
 .hw-q-opt { font-size: 13px; color: var(--text-2); padding: 1px 0 1px 10px; }
+
+/* ---------- 移动端深度适配（≤640px，覆盖 320-430px 主流机型）【置于文件末尾保证覆盖优先】 ----------
+   仅作用于窄屏，桌面端（>640px）零影响：
+   ① 触控热区 ≥44px（防误触规范）；② 输入字号 ≥16px（防 iOS Safari 聚焦自动放大页面）；
+   ③ 滚动惯性 + 防横向溢出；④ 顶栏汉堡菜单唤起功能抽屉；⑤ 全屏编辑层纵向堆叠。 */
+@media (max-width: 640px) {
+  html { -webkit-text-size-adjust: 100%; }
+  body { -webkit-tap-highlight-color: transparent; }
+  html, body { overflow-x: hidden; }
+  button, [data-act], .chip { touch-action: manipulation; } /* 消除双击缩放延迟 */
+
+  /* 顶栏：汉堡菜单（桌面隐藏）、窄屏精简（ctx 面板已隐藏；设置与底栏重复） */
+  .mobile-only { display: inline-flex !important; }
+  .fb-txt { display: none; }
+  .topbar [data-act="toggleCtx"], .topbar [data-act="settings"] { display: none; }
+  .brand-name { font-size: 14px; }
+  .topbar { padding: 4px 8px; }
+
+  /* 触控热区：所有可点元素 ≥44px */
+  .btn { min-height: 44px; }
+  .btn.sm { min-height: 44px; padding: 0 14px; }
+  .icon-btn { width: 42px; height: 42px; }
+  .chip { min-height: 40px; padding: 0 13px; font-size: 13px; }
+  .list-item { padding: 12px 10px; }
+  .kg-zoom-btn { width: 44px; height: 44px; }
+  .kg-nav-item { min-height: 44px; padding: 10px 12px; }
+  .kg-hit { min-height: 44px; }
+  .cp-nav-item { width: 40px; height: 40px; }
+  .ans-opt { padding: 12px; min-height: 44px; }
+  .opt-row { min-height: 40px; padding: 6px 0; }
+
+  /* 输入：≥16px 防 iOS 聚焦缩放（单选/复选不触发缩放无需处理）；
+     代码编辑器三层（高亮/输入/行号）必须同步放大以保持叠层对齐 */
+  .input, .textarea, .select, .field input, .kg-search input { font-size: 16px; }
+  .ce-hl, .ce-input, .ce-gutter-inner { font-size: 16px; }
+  .kp-search-input { width: 100%; height: 44px; font-size: 16px; }
+
+  /* 滚动惯性（旧 iOS / 部分 Android WebView） */
+  .main-body, .side-body, .modal-body, .drawer-body, .compose-main, .compose-nav,
+  .ans-main, .ans-nav, .grade-main, .grade-side, .ci-preview, .kg-search-list {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* iOS 动态视口：地址栏收起/展开时高度自适应（不支持 dvh 的环境回退 calc(100vh)） */
+  .chat-wrap { height: calc(100dvh - 54px); }
+
+  /* 出题组卷：左导航与题目区纵向堆叠（原 190px 侧栏挤占窄屏） */
+  .compose-body { flex-direction: column; overflow-y: auto; }
+  .compose-nav { width: auto; border-right: none; border-bottom: 1px solid var(--border); }
+  .compose-main { overflow-y: visible; }
+  .compose-top { flex-wrap: wrap; gap: 6px; }
+
+  /* 批阅页顶栏：按钮换行不溢出 */
+  .grade-top { flex-wrap: wrap; }
+
+  /* 弹窗/抽屉：留出安全区，内边距收紧 */
+  .modal { width: 94vw; max-height: 88dvh; }
+  .modal-foot { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .modal-body { padding: 14px 14px; }
+}

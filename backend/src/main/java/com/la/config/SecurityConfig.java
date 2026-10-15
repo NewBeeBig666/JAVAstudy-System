@@ -34,6 +34,9 @@ public class SecurityConfig {
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http.csrf(csrf -> csrf.disable())
             .cors(cors -> cors.configurationSource(corsSource()))
+            // SAMEORIGIN：仅允许同源页面内嵌（移动端视口测试页 mobile-test.html 的 iframe 需要）；
+            // 跨源嵌入仍被拒绝，防点击劫持能力保留
+            .headers(h -> h.frameOptions(f -> f.sameOrigin()))
             .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                     // SSE 完成后的 ASYNC 二次分发放行（否则响应已提交导致异常）

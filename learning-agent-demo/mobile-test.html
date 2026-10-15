@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>移动端视口测试 · 320 / 375 / 430</title>
+<style>
+  body { margin: 0; background: #1e293b; display: flex; gap: 20px; padding: 20px; overflow-x: auto; font-family: system-ui, sans-serif; }
+  .frame { flex: none; }
+  .frame h3 { color: #e2e8f0; font-size: 13px; margin: 0 0 8px; text-align: center; }
+  .frame iframe { border: 2px solid #475569; border-radius: 14px; background: #fff; display: block; }
+</style>
+</head>
+<body>
+  <div class="frame"><h3>320px（小屏）</h3><iframe src="/index.html?v=2" width="320" height="700"></iframe></div>
+  <div class="frame"><h3>375px（iPhone 标准位）</h3><iframe src="/index.html?v=2" width="375" height="700"></iframe></div>
+  <div class="frame"><h3>430px（大屏手机）</h3><iframe src="/index.html?v=2" width="430" height="700"></iframe></div>
+</body>
+</html>

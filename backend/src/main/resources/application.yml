@@ -1,5 +1,10 @@
 server:
   port: 8080
+  # gzip 压缩：静态资源（JS/CSS/HTML）与 JSON 响应压缩传输，优化移动端首屏加载
+  compression:
+    enabled: true
+    mime-types: text/html,text/css,text/plain,text/javascript,application/javascript,application/json
+    min-response-size: 1024
   servlet:
     encoding:
       charset: UTF-8
