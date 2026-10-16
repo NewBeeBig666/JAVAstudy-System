@@ -8,6 +8,7 @@ import com.la.entity.ClassEntity;
 import com.la.mapper.AssignmentMapper;
 import com.la.mapper.ClassMapper;
 import com.la.security.CurrentUser;
+import com.la.exception.BizException;
 import com.la.service.AssignmentService;
 import com.la.service.ComposeAiService;
 import com.la.service.ComposeImportService;
@@ -168,6 +169,22 @@ public class TeacherController {
     public ApiResponse<Void> aiGradeBatch(@PathVariable Long id) {
         gradingService.aiGradeBatch(id, CurrentUser.id());
         return ApiResponse.ok();
+    }
+
+    @Operation(summary = "多作业批量 AI 初评（异步，一次勾选多份作业一键触发，完成后汇总通知）")
+    @PostMapping("/assignments/ai-grade-batch")
+    public ApiResponse<Void> aiGradeBatchMulti(@RequestBody AiBatchGradeRequest req) {
+        if (req.getAssignmentIds() == null || req.getAssignmentIds().isEmpty()) {
+            throw new BizException("请至少选择一份作业");
+        }
+        gradingService.aiGradeBatch(req.getAssignmentIds(), CurrentUser.id());
+        return ApiResponse.ok();
+    }
+
+    @Data
+    public static class AiBatchGradeRequest {
+        /** 勾选的作业 ID 列表 */
+        private List<Long> assignmentIds;
     }
 
     @Operation(summary = "教师评分发布（回流学生通知+会话卡片）")

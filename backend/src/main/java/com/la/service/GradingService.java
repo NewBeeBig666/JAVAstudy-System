@@ -40,6 +40,8 @@ public class GradingService {
     private final NotificationService notificationService;
     private final SessionService sessionService;
     private final SessionMapper sessionMapper;
+    /** 学生端「系统自动评分」引擎：客观题判分的唯一口径（教师端 AI 初评复用） */
+    private final AutoScoreService autoScoreService;
 
     /**
      * 单份 AI 初评（同步）。题目型作业（scoreMode 非空）走逐题判分，Rubric 型作业走评分维度流程
@@ -96,8 +98,12 @@ public class GradingService {
     }
 
     /**
-     * 题目型作业 AI 初评：客观题（单选/多选/判断）程序判分，
-     * 主观题（填空/简答/编程）交给 AI 按题干/参考答案/解析逐题评分；输出逐题点评
+     * 题目型作业 AI 初评（全题型批量评分）：
+     * - 客观题（单选/多选/判断/填空）：复用学生端「系统自动评分」引擎（AutoScoreService），
+     *   按参考答案严格匹配判分，与学生端临时分数口径完全一致；
+     * - 简答题：AI 语义评分——核心表意与参考答案一致或高度接近即可得高分，无需逐字匹配；
+     * - 编程题：AI 多维度评审——语法正确性/逻辑符合度/功能完整性/可运行性/是否存在报错；
+     * - 逐题输出评分依据（aiComment），便于教师快速核对与人工复核调整。
      */
     private Map<String, Object> aiGradeCompose(Submission sub, Assignment as) {
         long t0 = System.currentTimeMillis();
@@ -106,54 +112,76 @@ public class GradingService {
         if (questions.isEmpty()) {
             throw new BizException("该作业没有题目，无法 AI 初评");
         }
-        List<Object> answers = parseAnswerObjects(sub.getAnswers());
         Map<String, JsonNode> ansMap = new LinkedHashMap<>();
-        for (Object o : answers) {
+        for (Object o : parseAnswerObjects(sub.getAnswers())) {
             try {
                 JsonNode n = objectMapper.readTree(objectMapper.writeValueAsString(o));
                 ansMap.put(n.path("questionId").asText(""), n.path("value"));
             } catch (Exception ignore) { }
         }
-        // 题号 -> 得分；先算客观题
-        Map<Integer, Double> scores = new LinkedHashMap<>();
-        StringBuilder comment = new StringBuilder();
+        // ---- 客观题：直接复用系统自动评分引擎（严格匹配参考答案，口径与学生端一致） ----
+        Map<String, Object> auto = autoScoreService.objectiveScore(as.getId(), sub.getAnswers());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> detail = (List<Map<String, Object>>) auto.get("detail");
+        Map<Integer, Double> scores = new LinkedHashMap<>();   // 题号 -> 得分
+        Map<Integer, String> rationale = new LinkedHashMap<>(); // 题号 -> 评分依据
         double objective = 0;
-        List<Question> subjective = new ArrayList<>();
-        for (int i = 0; i < questions.size(); i++) {
-            Question q = questions.get(i);
-            JsonNode val = ansMap.get(String.valueOf(q.getId()));
-            if (isObjective(q.getType())) {
-                double s = composeObjectiveScore(q, val, questions);
-                scores.put(i + 1, s);
-                objective += s;
-            } else {
-                subjective.add(q);
+        for (int i = 0; i < questions.size() && i < detail.size(); i++) {
+            Map<String, Object> d = detail.get(i);
+            if (Boolean.TRUE.equals(d.get("subjective"))) {
+                continue;
+            }
+            double s = d.get("score") != null ? ((Number) d.get("score")).doubleValue() : 0;
+            boolean correct = Boolean.TRUE.equals(d.get("correct"));
+            scores.put(i + 1, s);
+            objective += s;
+            rationale.put(i + 1, correct ? "作答与标准答案一致" : "作答与标准答案不符（正确答案：" + refText(questions.get(i)) + "）");
+        }
+        // ---- 主观题：简答（语义匹配）/ 编程（多维度评审）分别走专用 AI 评分 ----
+        StringBuilder comment = new StringBuilder();
+        List<Question> shorts = new ArrayList<>();
+        List<Question> codes = new ArrayList<>();
+        for (Question q : questions) {
+            if ("SHORT".equals(q.getType())) { shorts.add(q); }
+            else if ("CODE".equals(q.getType())) { codes.add(q); }
+        }
+        boolean aiOk = true;
+        if (!shorts.isEmpty()) {
+            try {
+                AiReview r = aiReview(as, questions, shorts, ansMap, false);
+                scores.putAll(r.scores());
+                rationale.putAll(r.comments());
+            } catch (Exception e) {
+                aiOk = false;
+                log.warn("AI 初评简答题评分失败 submission={} reason={}", sub.getId(), e.getMessage());
+                comment.append("简答题 AI 评分暂不可用，该部分请人工批改。");
             }
         }
-        // 主观题 AI 评分（一次性批量提问，减少调用次数）
-        if (!subjective.isEmpty()) {
+        if (!codes.isEmpty()) {
             try {
-                Map<Integer, Double> aiScores = aiScoreSubjective(as, questions, subjective, ansMap);
-                double sum = 0;
-                for (Map.Entry<Integer, Double> e : aiScores.entrySet()) {
-                    scores.put(e.getKey(), e.getValue());
-                    sum += e.getValue();
-                }
-                comment.append("AI 已按参考答案对主观题逐题评分。");
+                AiReview r = aiReview(as, questions, codes, ansMap, true);
+                scores.putAll(r.scores());
+                rationale.putAll(r.comments());
             } catch (Exception e) {
-                // 主观题评分失败不阻塞整体：客观题得分仍可用，主观题留给教师批改
-                log.warn("AI 初评主观题评分失败 submission={} reason={}", sub.getId(), e.getMessage());
-                comment.append("主观题 AI 评分暂不可用，已保留客观题得分，主观题请人工批改。");
+                aiOk = false;
+                log.warn("AI 初评编程题评审失败 submission={} reason={}", sub.getId(), e.getMessage());
+                comment.append("编程题 AI 评审暂不可用，该部分请人工批改。");
             }
+        }
+        if (aiOk && (!shorts.isEmpty() || !codes.isEmpty())) {
+            comment.append("客观题按标准答案严格匹配，简答题按语义匹配度、编程题按多维度评审，逐题评分依据如下：");
+        } else if (!shorts.isEmpty() || !codes.isEmpty()) {
+            comment.append("客观题得分如下：");
         }
         double total = scores.values().stream().mapToDouble(Double::doubleValue).sum();
-        // 逐题点评文本
+        // ---- 逐题点评 + 评分依据 ----
         for (int i = 0; i < questions.size(); i++) {
             Question q = questions.get(i);
             double s = scores.getOrDefault(i + 1, 0.0);
             comment.append("\n第").append(i + 1).append("题（")
-                    .append(qtypeLabel(q.getType())).append("，").append(scoreOf(q, questions)).append(" 分）：")
-                    .append("得 ").append(s).append(" 分。");
+                    .append(qtypeLabel(q.getType())).append("，").append(fmtScore(scoreOf(q, questions))).append(" 分）：")
+                    .append("得 ").append(fmtScore(s)).append(" 分。")
+                    .append(rationale.getOrDefault(i + 1, "待人工评分"));
         }
 
         sub.setAiScore((int) Math.round(total));
@@ -165,99 +193,127 @@ public class GradingService {
         resp.put("aiScore", (int) Math.round(total));
         resp.put("aiComment", comment.toString());
         resp.put("rubricScores", new LinkedHashMap<String, Integer>());
-        log.info("AI 初评（题目型）完成 submission={} assignment={} objective={} total={} cost={}ms",
+        log.info("AI 初评（题目型·全题型）完成 submission={} assignment={} objective={} total={} cost={}ms",
                 sub.getId(), as.getId(), objective, total, System.currentTimeMillis() - t0);
         return resp;
     }
 
-    /** 主观题 AI 批量评分：返回 题号 -> 得分 */
-    private Map<Integer, Double> aiScoreSubjective(Assignment as, List<Question> questions,
-                                                   List<Question> subjective, Map<String, JsonNode> ansMap) {
+    /** AI 评审结果：题号 -> 得分 / 题号 -> 评分依据 */
+    private record AiReview(Map<Integer, Double> scores, Map<Integer, String> comments) { }
+
+    /** 评分文本格式化：整数不带小数尾巴（10.0 → 10，22.5 保留） */
+    private String fmtScore(double v) {
+        return v == Math.rint(v) ? String.valueOf((long) v) : String.valueOf(v);
+    }
+
+    /** 客观题正确答案的可读文本（评分依据展示用） */
+    private String refText(Question q) {
+        JsonNode ans = parseAnswerNode(q.getAnswer());
+        List<String> parts = new ArrayList<>();
+        for (JsonNode a : ans) {
+            parts.add("JUDGE".equals(q.getType()) ? (a.asBoolean() ? "正确" : "错误") : a.asText());
+        }
+        return String.join("、", parts);
+    }
+
+    /**
+     * 主观题 AI 批量评审（一次请求评审一批，减少调用次数），返回逐题得分与评分依据。
+     * @param isCode true = 编程题多维度评审（语法/逻辑/功能/可运行性/报错）；
+     *               false = 简答题语义评分（核心表意一致或高度接近即高分，无需逐字匹配）
+     */
+    private AiReview aiReview(Assignment as, List<Question> questions, List<Question> batch,
+                              Map<String, JsonNode> ansMap, boolean isCode) {
         StringBuilder sb = new StringBuilder();
         sb.append("## 作业：").append(as.getTitle()).append('\n');
-        sb.append("## 待评分的主观题（含参考答案与学生作答）\n");
-        int no = 0;
-        Map<String, Integer> keyToNo = new LinkedHashMap<>();
-        for (Question q : questions) {
-            if (!isObjective(q.getType())) {
-                no++;
-                keyToNo.put(String.valueOf(q.getId()), no);
-            }
-        }
-        for (Question q : subjective) {
+        sb.append(isCode ? "## 待评审的编程题（含参考实现与学生代码）\n"
+                         : "## 待评分的简答题（含参考答案与学生作答）\n");
+        for (Question q : batch) {
             JsonNode ref = parseAnswerNode(q.getAnswer());
-            String refText = ref != null && ref.size() > 0 ? ref.get(0).asText() : "";
+            String refText = ref.size() > 0 ? ref.get(0).asText() : "";
             String studentAns = answerNodeToText(ansMap.get(String.valueOf(q.getId())));
-            sb.append("\n### 第 ").append(keyToNo.get(String.valueOf(q.getId()))).append(" 题（满分 ")
+            // 题号使用整卷序号（与逐题点评一致，便于教师定位）
+            int no = questions.indexOf(q) + 1;
+            sb.append("\n### 第 ").append(no).append(" 题（满分 ")
                     .append(scoreOf(q, questions)).append(" 分）\n")
                     .append("题干：").append(null2(q.getTitle())).append('\n')
-                    .append("参考答案：").append(null2(refText)).append('\n')
+                    .append(isCode ? "参考实现：\n```java\n" : "参考答案：")
+                    .append(null2(refText))
+                    .append(isCode ? "\n```\n" : "\n")
                     .append("答案解析：").append(null2(q.getAnalysis())).append('\n')
-                    .append("学生作答：").append(studentAns.isEmpty() ? "（未作答）" : studentAns).append('\n');
+                    .append(isCode ? "学生代码：\n```java\n" : "学生作答：")
+                    .append(studentAns.isEmpty() ? "（未作答）" : studentAns)
+                    .append(isCode ? "\n```\n" : "\n");
         }
-        sb.append("\n请逐题评分。未作答记 0 分，与参考答案一致或表述等价给满分，")
-                .append("部分正确按比例给分，得分不得超过该题满分。")
-                .append("严格只输出 JSON：{\"scores\":{\"题号\":得分},\"comments\":{\"题号\":\"一句话点评\"}}。");
+        if (isCode) {
+            sb.append("\n请按以下维度逐题评审代码：①语法正确性 ②逻辑是否符合题目要求 ③功能完整性 ④可运行性 ⑤是否存在报错。")
+                    .append("评分规则：代码满足核心要求、语法正确、可正常运行并实现题目核心功能即给对应合理分数；")
+                    .append("次要瑕疵（命名不规范、缺少注释等）少量扣分；核心功能缺失或存在编译错误按比例扣分；未作答记 0 分。");
+        } else {
+            sb.append("\n请逐题进行语义评分：学生作答的核心表意与参考答案一致或高度接近即可给高分（无需逐字匹配）；")
+                    .append("部分正确按匹配度在合理区间内给分；答非所问或未作答记 0 分；得分不得超过该题满分。");
+        }
+        sb.append("严格只输出 JSON：{\"scores\":{\"题号\":得分},\"comments\":{\"题号\":\"一句话评分依据\"}}。");
         String raw = chatWithRetry(List.of(ChatMessage.system(
-                        "你是 Java 课程助教，负责给作业的主观题评分，输出严格的 JSON，不要输出任何其他文字。"),
-                ChatMessage.user(sb.toString())), "submission-subjective");
-        Map<Integer, Double> out = new LinkedHashMap<>();
-        String json = extractJson(raw);
+                        "你是 Java 课程助教，负责给作业的" + (isCode ? "编程题代码评审" : "简答题语义评分")
+                                + "，只输出严格的 JSON，不要输出任何其他文字。"),
+                ChatMessage.user(sb.toString())), isCode ? "submission-code" : "submission-short");
+        log.debug("[AI初评] {} 通道原始返回：{}", isCode ? "编程题" : "简答题", raw);
+        Map<Integer, Double> scores = new LinkedHashMap<>();
+        Map<Integer, String> comments = new LinkedHashMap<>();
         try {
-            JsonNode root = objectMapper.readTree(json);
+            JsonNode root = objectMapper.readTree(extractJson(raw));
             JsonNode scoresNode = root.path("scores");
-            int subjectiveNo = 0;
-            for (int i = 0; i < questions.size(); i++) {
-                Question q = questions.get(i);
-                if (isObjective(q.getType())) {
-                    continue;
-                }
-                subjectiveNo++;
+            JsonNode commentsNode = root.path("comments");
+            for (Question q : batch) {
+                int no = questions.indexOf(q) + 1;
                 double max = scoreOf(q, questions);
-                double s = Math.max(0, Math.min(scoresNode.path(String.valueOf(subjectiveNo)).asDouble(0), max));
-                out.put(i + 1, Math.round(s * 10) / 10.0);
+                double s = Math.max(0, Math.min(readNum(scoresNode, no), max));
+                scores.put(no, Math.round(s * 10) / 10.0);
+                String c = findByKey(commentsNode, no).asText("");
+                comments.put(no, c.isBlank() ? "AI 语义评分" : c);
             }
         } catch (Exception e) {
-            throw new BizException("主观题评分结果解析失败");
+            throw new BizException(isCode ? "编程题评审结果解析失败" : "简答题评分结果解析失败");
         }
-        return out;
+        return new AiReview(scores, comments);
     }
 
-    /** 客观题程序判分（单选/多选/判断），与提交时的判分口径一致；
-     *  all 为整卷题目列表，用于 AVERAGE 模式下按题数均摊满分 */
-    private double composeObjectiveScore(Question q, JsonNode val, List<Question> all) {
-        if (val == null || val.isNull()) {
-            return 0;
+    /**
+     * AI 返回 JSON 的键名兼容查找：不同批次模型可能用 "5"、"第5题"、"5题"、"Q5" 等键名
+     * （真实 DeepSeek 编程题评审曾返回 "第5题" 键名，严格按键名取值会漏读取到 0 分），
+     * 先按常见键名直取，再兜底按「键名去除非数字字符后等于题号」模糊匹配。
+     */
+    private JsonNode findByKey(JsonNode node, int no) {
+        if (node == null || !node.isObject()) {
+            return objectMapper.createObjectNode();
         }
-        // 学生作答可能是标量（单选 "A" / 判断 true）或数组（多选），统一成数组再比对
-        JsonNode mine = val.isArray() ? val : objectMapper.createArrayNode().add(val);
-        JsonNode correct = parseAnswerNode(q.getAnswer());
-        boolean ok = false;
-        if ("SINGLE".equals(q.getType()) || "JUDGE".equals(q.getType())) {
-            ok = correct.size() == 1 && mine.size() == 1 && nodeEquals(correct.get(0), mine.get(0));
-        } else if ("MULTI".equals(q.getType())) {
-            if (mine.size() != correct.size()) {
-                ok = false;
-            } else {
-                ok = true;
-                for (int i = 0; i < mine.size(); i++) {
-                    boolean found = false;
-                    for (int j = 0; j < correct.size(); j++) {
-                        if (nodeEquals(correct.get(j), mine.get(i))) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) { ok = false; break; }
-                }
+        for (String k : List.of(String.valueOf(no), "第" + no + "题", no + "题", "Q" + no, "q" + no)) {
+            JsonNode v = node.path(k);
+            if (!v.isMissingNode()) {
+                return v;
             }
         }
-        return ok ? scoreOf(q, all) : 0;
+        for (Iterator<String> it = node.fieldNames(); it.hasNext(); ) {
+            String k = it.next();
+            if (k.replaceAll("\\D+", "").equals(String.valueOf(no))) {
+                return node.path(k);
+            }
+        }
+        return objectMapper.createObjectNode();
     }
 
-    private boolean nodeEquals(JsonNode a, JsonNode b) {
-        // asText 统一布尔/字符串/数字的文本表示（BooleanNode→"true"，TextNode→原文）
-        return a.asText().equals(b.asText());
+    /** 得分容错读取：兼容数字与字符串数字（如 "8.3"、"8.3分"） */
+    private double readNum(JsonNode node, int no) {
+        JsonNode v = findByKey(node, no);
+        if (v.isNumber()) {
+            return v.asDouble();
+        }
+        try {
+            String t = v.asText("").replaceAll("[^0-9.\\-]", "");
+            return t.isEmpty() ? 0 : Double.parseDouble(t);
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /** 题目满分：CUSTOM 自定义模式下题目自带 score；AVERAGE 百分制（平均分配）模式下
@@ -268,10 +324,6 @@ public class GradingService {
             return q.getScore().doubleValue();
         }
         return all != null && !all.isEmpty() ? Math.round(1000.0 / all.size()) / 10.0 : 0;
-    }
-
-    private boolean isObjective(String type) {
-        return "SINGLE".equals(type) || "MULTI".equals(type) || "JUDGE".equals(type);
     }
 
     private String qtypeLabel(String type) {
@@ -338,28 +390,55 @@ public class GradingService {
     }
 
     /**
-     * 批量 AI 初评（异步，走 gradingExecutor 线程池）：单份失败不阻塞，结束通知含成功/失败数
+     * 批量 AI 初评（异步，走 gradingExecutor 线程池）：单份失败不阻塞，结束通知含成功/失败数。
+     * 单作业入口（兼容旧接口）。
      */
     @Async("gradingExecutor")
     public void aiGradeBatch(Long assignmentId, Long teacherId) {
-        List<Submission> pending = submissionMapper.selectList(new LambdaQueryWrapper<Submission>()
-                .eq(Submission::getAssignmentId, assignmentId)
-                .eq(Submission::getStatus, "PENDING"));
-        int ok = 0, fail = 0;
-        for (Submission sub : pending) {
-            try {
-                aiGrade(sub.getId());
-                ok++;
-            } catch (Exception e) {
-                fail++;
-                log.warn("批量初评失败 submission={} assignment={} reason={}",
-                        sub.getId(), assignmentId, e.getMessage());
+        doAiGradeBatch(List.of(assignmentId), teacherId);
+    }
+
+    /**
+     * 批量 AI 初评（异步）：一次对多份作业的全部待批改提交执行 AI 初评，
+     * 完成后汇总通知教师（含各作业成功/失败明细）。
+     */
+    @Async("gradingExecutor")
+    public void aiGradeBatch(List<Long> assignmentIds, Long teacherId) {
+        doAiGradeBatch(assignmentIds, teacherId);
+    }
+
+    private void doAiGradeBatch(List<Long> assignmentIds, Long teacherId) {
+        int okTotal = 0, failTotal = 0, asCount = 0;
+        List<String> parts = new ArrayList<>();
+        for (Long asId : assignmentIds) {
+            List<Submission> pending = submissionMapper.selectList(new LambdaQueryWrapper<Submission>()
+                    .eq(Submission::getAssignmentId, asId)
+                    .eq(Submission::getStatus, "PENDING"));
+            if (pending.isEmpty()) {
+                continue;
             }
+            asCount++;
+            int ok = 0, fail = 0;
+            for (Submission sub : pending) {
+                try {
+                    aiGrade(sub.getId());
+                    ok++;
+                } catch (Exception e) {
+                    fail++;
+                    log.warn("批量初评失败 submission={} assignment={} reason={}",
+                            sub.getId(), asId, e.getMessage());
+                }
+            }
+            okTotal += ok;
+            failTotal += fail;
+            Assignment as = assignmentMapper.selectById(asId);
+            parts.add("「" + (as != null ? as.getTitle() : "#" + asId) + "」" + ok + "/" + pending.size()
+                    + (fail > 0 ? "（失败 " + fail + "）" : ""));
         }
-        notificationService.push(teacherId, "批量 AI 初评完成：作业 #" + assignmentId
-                + " 成功 " + ok + " 份"
-                + (fail > 0 ? "，失败 " + fail + " 份（可稍后重试）" : "")
-                + "，共 " + pending.size() + " 份。", "TEACHER");
+        notificationService.push(teacherId, "批量 AI 初评完成：" + asCount + " 份作业共 "
+                + (okTotal + failTotal) + " 份提交，成功 " + okTotal + " 份"
+                + (failTotal > 0 ? "，失败 " + failTotal + " 份（可稍后重试）" : "")
+                + (parts.size() > 1 ? "。" + String.join("、", parts) : "。"), "TEACHER");
     }
 
     /**

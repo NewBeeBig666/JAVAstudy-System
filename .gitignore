@@ -1,6 +1,6 @@
 # ==================== 敏感信息（严禁上传） ====================
 # DeepSeek API Key 等机密配置（本机文件，仅本地使用）
-backend/application-secret.yml
+application-secret.yml
 backend/application-local.yml
 *.env
 .env

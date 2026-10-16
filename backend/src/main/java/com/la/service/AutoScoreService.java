@@ -18,7 +18,9 @@ import java.util.Map;
  * 自动评分（独立模块）：按作业发布时预设的标准答案对学生作答进行程序匹配判分。
  * 与教师批改（GradingService）、成绩管理完全解耦：
  *  - 结果不写 submission.score / aiScore 等任何持久化字段，仅在 DTO 中即时计算返回；
- *  - 仅覆盖客观题（单选/多选/判断，有标准答案可精确匹配），主观题留给教师批改；
+ *  - 覆盖客观题（单选/多选/判断/填空，有标准答案可严格匹配），主观题留给教师批改；
+ *    该引擎同时被教师端 AI 批量初评复用（GradingService.aiGradeCompose），
+ *    保证学生端临时分数与教师端初评的客观题判分口径完全一致；
  *  - 前端展示时须标注「自动评分临时分数」，不计入最终成绩。
  */
 @Slf4j
@@ -92,7 +94,8 @@ public class AutoScoreService {
         return result;
     }
 
-    /** 客观题标准答案匹配（单选/多选/判断）；未作答视为不匹配 */
+    /** 客观题标准答案匹配（单选/多选/判断/填空）；未作答视为不匹配。
+     *  填空题采用严格匹配：作答与参考答案去除首尾及内部多余空白后须完全一致 */
     private boolean matchObjective(Question q, JsonNode val) {
         if (val == null || val.isNull()) {
             return false;
@@ -121,11 +124,22 @@ public class AutoScoreService {
             }
             return true;
         }
+        if ("FILL".equals(q.getType())) {
+            if (correct.isEmpty() || mine.isEmpty()) {
+                return false;
+            }
+            return normalizeText(correct.get(0).asText()).equals(normalizeText(mine.get(0).asText()));
+        }
         return false;
     }
 
+    /** 填空题严格匹配的文本规范化：去首尾空白、压缩内部连续空白为单空格 */
+    private String normalizeText(String s) {
+        return s == null ? "" : s.trim().replaceAll("\\s+", " ");
+    }
+
     private boolean isObjective(String type) {
-        return "SINGLE".equals(type) || "MULTI".equals(type) || "JUDGE".equals(type);
+        return "SINGLE".equals(type) || "MULTI".equals(type) || "JUDGE".equals(type) || "FILL".equals(type);
     }
 
     private JsonNode parseArray(String json) {

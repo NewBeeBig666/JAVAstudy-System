@@ -30,6 +30,11 @@ public class MockDeepSeekClient implements LlmClient {
                 && lastUser.contains("Rubric 评分标准")) {
             return mockGradeJson(lastUser);
         }
+        // 题目型作业逐题评审（简答题语义评分 / 编程题多维度评审）：按满分生成模拟评分与依据
+        if (system != null && system.contains("只输出严格的 JSON") && lastUser != null
+                && (lastUser.contains("待评分的简答题") || lastUser.contains("待评审的编程题"))) {
+            return mockPerQuestionJson(lastUser, lastUser.contains("待评审的编程题"));
+        }
         // 学情报告任务：生成结构化分析
         if (system != null && system.contains("学情") && lastUser != null
                 && lastUser.contains("班级学情数据")) {
@@ -87,6 +92,65 @@ public class MockDeepSeekClient implements LlmClient {
                 .append(",\"comment\":\"Mock 初评：整体结构清晰，核心逻辑基本正确（").append(total)
                 .append('/').append(totalMax).append("）。建议关注边界条件与资源管理。\"}");
         return sb.toString();
+    }
+
+    /**
+     * 题目型作业逐题评审 Mock：解析 Prompt 中的「### 第 N 题（满分 X 分）」，
+     * 生成模拟得分与一句话评分依据。作答内容过短或未作答记 0 分（贴近真实 AI 行为）；
+     * 有效作答按口径给分：简答 80%（核心表意一致）、编程 90%（语法正确、核心功能完整）。
+     */
+    private String mockPerQuestionJson(String prompt, boolean isCode) {
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("### 第 (\\d+) 题（满分 ([\\d.]+) 分）").matcher(prompt);
+        java.util.List<int[]> marks = new java.util.ArrayList<>(); // {题号, 块起始, 块头结束}
+        java.util.List<Double> maxs = new java.util.ArrayList<>();
+        while (m.find()) {
+            marks.add(new int[]{Integer.parseInt(m.group(1)), m.start(), m.end()});
+            maxs.add(Double.parseDouble(m.group(2)));
+        }
+        StringBuilder scores = new StringBuilder();
+        StringBuilder comments = new StringBuilder();
+        double total = 0;
+        for (int i = 0; i < marks.size(); i++) {
+            int no = marks.get(i)[0];
+            double max = maxs.get(i);
+            int segEnd = i + 1 < marks.size() ? marks.get(i + 1)[1] : prompt.length();
+            String answer = extractMockAnswer(prompt.substring(marks.get(i)[2], segEnd), isCode);
+            double s;
+            String c;
+            if (answer.replaceAll("\\s", "").length() < 5) {
+                s = 0;
+                c = "作答内容缺失或无有效内容，记 0 分，请人工复核";
+            } else {
+                s = Math.round(max * (isCode ? 0.9 : 0.8) * 10) / 10.0;
+                c = isCode ? "语法正确、可运行，核心功能实现完整，命名与注释存在次要瑕疵"
+                           : "核心概念表述与参考答案一致，缺少部分展开细节";
+            }
+            total += s;
+            if (i > 0) { scores.append(','); comments.append(','); }
+            scores.append('"').append(no).append("\":").append(s);
+            comments.append('"').append(no).append("\":\"").append(c).append('"');
+        }
+        return "{\"scores\":{" + scores + "},\"comments\":{" + comments + "},\"_total\":" + total + "}";
+    }
+
+    /** 从题目块中提取学生作答文本（简答取行；编程取 ```java 开栏之后、闭栏之前的代码体） */
+    private String extractMockAnswer(String seg, boolean isCode) {
+        String marker = isCode ? "学生代码：" : "学生作答：";
+        int i = seg.indexOf(marker);
+        if (i < 0) { return ""; }
+        String rest = seg.substring(i + marker.length());
+        if (!isCode) {
+            int nl = rest.indexOf('\n');
+            return nl >= 0 ? rest.substring(0, nl) : rest;
+        }
+        // 代码：跳过开栏（```java + 换行），取到闭栏 ``` 之前
+        int open = rest.indexOf("```");
+        if (open < 0) { return rest; }
+        int lineEnd = rest.indexOf('\n', open);
+        if (lineEnd < 0) { return ""; }
+        int close = rest.indexOf("```", lineEnd);
+        return close >= 0 ? rest.substring(lineEnd, close) : rest.substring(lineEnd);
     }
 
     @Override

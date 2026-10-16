@@ -185,19 +185,27 @@ public class ComposeAiService {
         List<String> allowedTypes = seq.stream().distinct().toList();
         String system = "你是面向大学软件工程专业的 Java 教学出题专家。根据给定的知识点和已有题目参考，生成考查严谨、表述无歧义的 Java 作业题。\n"
                 + typeLine + "\n"
+                + "命题范围硬约束（最高优先级，必须严格遵守）：\n"
+                + "本次命题范围严格限定为「知识点」列表中给定的知识点（即当前课程已教授的教学进度范围）。"
+                + "题目各部分内容（题干、选项、参考答案、答案解析、编程题代码）只允许考查这些给定知识点及其前置基础语法"
+                + "（变量与基本数据类型、运算符与表达式、选择/循环/跳转结构、方法定义与调用、数组、字符串基础操作、标准输出）；"
+                + "严禁引入给定列表之外的、后续章节才会教授的未学知识点、类库或语法特性"
+                + "（例如：仅关联了数组相关知识点时，不得考查集合框架、泛型、Lambda、Stream、多线程、IO 等后续内容；编程题代码同样只能使用给定知识点与上述前置基础语法）。\n"
+                + "\n"
                 + "出题质量要求：\n"
                 + "1. 每题必须紧扣所关联知识点的本科教学考察要求，题干表述严谨、无歧义，不出现超纲或过于生僻的内容；\n"
-                + "2. 单选/多选题必须提供 4 个选项：四个选项须围绕同一考察点、长度与句式相近，干扰项应基于学生常见错误概念设计、具备迷惑性；严禁出现与考察点无关、长度悬殊或明显荒谬的选项；正确答案的位置随机分布；\n"
-                + "3. 判断题须是容易因概念混淆而出错、但答案明确的陈述；\n"
-                + "4. 同一批次内题目互不重复，也不得重复已有题目，考点尽量覆盖不同知识点（如有多个）；\n"
-                + "5. answer 与 analysis 必须准确无误，analysis 说明正确原因与学生易错点；编程题 answer 必须是完整可直接编译运行的 Java 示例代码（含逐行注释说明解题思路，public 类名为 Main）。\n"
+                + "2. 题干排版规范：题干包含多点要求（如 1)、2)、3) 各点）时，每个要点必须单独成行——要点之间用换行符（\\n）分隔，严禁多个要点在同一行连续排列；无多点要求的普通题干保持单行即可；\n"
+                + "3. 单选/多选题必须提供 4 个选项：四个选项须围绕同一考察点、长度与句式相近，干扰项应基于学生常见错误概念设计、具备迷惑性；严禁出现与考察点无关、长度悬殊或明显荒谬的选项；正确答案的位置随机分布；\n"
+                + "4. 判断题须是容易因概念混淆而出错、但答案明确的陈述；\n"
+                + "5. 同一批次内题目互不重复，也不得重复已有题目，考点尽量覆盖不同知识点（如有多个）；\n"
+                + "6. answer 与 analysis 必须准确无误，analysis 说明正确原因与学生易错点；编程题 answer 必须是完整可直接编译运行的 Java 示例代码（含逐行注释说明解题思路，public 类名为 Main）。\n"
                 + "严格只输出一个 JSON 数组，不要输出任何其他文字或代码块标记。每个元素字段：\n"
                 + "type：SINGLE（单选）/MULTI（多选）/FILL（填空）/JUDGE（判断）/SHORT（简答）/CODE（编程）之一；\n"
                 + "title：题干字符串；\n"
                 + "options：仅单选/多选提供，4 个元素的数组 [{\"key\":\"A\",\"text\":\"...\"},...]，text 不为空；\n"
                 + "answer：单选 [\"A\"]、多选 [\"A\",\"B\"]、判断 [true 或 false]、填空/简答 [\"参考答案文本\"]、编程 [\"完整可运行的 Java 示例代码（含注释）\"]；\n"
                 + "difficulty：0.8 或 0.5 或 0.2；\n"
-                + "kpCode：从给定知识点编码中选一个；\n"
+                + "kpCodes：本题实际考查的全部知识点编码组成的数组（可包含多个，必须全部来自给定知识点列表，按考查侧重程度排序，至少 1 个）；\n"
                 + "analysis：答案解析字符串。";
         String user = "知识点：" + kpLine + "\n" + existLine;
         String content = llmClient.chat(List.of(ChatMessage.system(system), ChatMessage.user(user)), 0.7);
@@ -302,8 +310,26 @@ public class ComposeAiService {
                 double diff = 0.5;
                 try { diff = q.path("difficulty").asDouble(0.5); } catch (Exception ignore) { }
                 m.put("difficulty", diff);
-                String kpCode = q.path("kpCode").asText("");
-                m.put("kpCode", kpIds.contains(kpCode) ? kpCode : kpIds.get(0));
+                // 知识点标签：完整提取模型返回的全部关联知识点（kpCodes 数组，兼容旧版单值 kpCode），
+                // 解析层白名单过滤——严禁出现教师给定范围（已教授知识点）之外的编码
+                List<String> kpList = new ArrayList<>();
+                if (q.path("kpCodes").isArray()) {
+                    for (JsonNode k : q.path("kpCodes")) {
+                        String kc = k.asText("");
+                        if (kpIds.contains(kc) && !kpList.contains(kc)) {
+                            kpList.add(kc);
+                        }
+                    }
+                }
+                String kpSingle = q.path("kpCode").asText("");
+                if (kpList.isEmpty() && kpIds.contains(kpSingle)) {
+                    kpList.add(kpSingle);
+                }
+                if (kpList.isEmpty()) {
+                    kpList.add(kpIds.get(0));
+                }
+                m.put("kpCodes", kpList);
+                m.put("kpCode", kpList.get(0));
                 m.put("analysis", q.path("analysis").asText(""));
                 batchKeys.add(key);
                 result.add(m);
@@ -325,6 +351,7 @@ public class ComposeAiService {
         String seq = "（" + seqNo + "）";
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("type", type);
+        m.put("kpCodes", List.of(k.getKpCode()));
         m.put("kpCode", k.getKpCode());
         m.put("difficulty", new String[]{"0.8", "0.5", "0.2"}[seqNo % 3]);
         m.put("analysis", "本题考查「" + k.getName() + "」的核心概念" + seq + "。解析：结合定义与典型场景判断，注意区分相近概念，避免被表面措辞干扰。");

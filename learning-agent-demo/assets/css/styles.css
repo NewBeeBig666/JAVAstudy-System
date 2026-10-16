@@ -614,6 +614,14 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 }
 .input:focus, .textarea:focus, .select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 .textarea { min-height: 84px; resize: vertical; line-height: 1.6; }
+/* 组卷题卡·内容框（题干/参考答案/答案解析）高度自适应：下限/上限由 data-ah-min/max 驱动，超出上限内部滚动 */
+.cp-qcard .cp-auto { overflow-y: auto; }
+/* 组卷题卡·知识点标签区：pill 标签流式排列 + 追加下拉 */
+.cp-kps { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cp-kp-pill { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+.cp-kp-pill:hover { filter: brightness(1.06); }
+.cp-kp-pill .cp-kp-x { font-size: 12px; line-height: 1; opacity: .75; }
+.cp-kp-add { width: auto; min-width: 160px; flex: 0 0 auto; }
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
 .pick-list { display: flex; flex-direction: column; gap: 7px; max-height: 340px; overflow-y: auto; padding-right: 4px; }
@@ -1312,7 +1320,8 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .hw-q { padding: 8px 0; border-top: 1px solid var(--border-2); }
 .hw-q-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .hw-q-score { font-size: 12px; color: var(--text-3); }
-.hw-q-title { font-size: 13.5px; line-height: 1.6; margin-bottom: 4px; }
+/* 题干保留换行：多点要求（1) 2) 3)）各自单独成行，避免在同一行连续排列 */
+.hw-q-title { font-size: 13.5px; line-height: 1.6; margin-bottom: 4px; white-space: pre-line; }
 .hw-q-opt { font-size: 13px; color: var(--text-2); padding: 1px 0 1px 10px; }
 
 /* ---------- 移动端深度适配（≤640px，覆盖 320-430px 主流机型）【置于文件末尾保证覆盖优先】 ----------

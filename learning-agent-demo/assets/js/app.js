@@ -365,12 +365,32 @@
       </button>`).join('');
 
     } else if (sec === 'assignments' || sec === 'submissions') {
-      head = '<div class="side-head"><div class="side-title">' + (sec === 'assignments' ? '作业管理' : '选择作业') + '</div></div>';
-      foot = sec === 'assignments'
-        ? '<button class="btn primary block" data-act="openCompose">' + icon('plus', 15) + ' 发布新作业</button>'
-        : '';
+      // 提交批改：支持「AI 批量初评」多选模式——勾选多份作业一键触发
+      const batchMode = sec === 'submissions' && State.filters.batchMode;
+      const batchSel = State.filters.batchSel || [];
+      head = '<div class="side-head"><div class="side-title">' + (sec === 'assignments' ? '作业管理' : '选择作业') + '</div>'
+        + (sec === 'submissions'
+          ? `<button class="btn sm ${batchMode ? 'primary' : ''}" data-act="batchModeToggle" title="勾选多份作业一键 AI 初评">${icon('sparkles', 13)} 批量初评</button>`
+          : '')
+        + '</div>';
+      if (batchMode) {
+        foot = `<button class="btn primary block" data-act="batchAiStart" ${batchSel.length ? '' : 'disabled'}>${icon('sparkles', 14)} 对选中 ${batchSel.length} 份作业执行 AI 初评</button>
+          <button class="btn ghost block sm" data-act="batchModeToggle">取消批量</button>`;
+      } else {
+        foot = sec === 'assignments'
+          ? '<button class="btn primary block" data-act="openCompose">' + icon('plus', 15) + ' 发布新作业</button>'
+          : '';
+      }
       body = DB.assignments.map(a => {
         const pend = DB.submissions.filter(s => s.asId === a.id && s.status === 'pending').length;
+        if (batchMode) {
+          const sel = batchSel.indexOf(a.id) >= 0;
+          return `<button class="list-item ${sel ? 'on' : ''}" data-act="batchToggle" data-val="${a.id}">
+            <div class="li-main"><div class="li-title">${h(a.title)}</div>
+            <div class="li-sub">已交 ${a.submitted}/${a.total}${pend ? ' · ' + pend + ' 待批' : ''}</div></div>
+            <div class="li-extra">${sel ? '<span class="badge brand">已选</span>' : (pend ? '<span class="badge warn">' + pend + ' 待批</span>' : '')}</div>
+          </button>`;
+        }
         return `<button class="list-item ${State.filters.subAs === a.id && sec === 'submissions' ? 'on' : ''}" data-act="subAsPick" data-val="${a.id}">
           <div class="li-main"><div class="li-title">${h(a.title)}</div>
           <div class="li-sub">${a.status === 'draft' ? '草稿' : '截止 ' + h(a.due)} · 已交 ${a.submitted}/${a.total}</div></div>
@@ -1986,6 +2006,8 @@
     box.innerHTML = html;
     // 装载代码编辑器（作业答题页 / 弹窗内的编程题输入框）
     mountCodeEditors();
+    // 组卷题卡题干框：首帧即按已有内容自适应高度（编辑已有作业的长题干场景）
+    composeAutoSizeTitles();
   }
 
   // newSession 弹窗的知识点列表（按 d.q 过滤）：初始渲染与搜索输入的局部刷新共用，
@@ -2189,7 +2211,7 @@
       // 学生作答映射：questionId -> value
       const ansMap = {};
       (sub.answers || []).forEach(x => { ansMap[String(x.questionId)] = x.value; });
-      main = `<div class="note warn" style="margin-bottom:12px"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || '尚未初评，可稍后重试')}</div>
+      main = `<div class="note warn" style="margin-bottom:12px;white-space:pre-line"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || '尚未初评，可稍后重试')}</div>
         <div class="hw-qlist-head" style="margin-bottom:12px">${icon('file', 14)} 原始题目与学生作答对照 · 共 ${(a.questions || []).length} 题 · 总分 ${a.totalScore != null ? a.totalScore : 100}</div>
         ${(a.questions || []).map((q, i) => gradeQCompareCard(q, i, ansMap, a)).join('')}`;
     } else {
@@ -2199,7 +2221,7 @@
         <div style="margin-bottom:14px">
           <div style="font-size:12.5px;font-weight:650;letter-spacing:.4px;margin-bottom:6px">提交代码</div>
           <pre class="code-block">${h(sub.code)}</pre></div>
-        <div class="note warn" style="margin-bottom:14px"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || '尚未初评，可稍后重试')}</div>
+        <div class="note warn" style="margin-bottom:14px;white-space:pre-line"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || '尚未初评，可稍后重试')}</div>
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
           <div style="font-size:12.5px;font-weight:650;letter-spacing:.4px">相似度检测</div>
           <div class="bar ${sub.similarity > 60 ? 'danger' : sub.similarity > 30 ? 'warn' : 'ok'}" style="flex:1"><i style="width:${sub.similarity}%"></i></div>
@@ -2302,14 +2324,14 @@
       optsHtml = `<div class="hw-q-opt">A. 正确 ${correct[0] === true ? '<span class="badge ok">正确答案</span>' : ''}${val === true ? '<span class="badge brand">学生选择</span>' : ''}</div>
         <div class="hw-q-opt">B. 错误 ${correct[0] === false ? '<span class="badge ok">正确答案</span>' : ''}${val === false ? '<span class="badge brand">学生选择</span>' : ''}</div>`;
     } else if (correct.length && correct[0] != null && String(correct[0]) !== '') {
-      optsHtml = `<div class="hw-q-opt" style="color:var(--text-3)">参考答案：${h(String(correct[0]).slice(0, 300))}</div>`;
+      optsHtml = `<div class="hw-q-opt" style="color:var(--text-3);white-space:pre-wrap">参考答案：${h(String(correct[0]).slice(0, 300))}</div>`;
     }
     return `<div class="hw-q">
       <div class="hw-q-head"><span class="badge brand">${t.label}</span>
         <span class="hw-q-score">第 ${i + 1} 题 · ${score} 分</span></div>
       <div class="hw-q-title">${i + 1}. ${h(q.title || '')}</div>
       ${optsHtml}
-      ${q.analysis ? `<div class="hw-q-opt" style="color:var(--text-3)">解析：${h(String(q.analysis).slice(0, 300))}</div>` : ''}
+      ${q.analysis ? `<div class="hw-q-opt" style="color:var(--text-3);white-space:pre-line">解析：${h(String(q.analysis).slice(0, 300))}</div>` : ''}
       <div class="grade-stu-ans">${icon('user', 13)} 学生作答：${stuText}</div>
     </div>`;
   }
@@ -2329,7 +2351,7 @@
   };
 
   function newQuestion(type) {
-    const q = { type, title: '', answer: [], analysis: '', difficulty: 0.5, kpCode: '', score: null, options: [] };
+    const q = { type, title: '', answer: [], analysis: '', difficulty: 0.5, kpCodes: [], score: null, options: [] };
     if (type === 'SINGLE' || type === 'MULTI') {
       q.options = ['A', 'B', 'C', 'D'].map(k => ({ key: k, text: '' }));
     }
@@ -2350,8 +2372,10 @@
   function openComposeEditor(a) {
     if (a) {
       // 回填编辑：题目型作业 DTO（含答案）转为编辑器结构；关联知识点由题目知识点合集推导
+      // （kp_code 支持逗号分隔多值，一道题可关联多个知识点）
       const kps = [];
-      (a.questions || []).forEach(q => { if (q.kpCode && kps.indexOf(q.kpCode) < 0) kps.push(q.kpCode); });
+      (a.questions || []).forEach(q => (q.kpCode || '').split(',').filter(Boolean)
+        .forEach(k => { if (kps.indexOf(k) < 0) kps.push(k); }));
       State.compose = {
         id: a.id, title: a.title || '',
         scoreMode: (a.scoreMode || 'average').toUpperCase(),
@@ -2364,7 +2388,7 @@
           answer: Array.isArray(q.answer) ? q.answer : [],
           analysis: q.analysis || '',
           difficulty: q.difficulty != null ? q.difficulty : 0.5,
-          kpCode: q.kpCode || '', score: q.score != null ? q.score : null
+          kpCodes: (q.kpCode || '').split(',').filter(Boolean), score: q.score != null ? q.score : null
         })),
         busy: false, aiBusy: false, _dtp: null, _kpOpen: false, preview: false
       };
@@ -2494,7 +2518,7 @@
     const n = c.questions.length;
     const per = n ? Math.round(1000 / n) / 10 : 0;
     const kpSet = [];
-    c.questions.forEach(q => { if (q.kpCode && kpSet.indexOf(q.kpCode) < 0) kpSet.push(q.kpCode); });
+    c.questions.forEach(q => (q.kpCodes || []).forEach(k => { if (kpSet.indexOf(k) < 0) kpSet.push(k); }));
     const qlist = n
       ? c.questions.map((q, i) => `<div class="hw-q">
           <div class="hw-q-head"><span class="badge brand">${QTYPES[q.type] ? QTYPES[q.type].label : q.type}</span>
@@ -2668,7 +2692,7 @@
         <input class="input" placeholder="填写正确答案" value="${h(ans[0] != null ? ans[0] : '')}" data-bind="compose" data-q="${i}" data-key="answerText"></div>`;
     } else {
       ansHtml = `<div class="form-row"><label>参考答案</label>
-        <textarea class="textarea" style="min-height:76px" placeholder="${q.type === 'CODE' ? '参考实现 / 评分要点' : '参考答案要点'}" data-bind="compose" data-q="${i}" data-key="answerText">${h(ans[0] != null ? ans[0] : '')}</textarea></div>`;
+        <textarea class="textarea cp-auto" data-ah-min="76" data-ah-max="320" placeholder="${q.type === 'CODE' ? '参考实现 / 评分要点' : '参考答案要点'}" data-bind="compose" data-q="${i}" data-key="answerText">${h(ans[0] != null ? ans[0] : '')}</textarea></div>`;
     }
     return `<div class="cp-qcard" id="cpq-${i}">
       <div class="cp-qhead">
@@ -2681,7 +2705,7 @@
         <button class="btn sm ghost" data-act="composeDelQ" data-val="${i}" title="删除本题">${icon('trash', 13)} 删除</button>
       </div>
       <div class="form-row"><label>题干</label>
-        <textarea class="textarea" style="min-height:60px" placeholder="请输入题干" data-bind="compose" data-q="${i}" data-key="title">${h(q.title)}</textarea></div>
+        <textarea class="textarea cp-auto" data-ah-min="60" data-ah-max="240" placeholder="请输入题干" data-bind="compose" data-q="${i}" data-key="title">${h(q.title)}</textarea></div>
       ${ansHtml}
       <div class="cp-meta">
         <div class="form-row"><label>难度</label>
@@ -2690,15 +2714,26 @@
             <option value="0.5" ${q.difficulty !== 0.8 && q.difficulty !== 0.2 ? 'selected' : ''}>0.5（中）</option>
             <option value="0.2" ${q.difficulty === 0.2 ? 'selected' : ''}>0.2（难）</option>
           </select></div>
-        <div class="form-row"><label>知识点</label>
-          <select class="select" data-bind="compose" data-q="${i}" data-key="kpCode">
-            <option value="">不关联</option>
-            ${DB.knowledgePoints.map(k => `<option value="${k.id}" ${q.kpCode === k.id ? 'selected' : ''}>${k.name}</option>`).join('')}
-          </select></div>
       </div>
+      <div class="form-row"><label>知识点（可关联多个，与题目实际考查内容对应）</label>
+        <div class="cp-kps" id="cpq-kp-${i}">${composeQKpHtml(q, i)}</div></div>
       <div class="form-row"><label>答案解析</label>
-        <input class="input" placeholder="答案解析，学生会看到（可选）" value="${h(q.analysis || '')}" data-bind="compose" data-q="${i}" data-key="analysis"></div>
+        <textarea class="textarea cp-auto" data-ah-min="40" data-ah-max="200" placeholder="答案解析，学生会看到（可选）" data-bind="compose" data-q="${i}" data-key="analysis">${h(q.analysis || '')}</textarea></div>
     </div>`;
+  }
+
+  // 题卡知识点标签区：已关联知识点以 pill 标签完整展示（点击 × 移除），下拉可继续追加；
+  // AI 基于多个知识点组合命题时，标签与题目实际考查的知识点一一对应
+  function composeQKpHtml(q, i) {
+    const sel = q.kpCodes || [];
+    const pills = sel.length
+      ? sel.map(k => `<span class="badge brand cp-kp-pill" data-act="composeQKpDel" data-val="${h(k)}" data-id="${i}" title="点击移除「${h(kpName(k))}」">${h(kpName(k))}<span class="cp-kp-x">×</span></span>`).join('')
+      : '<span style="font-size:12px;color:var(--text-3)">未关联（AI 生成将无法限定命题范围）</span>';
+    const rest = DB.knowledgePoints.filter(k => sel.indexOf(k.id) < 0);
+    const addSel = rest.length
+      ? `<select class="select cp-kp-add" data-kpadd="${i}" title="添加知识点"><option value="">＋ 添加知识点</option>${rest.map(k => `<option value="${k.id}">${h(k.name)}</option>`).join('')}</select>`
+      : '';
+    return pills + addSel;
   }
 
   /* ---------- 日期时间选择器（弹层日历 + 时:分，开始/结束共用） ---------- */
@@ -2756,10 +2791,24 @@
 
   // 添加/删除题后局部重建题目列表 + 左栏 + 顶部统计（不整层重渲染，保输入焦点与滚动位置）
   function refreshComposePanels() {
-    const ql = $('#composeQList'); if (ql) ql.innerHTML = composeQListHtml();
+    const ql = $('#composeQList');
+    if (ql) { ql.innerHTML = composeQListHtml(); composeAutoSizeTitles(); }
     const nv = $('#composeNav'); if (nv) nv.innerHTML = composeNavHtml();
     updateComposeStats();
     updateAiBtn();
+  }
+
+  // 题卡内容框高度自适应（题干/参考答案/答案解析共用）：按内容（文本长度/换行/字体）即时计算高度，
+  // 下限由 data-ah-min 保证基础展示可用，上限 data-ah-max 超出后内部滚动，避免页面被超长内容过度撑开
+  function autoGrowBox(t) {
+    const min = Number(t.dataset.ahMin || 60), max = Number(t.dataset.ahMax || 240);
+    t.style.height = 'auto';
+    t.style.height = Math.min(max, Math.max(min, t.scrollHeight)) + 'px';
+  }
+
+  // 对组卷题卡的全部内容框执行自适应（AI 生成填充/弹窗首帧渲染后同步调用，无延迟无抖动）
+  function composeAutoSizeTitles() {
+    document.querySelectorAll('#composeQList textarea.cp-auto').forEach(autoGrowBox);
   }
 
   // 局部刷新「一键AI生成题目」按钮状态（灰暗禁用 ↔ 蓝色可用 ↔ 生成中）
@@ -2828,7 +2877,7 @@
           answer: q.answer || [],
           analysis: q.analysis || null,
           difficulty: Number(q.difficulty) || 0.5,
-          kpCode: q.kpCode || null,
+          kpCode: (q.kpCodes || []).join(',') || null,
           score: c.scoreMode === 'CUSTOM' ? (Number(q.score) || 0) : null
         }))
       });
@@ -3758,6 +3807,15 @@
       State.compose.questions.splice(Number(v), 1);
       refreshComposePanels();
     },
+    // 题卡知识点标签移除（点击 pill 的 ×）：仅局部刷新该题的知识点标签区
+    composeQKpDel(v, id) {
+      const c = State.compose; if (!c) return;
+      const q = c.questions[Number(id)]; if (!q) return;
+      const i = (q.kpCodes || []).indexOf(v);
+      if (i >= 0) q.kpCodes.splice(i, 1);
+      const box = document.getElementById('cpq-kp-' + id);
+      if (box) box.innerHTML = composeQKpHtml(q, Number(id));
+    },
     composeGotoQ(v) {
       const card = $('#cpq-' + v);
       if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -3803,7 +3861,7 @@
           answer: Array.isArray(q.answer) ? q.answer : [],
           analysis: q.analysis || '',
           difficulty: q.difficulty != null ? Number(q.difficulty) : 0.5,
-          kpCode: q.kpCode || '',
+          kpCodes: (q.kpCode || '').split(',').filter(Boolean),
           score: c.scoreMode === 'CUSTOM' ? 0 : null
         });
       });
@@ -3918,7 +3976,9 @@
           answer: Array.isArray(q.answer) ? q.answer : [],
           analysis: q.analysis || '',
           difficulty: q.difficulty != null ? Number(q.difficulty) : 0.5,
-          kpCode: q.kpCode || '',
+          // 知识点标签：完整保留 AI 返回的全部关联知识点（kpCodes 数组，兼容旧版单值 kpCode）
+          kpCodes: Array.isArray(q.kpCodes) && q.kpCodes.length ? q.kpCodes
+            : (q.kpCode ? [q.kpCode] : []),
           score: c.scoreMode === 'CUSTOM' ? 0 : null
         });
         let filled = 0, appended = 0, bi = 0;
@@ -4130,13 +4190,31 @@
       try {
         await API.post('/teacher/assignments/' + State.filters.subAs + '/ai-grade-batch');
         toast('AI 批量初评已启动，完成后将通知你');
-        // 异步任务：稍后自动刷新一次
-        setTimeout(async () => {
-          try {
-            await loadSubmissions(State.filters.subAs);
-            render();
-          } catch (e) { /* 忽略 */ }
-        }, 6000);
+        startBatchPoll();
+      } catch (e) { toast(e.message); }
+    },
+    // ---- 多作业批量初评：侧栏勾选多份作业一键触发 ----
+    batchModeToggle() {
+      State.filters.batchMode = !State.filters.batchMode;
+      State.filters.batchSel = [];
+      render();
+    },
+    batchToggle(v) {
+      State.filters.batchSel = State.filters.batchSel || [];
+      const i = State.filters.batchSel.indexOf(v);
+      if (i >= 0) State.filters.batchSel.splice(i, 1); else State.filters.batchSel.push(v);
+      render();
+    },
+    async batchAiStart() {
+      const ids = (State.filters.batchSel || []).slice();
+      if (!ids.length) { toast('请先勾选至少一份作业'); return; }
+      try {
+        await API.post('/teacher/assignments/ai-grade-batch', { assignmentIds: ids });
+        toast('已对 ' + ids.length + ' 份作业启动 AI 批量初评，完成后将通知你');
+        State.filters.batchMode = false;
+        State.filters.batchSel = [];
+        render();
+        startBatchPoll();
       } catch (e) { toast(e.message); }
     },
     warnFilter(v) { State.filters.warn = v; render(); },
@@ -4204,6 +4282,21 @@
       DB.submissions = await API.get('/teacher/assignments/' + asId + '/submissions');
       if (State.section === 'submissions') render();
     } catch (e) { /* 忽略 */ }
+  }
+
+  // 批量 AI 初评进行中：每 5 秒轮询当前作业的提交列表，初评状态变化自动呈现
+  //（loadSubmissions 内部会重渲染）；当前作业待批清零或超时 4 分钟后停止
+  function startBatchPoll() {
+    if (State._batchTimer) clearInterval(State._batchTimer);
+    let rounds = 0;
+    State._batchTimer = setInterval(async () => {
+      rounds++;
+      try {
+        await loadSubmissions(State.filters.subAs);
+        const pend = (DB.submissions || []).filter(s => s.asId === State.filters.subAs && s.status === 'pending').length;
+        if (pend === 0 || rounds >= 48) clearInterval(State._batchTimer);
+      } catch (e) { /* 忽略轮询失败 */ }
+    }, 5000);
   }
 
   async function refreshStudentSideData() {
@@ -4513,6 +4606,8 @@
       // 出题组卷：输入只写数据、不重渲染（防丢焦点）；分值输入仅联动总分文本
       const c = State.compose;
       if (!c) return;
+      // 题干/参考答案/答案解析框：输入/粘贴时即时自适应高度（不重渲染，无抖动）
+      if (t.classList.contains('cp-auto')) autoGrowBox(t);
       const qi = t.dataset.q !== undefined ? Number(t.dataset.q) : null;
       if (qi !== null) {
         const q = c.questions[qi];
@@ -4586,6 +4681,18 @@
   // 班级导入：文件选择（change 事件）
   document.addEventListener('change', e => {
     const t = e.target;
+    // 出题组卷：题卡知识点标签追加（下拉选择后仅局部刷新该题的知识点标签区）
+    if (t && t.dataset && t.dataset.kpadd !== undefined && State.compose) {
+      const qi = Number(t.dataset.kpadd);
+      const q = State.compose.questions[qi];
+      const v = t.value;
+      if (q && v) {
+        if (!Array.isArray(q.kpCodes)) q.kpCodes = [];
+        if (q.kpCodes.indexOf(v) < 0) q.kpCodes.push(v);
+        const box = document.getElementById('cpq-kp-' + qi);
+        if (box) box.innerHTML = composeQKpHtml(q, qi);
+      }
+    }
     if (t && t.dataset && t.dataset.importFile !== undefined && State.modal
         && State.modal.type === 'importClass') {
       const file = t.files && t.files[0];
