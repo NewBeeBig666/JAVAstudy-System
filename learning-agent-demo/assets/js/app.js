@@ -177,7 +177,8 @@
     inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
     route: '<circle cx="6" cy="19" r="3"/><circle cx="6" cy="5" r="3"/><circle cx="18" cy="19" r="3"/><path d="M9 19h5a2 2 0 0 0 2-2V7"/><path d="M9 5h3a2 2 0 0 1 2 2v3"/>',
     flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/>',
-    dots: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'
+    dots: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'
   };
   const icon = (n, s, c) => '<svg class="ico ' + (c || '') + '" width="' + (s || 18) + '" height="' + (s || 18) +
     '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
@@ -1749,12 +1750,16 @@
     const pend = list.filter(s => s.status === 'pending').length;
     // AI 批量初评完成后进入 ai_reviewed（待教师复核）——单列计数，与待批改区分
     const reviewed = list.filter(s => s.status === 'ai_reviewed').length;
-    const head = mainHead('提交批改', h(a.title) + ' · 共 ' + list.length + ' 条记录 · ' + pend + ' 份待批改');
+    // 成绩导出按钮：位于「提交批改」标题行右侧（即上下文面板「知识点」选项左侧），
+    // 导出当前班级全部学生、全部已发布作业（含最新作业）的成绩 Excel，支持时间段筛选
+    const head = mainHead('提交批改', h(a.title) + ' · 共 ' + list.length + ' 条记录 · ' + pend + ' 份待批改',
+      '<button class="btn sm" data-act="exportModal" title="导出当前班级全部作业成绩 Excel（支持时间段筛选）">' + icon('download', 14) + ' 导出成绩</button>');
 
     if (!list.length) {
       return { head, body: emptyBox('还没有学生提交', '作业发布后学生的提交会实时出现在这里，支持 AI 初评 + Rubric 人工复核。') };
     }
     const body = `<div class="card"><div class="card-head">${icon('inbox', 15)}<h3>提交列表</h3><div class="spacer"></div>
+      <button class="btn sm" data-act="exportSubs" title="导出全部已提交学生的作业与批改记录（每人一份 Word，打包 ZIP 下载）">${icon('download', 14)} 导出学生作业</button>
       <span class="badge warn">${pend} 待批改</span>
       ${reviewed ? `<span class="badge brand">${reviewed} AI初评待复核</span>` : ''}
       ${pend ? '<button class="btn sm primary" data-act="batchAi">AI 批量初评</button>' : ''}</div>
@@ -2287,6 +2292,26 @@
         </div>`;
       foot = `<button class="btn" data-act="closeModal">取消</button>
         <button class="btn primary" data-act="doImportClass" ${f && !d.uploading ? '' : 'disabled'}>${icon('send', 15)} ${d.uploading ? '上传中…' : '开始导入'}</button>`;
+
+    } else if (m.type === 'exportScores') {
+      title = '导出作业成绩';
+      const asCount = DB.assignments.filter(x => x.status !== 'draft').length;
+      const rangeOn = d.mode === 'range';
+      body = `<div class="note" style="margin-bottom:12px">导出当前班级 <b>全部学生</b>截止到当前时间的 <b>全部已发布作业成绩（含最新作业）</b>，生成标准 Excel 文件（含学生姓名、学号、各作业名称、成绩与提交时间），可直接用于统计处理。</div>
+        <div class="form-row"><label>导出范围</label>
+          <div class="fb-types">
+            <button type="button" class="fb-type ${!rangeOn ? 'on' : ''}" data-act="exportMode" data-val="all">全部作业（${asCount} 份）</button>
+            <button type="button" class="fb-type ${rangeOn ? 'on' : ''}" data-act="exportMode" data-val="range">按时间段筛选</button>
+          </div></div>
+        <div class="form-row" style="display:${rangeOn ? '' : 'none'}"><label>作业发布时间</label>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input class="input" type="date" value="${h(d.start || '')}" data-bind="modal" data-key="start" title="开始日期">
+            <span style="color:var(--text-3)">至</span>
+            <input class="input" type="date" value="${h(d.end || '')}" data-bind="modal" data-key="end" title="结束日期">
+          </div>
+          <div class="hint">导出该时间段内发布的作业成绩；日期均为包含关系（开始日 00:00 ~ 结束日 23:59）。</div></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doExportScores" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 正在生成 Excel…' : icon('download', 15) + ' 导出 Excel'}</button>`;
 
     } else if (m.type === 'feedback') {
       title = '建议反馈';
@@ -3910,6 +3935,123 @@
       const fd = new FormData();
       fd.append('file', file, file.name);
       xhr.send(fd);
+    },
+
+    /* --- 教师：作业成绩导出（提交批改页） --- */
+    exportModal() {
+      // 空数据前置拦截：班级还没有已发布作业时无需发起导出
+      const published = DB.assignments.filter(x => x.status !== 'draft');
+      if (!published.length) { toast('班级还没有已发布的作业，暂无可导出的成绩'); return; }
+      State.modal = { type: 'exportScores', data: { mode: 'all', start: '', end: '', busy: false } };
+      renderOverlays();
+    },
+    exportMode(v) {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.mode = v;
+      renderOverlays(); // 小弹窗整窗重渲染，日期值已先行存入 d.start/d.end 不会丢失
+    },
+    async doExportScores() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      const range = d.mode === 'range';
+      if (range) {
+        if (!d.start || !d.end) { toast('请选择完整的时间段（开始与结束日期）'); return; }
+        if (d.start > d.end) { toast('开始日期不能晚于结束日期'); return; }
+      }
+      d.busy = true; renderOverlays();
+      try {
+        const qs = range ? '?start=' + encodeURIComponent(d.start) + '&end=' + encodeURIComponent(d.end) : '';
+        const res = await fetch('/api/teacher/export/scores' + qs, {
+          headers: { 'Authorization': 'Bearer ' + API.token() }
+        });
+        if (res.status === 401) { Auth.logout(); return; }
+        const ct = res.headers.get('Content-Type') || '';
+        // 空数据 / 校验失败：后端返回统一 JSON 错误结构，解析出 msg 友好提示
+        if (ct.indexOf('application/json') >= 0) {
+          let data = null;
+          try { data = await res.json(); } catch (e) { /* 非 JSON */ }
+          throw new Error((data && data.msg) || ('导出失败（' + res.status + '）'));
+        }
+        if (!res.ok) throw new Error('导出失败（' + res.status + '）');
+        const blob = await res.blob();
+        if (!blob.size) throw new Error('导出文件为空');
+        // 文件名：优先取后端 Content-Disposition（RFC 5987 UTF-8），兜底本地生成
+        let name = '班级作业成绩-' + today() + '.xlsx';
+        const cd = res.headers.get('Content-Disposition') || '';
+        let m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+        if (m) { try { name = decodeURIComponent(m[1]); } catch (e) { name = m[1]; } }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        State.modal = null; renderOverlays();
+        toast('成绩已导出：' + name, 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('导出失败：' + e.message);
+      }
+    },
+
+    /* --- 教师：导出学生作业（提交列表卡片头，每人一份 Word 打包 ZIP） --- */
+    async exportSubs(v, id, t) {
+      if (State.exportSubsBusy) return;
+      const asId = State.filters.subAs;
+      const a = DB.assignments.find(x => x.id === asId) || DB.assignments[0];
+      if (!a) { toast('请先选择要导出的作业'); return; }
+      // 空数据前置拦截：还没有学生提交时不发起导出
+      const submitted = DB.submissions.filter(s => s.asId === a.id && s.status !== 'missing').length;
+      if (!submitted) { toast('该作业还没有学生提交，暂无可导出的作业'); return; }
+
+      // 按钮直改 DOM 展示加载态（不整页重渲染，避免表格滚动位置丢失）
+      const btn = t;
+      const oldHtml = btn ? btn.innerHTML : '';
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner dark"></span> 正在打包 ' + submitted + ' 份作业…'; }
+      State.exportSubsBusy = true;
+      const restore = () => {
+        State.exportSubsBusy = false;
+        if (btn && document.body.contains(btn)) { btn.disabled = false; btn.innerHTML = oldHtml; }
+      };
+      try {
+        // 超时保护：服务器长时间无响应时主动中断并提示重试
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 120000);
+        const res = await fetch('/api/teacher/assignments/' + a.id + '/export-submissions', {
+          headers: { 'Authorization': 'Bearer ' + API.token() },
+          signal: ctrl.signal
+        });
+        clearTimeout(timer);
+        if (res.status === 401) { restore(); Auth.logout(); return; }
+        const ct = res.headers.get('Content-Type') || '';
+        // 空数据 / 校验失败：后端返回统一 JSON 错误结构，解析出 msg 友好提示
+        if (ct.indexOf('application/json') >= 0) {
+          let data = null;
+          try { data = await res.json(); } catch (e) { /* 非 JSON */ }
+          throw new Error((data && data.msg) || ('导出失败（' + res.status + '）'));
+        }
+        if (!res.ok) throw new Error('导出失败（' + res.status + '）');
+        const blob = await res.blob();
+        if (!blob.size) throw new Error('导出文件为空');
+        let name = (a.title || '学生作业') + '-' + today() + '.zip';
+        const cd = res.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+        if (m) { try { name = decodeURIComponent(m[1]); } catch (e) { name = m[1]; } }
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url; link.download = name;
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        restore();
+        toast('已导出 ' + submitted + ' 名学生的作业：' + name, 'ok');
+      } catch (e) {
+        restore();
+        // 无响应 / 无网络分类提示；按钮已恢复，再次点击即可重试
+        const msg = e.name === 'AbortError'
+          ? '服务器长时间无响应，请稍后重试'
+          : (e instanceof TypeError ? '网络连接失败，请检查网络后重试' : e.message);
+        toast('导出失败：' + msg);
+      }
     },
 
     /* --- 教师 --- */

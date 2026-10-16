@@ -1340,6 +1340,18 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .hw-q { padding: 8px 0; border-top: 1px solid var(--border-2); }
 .hw-q-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .hw-q-score { font-size: 12px; color: var(--text-3); }
+/* 成绩导出：按钮内加载中 spinner */
+.spinner {
+  display: inline-block; width: 13px; height: 13px; flex: none;
+  border: 2px solid rgba(255, 255, 255, .45); border-top-color: #fff;
+  border-radius: 50%; vertical-align: -2px; margin-right: 2px;
+  animation: spin .7s linear infinite;
+}
+/* 浅色普通按钮内的加载 spinner（如「导出学生作业」） */
+.spinner.dark {
+  border-color: rgba(124, 58, 237, .3); border-top-color: var(--brand, #7c3aed);
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 /* 题干保留换行：多点要求（1) 2) 3)）各自单独成行，避免在同一行连续排列 */
 .hw-q-title { font-size: 13.5px; line-height: 1.6; margin-bottom: 4px; white-space: pre-line; }
 .hw-q-opt { font-size: 13px; color: var(--text-2); padding: 1px 0 1px 10px; }

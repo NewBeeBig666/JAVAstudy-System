@@ -15,6 +15,9 @@ import com.la.service.ComposeImportService;
 import com.la.service.GradingService;
 import com.la.service.TeacherService;
 import com.la.service.ClassImportService;
+import com.la.service.ScoreExportService;
+import com.la.service.SubmissionExportService;
+import org.springframework.http.ResponseEntity;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -41,6 +44,8 @@ public class TeacherController {
     private final ClassMapper classMapper;
     private final AssignmentMapper assignmentMapper;
     private final ClassImportService classImportService;
+    private final ScoreExportService scoreExportService;
+    private final SubmissionExportService submissionExportService;
 
     @Operation(summary = "上传 Excel/Word 名单批量添加班级（.xlsx/.xls/.docx/.doc）")
     @PostMapping(value = "/classes/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -156,6 +161,20 @@ public class TeacherController {
     @GetMapping("/assignments/{id}/submissions")
     public ApiResponse<List<Map<String, Object>>> submissions(@PathVariable Long id) {
         return ApiResponse.ok(assignmentService.submissionList(id));
+    }
+
+    @Operation(summary = "导出班级作业成绩 Excel（全部作业或指定发布时间段，含学生姓名/学号/各作业成绩/提交时间）")
+    @GetMapping("/export/scores")
+    public ResponseEntity<byte[]> exportScores(@RequestParam(required = false) Long classId,
+                                               @RequestParam(required = false) String start,
+                                               @RequestParam(required = false) String end) {
+        return scoreExportService.export(classId != null ? classId : defaultClassId(), start, end);
+    }
+
+    @Operation(summary = "导出学生作业：每个已提交学生一份 Word（作答+批改+评语+得分），打包 ZIP 下载")
+    @GetMapping("/assignments/{id}/export-submissions")
+    public ResponseEntity<byte[]> exportSubmissions(@PathVariable Long id) {
+        return submissionExportService.export(id);
     }
 
     @Operation(summary = "单份 AI 初评（同步）")
