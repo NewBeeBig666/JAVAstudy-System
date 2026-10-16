@@ -2010,27 +2010,174 @@
     composeAutoSizeTitles();
   }
 
-  // newSession 弹窗的知识点列表（按 d.q 过滤）：初始渲染与搜索输入的局部刷新共用，
-  // 避免搜索时整窗 innerHTML 重建重放弹窗入场动画（闪屏）并丢失输入焦点。
-  function newSessionPickList() {
+  /* ============ newSession 弹窗·分层知识点选择（V2 层级化改造） ============
+     原平铺列表（单组最多 96 行）重构为「模块 → 章节 → 知识点」分层下钻：
+     - 面包屑逐级回退，任意知识点 ≤3 次点击即可见（模块 → L2 → L3 平铺子树）；
+     - 下钻时若节点后代总数 ≤19，整棵子树一步平铺（缩进+层级徽标），
+       每屏展示行数 ≤20，避免深层链路逐级点开；
+     - 保留全库搜索快速直达（结果带层级路径）；已选知识点以标签条展示可点击移除；
+     - 局部刷新策略与原版一致：仅重写选择区容器，不重建弹窗外壳（防闪屏/丢焦点）。 */
+
+  // 知识点树索引（children/后代总数）：按节点总数缓存，弹窗内多次下钻复用，避免重复构建
+  function nsKpIndex() {
+    const N = DB.knowledgePoints.length;
+    const c = nsKpIndex._cache;
+    if (c && c.n === N) return c;
+    const byId = {}; DB.knowledgePoints.forEach(k => byId[k.id] = k);
+    const kids = {};
+    DB.knowledgePoints.forEach(k => {
+      if (k.parent && byId[k.parent] && k.parent !== k.id) (kids[k.parent] = kids[k.parent] || []).push(k);
+    });
+    const desc = {}; // 各节点后代总数（不含自身）
+    const subCount = (k, depth) => {
+      if (depth > 9 || desc[k.id] != null) return desc[k.id] || 0; // 防环兜底
+      let n = 0;
+      (kids[k.id] || []).forEach(ch => { n += 1 + subCount(ch, depth + 1); });
+      return desc[k.id] = n;
+    };
+    DB.knowledgePoints.forEach(k => { if (!k.parent || !byId[k.parent]) subCount(k, 0); });
+    return nsKpIndex._cache = { n: N, byId, kids, desc };
+  }
+
+  // 分层导航·滚动位置记忆/恢复：d.scrolls[层级深度] = 该层列表的 scrollTop，
+  // 下钻/返回/面包屑跳转前保存当前层位置，渲染后恢复目标层位置（无记录则回顶部）
+  function nsSaveScroll(d) {
+    const area = document.getElementById('nsPickArea');
+    const pl = area && area.querySelector('.pick-list');
+    if (pl) { d.scrolls = d.scrolls || []; d.scrolls[(d.nav || []).length] = pl.scrollTop; }
+  }
+  function nsRerenderArea(d) {
+    const area = document.getElementById('nsPickArea');
+    if (area) area.innerHTML = newSessionPickArea();
+    const pl = area && area.querySelector('.pick-list');
+    if (pl) pl.scrollTop = ((d.scrolls || [])[(d.nav || []).length]) || 0;
+  }
+
+  // 已选知识点标签条（点击 × 移除）
+  function nsPillsHtml() {
+    const d = (State.modal && State.modal.data) || {};
+    const { byId } = nsKpIndex();
+    const kps = d.kps || [];
+    return kps.length
+      ? `<div class="ns-pills" id="nsPills">${kps.map(id => {
+          const k = byId[id];
+          return `<span class="badge brand ns-pill" data-act="pickKp" data-val="${h(id)}" title="点击移除「${h(k ? k.name : id)}」">${h(k ? k.name : id)} ×</span>`;
+        }).join('')}</div>`
+      : '<div class="ns-pills" id="nsPills"></div>';
+  }
+
+  // 选择区主体：顶部导航条（返回上一级按钮 + 面包屑）+ 已选标签 + 当前层内容
+  function newSessionPickArea() {
     const d = (State.modal && State.modal.data) || {};
     const kps = d.kps || [];
-    const list = DB.knowledgePoints.filter(k => !d.q || k.name.indexOf(d.q) >= 0);
-    // 按一级模块分组展示课程知识点全集；选中态高亮，点击多选（含细化层级节点）
+    const { byId, kids, desc } = nsKpIndex();
+    const nav = d.nav || [];
+    // 返回上一级按钮：所有非根层级视图顶部统一展示（搜索态无导航不展示），
+    // 显示目标父级名称便于定位；根级（模块卡）与搜索态不显示
+    let backBtn = '';
+    if (nav.length && !d.q) {
+      const parent = nav.length >= 2 ? byId[nav[nav.length - 2]] : null;
+      const pname = parent ? parent.name : '全部知识点';
+      backBtn = `<button type="button" class="ns-back" data-act="nsBack" title="返回上一级「${h(pname)}」">${icon('chevronL', 14)} 返回${h(pname)}</button>`;
+    }
+    // 面包屑：全部 › 各级（点击回跳）
+    const crumbs = `<div class="ns-crumbs">
+      <button type="button" class="ns-crumb ${!nav.length ? 'cur' : ''}" data-act="nsNav" data-val="-1">全部知识点</button>
+      ${nav.map((code, i) => {
+        const n = byId[code];
+        return `<span class="ns-crumb-sep">›</span><button type="button" class="ns-crumb ${i === nav.length - 1 ? 'cur' : ''}" data-act="nsNav" data-val="${i}">${h(n ? n.name : code)}</button>`;
+      }).join('')}
+    </div>`;
+    let list = '';
+    if (d.q) {
+      list = nsSearchList(d.q, kps, byId);
+    } else if (!nav.length) {
+      list = nsModuleCards(kps, byId, kids, desc);
+    } else {
+      const cur = byId[nav[nav.length - 1]];
+      if (!cur) { d.nav = []; list = nsModuleCards(kps, byId, kids, desc); }
+      else if ((desc[cur.id] || 0) <= 19) list = nsFlatSubtree(cur, kps, kids);
+      else list = nsChildRows(cur, kps, kids, desc);
+    }
+    return nsPillsHtml() + `<div class="ns-topbar">${backBtn}${crumbs}</div>`
+      + `<div class="pick-list">${list || '<div class="empty"><div class="empty-title">没有匹配的知识点</div></div>'}</div>`;
+  }
+
+  // 搜索态：全库扁平匹配（保留快速直达路径），行点击即选中，副行展示层级路径
+  function nsSearchList(q, kps, byId) {
+    const list = DB.knowledgePoints.filter(k => k.name.indexOf(q) >= 0);
     const groups = DB.modules.map(m => {
       const ks = list.filter(k => k.module === m.id);
       if (!ks.length) return '';
       return `<div class="ns-group">
         <div class="ns-group-title" style="border-left:3px solid ${m.color}">${h(m.name)}<span>${ks.length}</span></div>
-        ${ks.map(k => `<div class="pick ${kps.indexOf(k.id) >= 0 ? 'on' : ''}" data-act="pickKp" data-val="${k.id}">
-          <div class="pm"><div class="pn">${k.name}</div><div class="pd">L${k.level} · ${h(m.name)}</div></div>
-          <div style="text-align:right">
-            <div style="font-size:15px;font-weight:700;color:${!k.hasData ? 'var(--text-3)' : k.mastery >= 60 ? 'var(--ok)' : 'var(--danger)'}">${k.hasData ? k.mastery : '—'}</div>
-            <div style="font-size:11px;color:var(--text-3)">${k.hasData ? mtext(k.mastery) : '暂无数据'}</div></div>
-        </div>`).join('')}
+        ${ks.map(k => {
+          const path = [];
+          let p = byId[k.parent];
+          while (p && path.length < 3) { path.unshift(p.name); p = byId[p.parent]; }
+          return nsLeafRow(k, kps, 'L' + k.level + ' · ' + path.map(h).join(' / '));
+        }).join('')}
       </div>`;
     }).join('');
-    return groups || '<div class="empty"><div class="empty-title">没有匹配的知识点</div></div>';
+    return groups;
+  }
+
+  // 可选行（叶/搜索/平铺通用）：整行点击切换选中，右侧保留掌握度展示
+  function nsLeafRow(k, kps, subText, indent, isRoot) {
+    const on = kps.indexOf(k.id) >= 0;
+    return `<div class="pick ${on ? 'on' : ''}" data-act="pickKp" data-val="${h(k.id)}"
+      ${indent ? `style="margin-left:${indent}px"` : ''} ${isRoot ? 'data-root="1"' : ''}>
+      <div class="pm"><div class="pn">${h(k.name)}</div><div class="pd">${subText}</div></div>
+      <div style="text-align:right">
+        <div style="font-size:15px;font-weight:700;color:${!k.hasData ? 'var(--text-3)' : k.mastery >= 60 ? 'var(--ok)' : 'var(--danger)'}">${k.hasData ? k.mastery : '—'}</div>
+        <div style="font-size:11px;color:var(--text-3)">${k.hasData ? mtext(k.mastery) : '暂无数据'}</div></div>
+    </div>`;
+  }
+
+  // 模块层：课程一级模块卡（行点击下钻，右侧「＋」直接选中整模块）
+  function nsModuleCards(kps, byId, kids, desc) {
+    return DB.modules.map(m => {
+      const root = DB.knowledgePoints.find(k => k.module === m.id && k.level === 1);
+      if (!root) return '';
+      const total = 1 + (desc[root.id] || 0);
+      const on = kps.indexOf(root.id) >= 0;
+      return `<div class="pick ns-mod ${on ? 'on' : ''}" data-act="nsDrill" data-val="${h(root.id)}">
+        <div class="ns-mod-bar" style="background:${m.color}"></div>
+        <div class="pm"><div class="pn">${h(root.name)}</div>
+          <div class="pd">${total} 个知识点 · ${(kids[root.id] || []).length} 个章节</div></div>
+        <button type="button" class="ns-sel ${on ? 'on' : ''}" data-act="pickKp" data-val="${h(root.id)}" title="选择整个模块">${on ? '✓' : '＋'}</button>
+        ${icon('chevronR', 15)}
+      </div>`;
+    }).join('');
+  }
+
+  // 章节层（后代 >19 不可整铺）：直接子节点列表（≤20 行）
+  //  - 有下级的行：整行下钻，「＋」按钮选中该节点；叶行：整行点击即选中
+  function nsChildRows(cur, kps, kids, desc) {
+    const rows = (kids[cur.id] || []).map(c => {
+      const on = kps.indexOf(c.id) >= 0;
+      const dc = desc[c.id] || 0;
+      if (!dc) return nsLeafRow(c, kps, 'L' + c.level + ' · ' + h(cur.name));
+      return `<div class="pick ns-row ${on ? 'on' : ''}" data-act="nsDrill" data-val="${h(c.id)}">
+        <div class="pm"><div class="pn">${h(c.name)}</div>
+          <div class="pd"><span class="ns-lv">L${c.level}</span> ${dc} 个下级知识点</div></div>
+        <button type="button" class="ns-sel ${on ? 'on' : ''}" data-act="pickKp" data-val="${h(c.id)}" title="选择「${h(c.name)}」">${on ? '✓' : '＋'}</button>
+        ${icon('chevronR', 15)}
+      </div>`;
+    }).join('');
+    // 页头行：当前章节自身可直接选中
+    return nsLeafRow(cur, kps, '当前章节 · 整章选中', 0, true) + rows;
+  }
+
+  // 平铺子树（后代 ≤19）：整棵子树一步展示（缩进表示层级，行点击即选中）
+  function nsFlatSubtree(node, kps, kids) {
+    const rows = [];
+    const walk = (k, rel) => {
+      rows.push(nsLeafRow(k, kps, rel === 0 ? '当前章节 · 整章选中' : 'L' + k.level + ' · 下级知识点', rel * 14, rel === 0));
+      (kids[k.id] || []).forEach(c => walk(c, rel + 1));
+    };
+    walk(node, 0);
+    return rows.join('');
   }
 
   /* 教师端反馈浮窗内容区 HTML（列表 + AI 总结区块）。
@@ -2065,10 +2212,10 @@
     if (m.type === 'newSession') {
       const n = (d.kps || []).length;
       title = '新建学习会话 · 选择知识点（可多选 / 可不选）';
-      body = `<div class="note" style="margin-bottom:10px">选择 <b>1 个</b>知识点攻克单一短板；选择 <b>多个</b>生成跨知识点路径；<b>不选</b>则由智能体按你的学习数据生成覆盖全部知识点的学习路径。${n ? '（已选 ' + n + ' 个）' : ''}</div>
+      body = `<div class="note" style="margin-bottom:10px">选择 <b>1 个</b>知识点攻克单一短板；选择 <b>多个</b>生成跨知识点路径；<b>不选</b>则由智能体按你的学习数据生成覆盖全部知识点的学习路径。<span id="nsCount">${n ? '（已选 ' + n + ' 个）' : ''}</span></div>
         <div class="field" style="margin-bottom:12px">${icon('search', 15)}
           <input placeholder="搜索知识点，如：并发、集合、JVM" value="${h(d.q || '')}" data-bind="modal" data-key="q"></div>
-        <div class="pick-list">${newSessionPickList()}</div>`;
+        <div id="nsPickArea">${newSessionPickArea()}</div>`;
       foot = `<button class="btn" data-act="closeModal">取消</button>
         <button class="btn primary" data-act="createSession">${icon('sparkles', 15)} 创建并生成学习路径${n ? '（' + n + ' 个知识点）' : '（全部知识点）'}</button>`;
 
@@ -2211,7 +2358,7 @@
       // 学生作答映射：questionId -> value
       const ansMap = {};
       (sub.answers || []).forEach(x => { ansMap[String(x.questionId)] = x.value; });
-      main = `<div class="note warn" style="margin-bottom:12px;white-space:pre-line"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || '尚未初评，可稍后重试')}</div>
+      main = `<div class="note warn" style="margin-bottom:12px;white-space:pre-line"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || (g.aiBusy ? '正在自动初评，完成后总分将自动预填，您也可以直接手动录入分数…' : '尚未初评，可稍后重试'))}</div>
         <div class="hw-qlist-head" style="margin-bottom:12px">${icon('file', 14)} 原始题目与学生作答对照 · 共 ${(a.questions || []).length} 题 · 总分 ${a.totalScore != null ? a.totalScore : 100}</div>
         ${(a.questions || []).map((q, i) => gradeQCompareCard(q, i, ansMap, a)).join('')}`;
     } else {
@@ -2232,7 +2379,7 @@
     /* 右侧评分面板：学生信息卡 + 评分区 + 合计 + 评语 */
     const scoreArea = isQ
       ? `<div class="rubric-row" style="align-items:center">
-          <div class="rn"><b>作业总分</b><span>客观题已自动判分，主观题请参考 AI 初评复核</span></div>
+          <div class="rn"><b>作业总分</b><span>${g.aiBusy ? 'AI 初评进行中，完成后自动预填；也可直接手动录入' : '默认预填 AI 初评结果，可直接修改'}</span></div>
           <input class="input" type="number" min="0" max="100" value="${g.total != null ? g.total : ''}" placeholder="0" data-bind="rubricTotal" ${graded ? 'disabled' : ''}>
           <span style="font-size:12px;color:var(--text-3);width:36px">/100</span>
         </div>`
@@ -2256,7 +2403,9 @@
         <span class="score-big" id="scorePreview">${scorePreview}</span>
         <span style="font-size:12px;color:var(--text-3)">/ 100</span>
         <div style="flex:1"></div>
-        ${graded ? '' : '<button class="btn sm ghost" data-act="useAi">采用 AI 初评</button>'}
+        ${graded ? '' : g.aiBusy
+          ? '<span class="badge brand">AI 初评中…</span>'
+          : '<button class="btn sm ghost" data-act="useAi">采用 AI 初评</button>'}
       </div>
       <div class="form-row"><label>教师评语（将同步给学生）</label>
         <textarea class="textarea" style="min-height:88px" placeholder="肯定做得好的地方 + 一条具体改进建议…" data-bind="comment" ${graded ? 'disabled' : ''}>${h(g.comment || '')}</textarea></div>`;
@@ -3119,6 +3268,45 @@
     }
   }
 
+  /* 批阅页打开时的默认分数逻辑（题目型作业）：
+     - 已有 AI 初评结果 → 总分默认预填 aiScore（客观题自动判分 + 主观题 AI 评分），教师可随时手动调整；
+     - 尚无初评结果（已提交且未批改）→ 自动触发单份 AI 初评，无需教师手动获取；
+       完成后回填默认分数（教师已手动录入时不覆盖）。
+     - 草稿缓存恢复时同样生效（期间批量初评可能已完成）。 */
+  function prepareGradingDefaults(g, sub, a) {
+    g.aiBusy = false;
+    if (!a || a.questionCount <= 0) return;
+    if (sub.status === 'missing' || sub.status === 'graded') return;
+    if (g.total != null && g.total !== '') return; // 教师已手动录入分数，不覆盖
+    if (sub.aiScore != null) { g.total = sub.aiScore; return; }
+    g.aiBusy = true;
+    autoAiGradeOnOpen(sub.id);
+  }
+
+  // 打开批阅页自动触发的单份 AI 初评：结果写回提交列表数据；若教师仍停留在该生批阅页则回填默认总分
+  async function autoAiGradeOnOpen(subId) {
+    try {
+      const r = await API.post('/teacher/submissions/' + subId + '/ai-grade');
+      const sub = DB.submissions.find(x => x.id === subId);
+      if (sub) { sub.aiScore = r.aiScore; sub.aiComment = r.aiComment; sub.status = 'ai_reviewed'; }
+      const g = State.grading;
+      const onPage = g && g.subId === subId && State.drawer && State.drawer.subId === subId;
+      if (onPage) {
+        g.aiBusy = false;
+        if (g.total == null || g.total === '') g.total = r.aiScore;
+        renderOverlays(); renderCtx();
+        toast('AI 初评完成，总分已预填 ' + r.aiScore + ' 分，请复核调整后提交', 'ok');
+      }
+    } catch (e) {
+      const g = State.grading;
+      if (g && g.subId === subId) {
+        g.aiBusy = false;
+        if (State.drawer && State.drawer.subId === subId) { renderOverlays(); renderCtx(); }
+      }
+      toast('AI 初评自动获取失败：' + e.message + '（可手动评分或稍后在列表页重试）');
+    }
+  }
+
   /* --- 作业卡片「更多」下拉菜单（绝对定位浮层，不触发整页重渲染） --- */
   let asMenuEl = null;
   function closeAsMenu() {
@@ -3196,7 +3384,7 @@
     },
 
     /* --- 学生：会话 --- */
-    newSession() { State.modal = { type: 'newSession', data: { kps: [], q: '' } }; renderOverlays(); },
+    newSession() { State.modal = { type: 'newSession', data: { kps: [], q: '', nav: [] } }; renderOverlays(); },
     pickKp(v, id, t) {
       // 多选切换：点选/取消任意知识点；不选（空）= 覆盖全部知识点的学习路径
       const d = State.modal.data;
@@ -3206,7 +3394,22 @@
       // 局部切换选中态：整窗 innerHTML 重建会重放 mask/modal 入场动画（闪屏），
       // 且 .pick-list 的 scrollTop 会归零（弹窗列表跳回顶部）；改为直接改 class。
       if (t && t.classList && t.closest('.pick-list')) {
+        // 「＋」选择按钮：联动按钮与所在行的选中态；普通行/标签：仅本元素
+        const row = t.classList.contains('ns-sel') ? t.closest('.pick') : t;
+        if (row) row.classList.toggle('on', i < 0);
         t.classList.toggle('on', i < 0);
+      }
+      // 已选标签条与计数同步（局部刷新，不重建列表防滚动跳顶）
+      if (State.modal.type === 'newSession') {
+        const pills = document.getElementById('nsPills');
+        if (pills) {
+          const wrap = document.createElement('div');
+          wrap.innerHTML = nsPillsHtml();
+          pills.className = wrap.firstChild.className;
+          pills.innerHTML = wrap.firstChild.innerHTML;
+        }
+        const cnt = document.getElementById('nsCount');
+        if (cnt) cnt.textContent = d.kps.length ? '（已选 ' + d.kps.length + ' 个）' : '';
       }
       // 同步「创建」按钮文案（原先由整窗重渲染负责，局部更新后需手动刷新）
       const btn = document.querySelector('.modal [data-act="createSession"]');
@@ -3214,6 +3417,32 @@
         const n = d.kps.length;
         btn.innerHTML = icon('sparkles', 15) + ' 创建并生成学习路径' + (n ? '（' + n + ' 个知识点）' : '（全部知识点）');
       }
+    },
+    // 分层导航：下钻一级（模块/章节行点击触发，局部刷新选择区）
+    nsDrill(v) {
+      const d = State.modal && State.modal.data;
+      if (!d) return;
+      d.nav = d.nav || [];
+      nsSaveScroll(d); // 记住当前层滚动位置，返回时恢复
+      d.nav.push(v);
+      nsRerenderArea(d); // 新层默认回到顶部（首次进入）
+    },
+    // 分层导航：返回上一级（顶部统一返回按钮）——回退一级并恢复该层此前的滚动位置
+    nsBack() {
+      const d = State.modal && State.modal.data;
+      if (!d || !(d.nav || []).length) return;
+      nsSaveScroll(d);
+      d.nav = d.nav.slice(0, -1);
+      nsRerenderArea(d);
+    },
+    // 分层导航：面包屑回跳（-1 = 全部知识点）
+    nsNav(v) {
+      const d = State.modal && State.modal.data;
+      if (!d) return;
+      const idx = Number(v);
+      nsSaveScroll(d);
+      d.nav = idx < 0 ? [] : (d.nav || []).slice(0, idx + 1);
+      nsRerenderArea(d);
     },
     async createSession() {
       const kps = (State.modal.data.kps || []).slice();
@@ -4058,15 +4287,17 @@
     openSub(v) {
       const sub = DB.submissions.find(x => x.id === v);
       if (!sub) return;
+      const a = DB.assignments.find(x => x.id === sub.asId);
       // 批改草稿缓存：返回列表/切换学生后再次进入同一学生，恢复已输入的评分与批注
       const cached = State.gradingDrafts && State.gradingDrafts[String(v)];
       if (cached) {
         State.grading = cached;
         State.drawer = { subId: v };
+        // 草稿无分数且初评结果已就绪（期间批量初评可能已完成）→ 补默认值；仍无结果则自动触发
+        prepareGradingDefaults(cached, sub, a);
         renderOverlays(); renderCtx();
         return;
       }
-      const a = DB.assignments.find(x => x.id === sub.asId);
       const scores = {};
       a.rubric.forEach(r => {
         scores[r.name] = (sub.rubricScores && sub.rubricScores[r.name] != null)
@@ -4074,10 +4305,11 @@
           : Math.round(r.max * ((sub.aiScore != null ? sub.aiScore : 70) / 100));
       });
       State.grading = {
-        subId: v, scores, comment: sub.teacherComment || '',
-        // 题目型作业：总分默认取 AI 初评（客观题自动判分结果），教师可改
-        total: a.questionCount > 0 ? (sub.aiScore != null ? sub.aiScore : null) : null
+        subId: v, scores, comment: sub.teacherComment || '', total: null
       };
+      // 题目型作业：总分默认取 AI 初评结果（客观题自动判分 + 主观题 AI 评分），教师可改；
+      // 尚无初评结果时自动触发单份 AI 初评（无需手动获取），完成后回填
+      prepareGradingDefaults(State.grading, sub, a);
       State.drawer = { subId: v };
       renderOverlays(); renderCtx();
     },
@@ -4596,10 +4828,19 @@
     }
     else if (b === 'modal') {
       if (State.modal) State.modal.data[t.dataset.key] = t.value;
-      // newSession 搜索：仅局部刷新知识点列表，避免整窗重建重放弹窗动画（闪屏）并丢失输入焦点
+      // newSession 搜索：仅局部刷新知识点选择区（面包屑/标签条随搜索态切换），
+      // 避免整窗重建重放弹窗动画（闪屏）并丢失输入焦点；
+      // 清空搜索后恢复当前导航层级此前的滚动位置（筛选条件 q 始终保留在输入框中）
       if (t.dataset.key === 'q' && State.modal && State.modal.type === 'newSession') {
-        const pl = document.querySelector('.modal .pick-list');
-        if (pl) pl.innerHTML = newSessionPickList();
+        const d = State.modal.data;
+        const pl0 = document.querySelector('.modal #nsPickArea .pick-list');
+        if (pl0 && d) { d.scrolls = d.scrolls || []; d.scrolls[(d.nav || []).length] = pl0.scrollTop; }
+        const area = document.querySelector('.modal #nsPickArea');
+        if (area) area.innerHTML = newSessionPickArea();
+        if (d && !d.q) {
+          const pl = area && area.querySelector('.pick-list');
+          if (pl) pl.scrollTop = d.scrolls[(d.nav || []).length] || 0;
+        }
       }
     }
     else if (b === 'compose') {
