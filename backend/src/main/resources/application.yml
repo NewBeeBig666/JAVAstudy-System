@@ -19,8 +19,9 @@ spring:
     import: "optional:file:./application-secret.yml"
   servlet:
     multipart:
-      max-file-size: 10MB
-      max-request-size: 12MB
+      # 学习资源：视频上限 200MB、其余 50MB（业务校验在 ResourceService 中执行）
+      max-file-size: 200MB
+      max-request-size: 210MB
   web:
     resources:
       static-locations: file:../learning-agent-demo/, classpath:/META-INF/resources/, classpath:/resources/, classpath:/static/, classpath:/public/

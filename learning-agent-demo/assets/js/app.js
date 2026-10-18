@@ -215,6 +215,7 @@
   const NAV = {
     student: [
       { key: 'chat', label: '学习会话', icon: 'chat' },
+      { key: 'resources', label: '学习资源', icon: 'layers' },
       { key: 'knowledge', label: '知识图谱', icon: 'target' },
       { key: 'homework', label: '我的作业', icon: 'clipboard' },
       { key: 'exercise', label: '练习记录', icon: 'book' },
@@ -222,6 +223,7 @@
     ],
     teacher: [
       { key: 'dashboard', label: '学情看板', icon: 'grid' },
+      { key: 'resources', label: '学习资源', icon: 'layers' },
       { key: 'assignments', label: '作业管理', icon: 'clipboard' },
       { key: 'submissions', label: '提交批改', icon: 'check' },
       { key: 'warnings', label: '预警中心', icon: 'alert' },
@@ -448,12 +450,14 @@
     let head = '', body = '';
     if (State.role === 'student') {
       if (sec === 'chat') { const r = viewChat(); head = r.head; body = r.body; }
+      else if (sec === 'resources') { const r = viewResources(); head = r.head; body = r.body; }
       else if (sec === 'knowledge') { const r = viewKnowledge(); head = r.head; body = r.body; }
       else if (sec === 'homework') { const r = viewHomework(); head = r.head; body = r.body; }
       else if (sec === 'exercise') { const r = viewExercise(); head = r.head; body = r.body; }
       else if (sec === 'report') { const r = viewReport(); head = r.head; body = r.body; }
     } else {
       if (sec === 'dashboard') { const r = viewDashboard(); head = r.head; body = r.body; }
+      else if (sec === 'resources') { const r = viewResources(); head = r.head; body = r.body; }
       else if (sec === 'assignments') { const r = viewAssignments(); head = r.head; body = r.body; }
       else if (sec === 'submissions') { const r = viewSubmissions(); head = r.head; body = r.body; }
       else if (sec === 'warnings') { const r = viewWarnings(); head = r.head; body = r.body; }
@@ -1837,9 +1841,235 @@
     return { head, body };
   }
 
+  /* ===========================================================
+   *  视图：学习资源（教师上传 / 学生查看，共用入口按角色分流）
+   *  - 数据懒加载：首次进入视图时拉取 DB.resources，加载中显示骨架屏
+   *  - 教师端：上传（AI 识别内容并关联知识点）/ 编辑知识点 / 删除 / 已学完人数
+   *  - 学生端：预览下载（记录查看进度）/ 标记已学完 / 我的进度徽章
+   * =========================================================== */
+
+  // 学习资源类型元数据：徽章文案 + 允许的扩展名 + 大小上限（前端校验口径与后端一致）
+  const RES_META = {
+    ppt:   { label: 'PPT 课件', exts: ['ppt', 'pptx'] },
+    video: { label: '教学视频', exts: ['mp4'] },
+    image: { label: '图片',     exts: ['jpg', 'jpeg', 'png'] },
+    word:  { label: 'Word 文档', exts: ['doc', 'docx'] },
+    pdf:   { label: 'PDF 文档', exts: ['pdf'] }
+  };
+  const resExtAllowed = ['ppt', 'pptx', 'mp4', 'jpg', 'jpeg', 'png', 'doc', 'docx', 'pdf'];
+  const resTypeLabel = t => (RES_META[t] && RES_META[t].label) || '资源';
+  const resSizeText = n => n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+
+  // 懒加载资源列表：null=加载中 / undefined=未开始。加载完成若停留在本视图则重渲染
+  function ensureResources() {
+    if (DB.resources !== undefined) return;
+    DB.resources = null;
+    DB.resLoadError = '';
+    const path = State.role === 'teacher' ? '/teacher/resources' : '/resources';
+    API.get(path).then(list => {
+      DB.resources = list || [];
+      if (State.section === 'resources') render();
+    }).catch(e => {
+      DB.resources = [];
+      DB.resLoadError = e.message;
+      if (State.section === 'resources') render();
+    });
+  }
+
+  // 上传/编辑弹窗共用的知识点多选列表（搜索 + 点选，局部刷新防闪屏丢焦点）
+  function resKpListHtml() {
+    const d = State.modal && State.modal.data;
+    if (!d) return '';
+    const q = (d.q || '').toLowerCase();
+    const kps = DB.knowledgePoints.filter(k =>
+      !q || (k.name || '').toLowerCase().indexOf(q) >= 0 || (k.id || '').toLowerCase().indexOf(q) >= 0);
+    return kps.map(k => {
+      const on = (d.kps || []).indexOf(k.id) >= 0;
+      return `<div class="pick ${on ? 'on' : ''}" data-act="resKpToggle" data-val="${h(k.id)}">
+        <div class="pm"><div class="pn">${h(k.name)}</div><div class="pd">${h(k.id)}</div></div>
+        <span class="badge ${on ? 'brand' : ''}">${on ? '已选' : '＋'}</span>
+      </div>`;
+    }).join('') || '<div class="empty"><div class="empty-title">没有匹配的知识点</div></div>';
+  }
+
+  function viewResources() {
+    ensureResources();
+    if (State.role === 'teacher') return viewResourcesTeacher();
+    return viewResourcesStudent();
+  }
+
+  function viewResourcesTeacher() {
+    const head = mainHead('学习资源', '上传课件与资料，AI 自动识别内容并关联知识点',
+      '<button class="btn primary" data-act="resUploadModal">' + icon('plus', 15) + ' 上传资源</button>');
+    if (DB.resources === null || DB.resources === undefined) {
+      return { head, body: '<div class="main-body"><div class="main-inner">' + skeleton() + '</div></div>' };
+    }
+    if (DB.resLoadError) {
+      return { head, body: '<div class="card"><div class="empty"><div class="empty-title">资源加载失败</div><div class="empty-desc">' + h(DB.resLoadError) + '</div></div></div>' };
+    }
+    if (!DB.resources.length) {
+      return { head, body: emptyBox('还没有学习资源', '上传 PPT、视频、图片、Word 或 PDF，AI 会识别内容并关联知识点，学生即可查看学习。',
+        '<button class="btn primary" data-act="resUploadModal">' + icon('plus', 15) + ' 上传第一个资源</button>') };
+    }
+    const body = DB.resources.map(r => `<div class="card">
+      <div class="card-head">
+        <span class="badge brand">${resTypeLabel(r.fileType)}</span>
+        <h3>${h(r.title)}</h3><div class="spacer"></div>
+        <span class="badge ok">${icon('checkcircle', 12)} ${r.completedCount || 0} 人已学完</span>
+        <button class="btn sm ghost" data-act="resFile" data-id="${r.id}" title="预览/下载">${icon('eye', 14)}</button>
+        <button class="btn sm ghost" data-act="resEditKp" data-id="${r.id}" title="编辑关联知识点">${icon('edit', 14)}</button>
+        <button class="btn sm ghost" data-act="resDel" data-id="${r.id}" title="删除">${icon('trash', 14)}</button>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <span class="badge">${h(r.fileName)}</span>
+          <span class="badge">${resSizeText(r.fileSize || 0)}</span>
+          <span class="badge">${h((r.createdAt || '').slice(0, 10))}</span>
+          ${(r.kpCodes || []).map(c => '<span class="badge brand" title="' + h(c) + '">' + h(kpName(c)) + '</span>').join('')}
+        </div>
+        ${r.aiSummary ? '<div class="note" style="margin:0">' + icon('sparkles', 13) + ' AI：' + h(r.aiSummary) + '</div>' : ''}
+      </div></div>`).join('');
+    return { head, body };
+  }
+
+  function viewResourcesStudent() {
+    const done = (DB.resources || []).filter(r => r.myProgress && r.myProgress.completed).length;
+    const head = mainHead('学习资源', '老师发布的学习资料（' + done + '/' + (DB.resources || []).length + ' 已学完）');
+    if (DB.resources === null || DB.resources === undefined) {
+      return { head, body: '<div class="main-body"><div class="main-inner">' + skeleton() + '</div></div>' };
+    }
+    if (DB.resLoadError) {
+      return { head, body: '<div class="card"><div class="empty"><div class="empty-title">资源加载失败</div><div class="empty-desc">' + h(DB.resLoadError) + '</div></div></div>' };
+    }
+    if (!DB.resources.length) {
+      return { head, body: emptyBox('老师还没有发布学习资源', '有资源会第一时间出现在这里，学习进度（查看、学完）会自动记录给老师。') };
+    }
+    const body = DB.resources.map(r => {
+      const p = r.myProgress;
+      const completed = p && p.completed;
+      const viewed = p && (p.viewCount || 0) > 0;
+      const status = completed ? '<span class="badge ok">' + icon('checkcircle', 12) + ' 已学完</span>'
+        : viewed ? '<span class="badge warn">学习中（已看 ' + p.viewCount + ' 次）</span>'
+        : '<span class="badge">未学习</span>';
+      return `<div class="card">
+        <div class="card-head">
+          <span class="badge brand">${resTypeLabel(r.fileType)}</span>
+          <h3>${h(r.title)}</h3><div class="spacer"></div>
+          ${status}
+        </div>
+        <div class="card-body">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+            <span class="badge">${h(r.fileName)}</span>
+            <span class="badge">${resSizeText(r.fileSize || 0)}</span>
+            <span class="badge">${h((r.createdAt || '').slice(0, 10))}</span>
+            ${(r.kpCodes || []).map(c => '<span class="badge brand" title="' + h(c) + '">' + h(kpName(c)) + '</span>').join('')}
+          </div>
+          ${r.aiSummary ? '<div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:12px">' + icon('sparkles', 13) + ' ' + h(r.aiSummary) + '</div>' : ''}
+          <div style="display:flex;gap:8px">
+            <button class="btn sm primary" data-act="resView" data-id="${r.id}">${icon('eye', 14)} ${r.fileType === 'ppt' || r.fileType === 'word' ? '查看 / 下载' : '打开学习'}</button>
+            ${completed ? '' : '<button class="btn sm" data-act="resComplete" data-id="${r.id}">' + icon('check', 14) + ' 标记已学完</button>'}
+          </div>
+        </div></div>`;
+    }).join('');
+    return { head, body };
+  }
+
+  // 打开资源文件：isStudent=true 时先记一次查看进度再取文件流。
+  // 图片/视频 → 弹窗内嵌预览；PDF → 新窗口浏览器原生阅读；PPT/Word → 直接触发下载
+  async function openResFile(id, isStudent) {
+    const r = (DB.resources || []).find(x => String(x.id) === String(id)) || {};
+    if (isStudent) {
+      try {
+        const updated = await API.post('/resources/' + id + '/view');
+        if (updated && updated.id !== undefined) {
+          const i = DB.resources.findIndex(x => String(x.id) === String(id));
+          if (i >= 0) DB.resources[i] = updated;
+        }
+      } catch (e) { /* 进度记录失败不阻断打开 */ }
+      if (State.section === 'resources') render();
+    }
+    try {
+      const res = await fetch('/api/resources/' + id + '/file', {
+        headers: { 'Authorization': 'Bearer ' + API.token() }
+      });
+      if (res.status === 401) { Auth.logout(); return; }
+      if (!res.ok) {
+        let msg = '资源打开失败 (' + res.status + ')';
+        try { const data = await res.json(); if (data && data.msg) msg = data.msg; } catch (e) { /* 非 JSON */ }
+        toast(msg); return;
+      }
+      const blob = await res.blob();
+      if (!blob.size) { toast('资源文件为空'); return; }
+      const url = URL.createObjectURL(blob);
+      if (r.fileType === 'image') {
+        State.modal = { type: 'resPreview', data: { url: url, kind: 'image', title: r.title || '图片预览' } };
+        renderOverlays();
+      } else if (r.fileType === 'video') {
+        State.modal = { type: 'resPreview', data: { url: url, kind: 'video', title: r.title || '视频学习' } };
+        renderOverlays();
+      } else if (r.fileType === 'pdf') {
+        window.open(url, '_blank');
+      } else {
+        // PPT / Word：浏览器无法直接预览，触发下载
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = r.fileName || 'resource';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }
+    } catch (e) {
+      toast('资源打开失败，请检查网络后重试');
+    }
+  }
+
+  // 班级学生档案卡：学习资源进度（懒加载——选中学生后拉取该生全部资源进度）
+  function ensureStudentResProgress(sid) {
+    if (!sid) return;
+    if (!State.resProgress) State.resProgress = {};
+    if (State.resProgress[sid] !== undefined) return;
+    State.resProgress[sid] = null; // null = 加载中
+    API.get('/teacher/resources/student-progress?studentId=' + encodeURIComponent(sid)).then(m => {
+      State.resProgress[sid] = m;
+      if (State.section === 'students' && String(State.activeStudent) === String(sid)) render();
+    }).catch(e => {
+      State.resProgress[sid] = { total: 0, completed: 0, items: [], error: e.message };
+      if (State.section === 'students' && String(State.activeStudent) === String(sid)) render();
+    });
+  }
+
+  function stuResProgressHtml(sel) {
+    const rp = State.resProgress ? State.resProgress[sel.id] : undefined;
+    if (rp === undefined || rp === null) {
+      return '<div style="font-size:12.5px;color:var(--text-3)">学习资源进度加载中…</div>';
+    }
+    if (rp.error) {
+      return '<div style="font-size:12.5px;color:var(--text-3)">' + h(rp.error) + '</div>';
+    }
+    if (!rp.total) {
+      return '<div style="font-size:12.5px;color:var(--text-3)">暂无学习资源</div>';
+    }
+    const pct = Math.round((rp.completed || 0) * 100 / rp.total);
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <div class="bar ${bcls(pct)}" style="flex:1"><i style="width:${pct}%"></i></div>
+        <span style="font-weight:600;font-size:12.5px">已学完 ${rp.completed || 0}/${rp.total}</span>
+      </div>
+      <div class="mini-list">
+        ${(rp.items || []).slice(0, 6).map(it => {
+          const p = it.myProgress;
+          return `<div class="mini-row"><span class="nm" title="${h(it.title)}">${h(it.title)}</span>
+            ${p && p.completed ? '<span class="badge ok">已学完</span>'
+              : p && p.viewCount ? '<span class="badge warn">学习中</span>'
+              : '<span class="badge">未学习</span>'}</div>`;
+        }).join('')}
+      </div>
+      ${(rp.items || []).length > 6 ? '<div style="font-size:12px;color:var(--text-3);margin-top:4px">共 ' + rp.items.length + ' 个资源</div>' : ''}`;
+  }
+
   function viewStudents() {
     const head = mainHead('班级学生', '点击任意学生查看档案与知识点明细');
     const sel = DB.students.find(s => s.id === State.activeStudent);
+    if (sel) ensureStudentResProgress(sel.id);
     const body = `<div class="card"><div class="card-head">${icon('users', 15)}<h3>学生列表</h3><div class="spacer"></div>
       <span class="badge">${DB.students.length} 人（示例数据）</span></div>
       <div style="overflow-x:auto"><table class="table">
@@ -1874,6 +2104,8 @@
                 <div class="bar ${bcls(v)}"><i style="width:${v}%"></i></div><span class="vl">${v}</span></div>`;
             }).join('')}
           </div>
+          <div style="font-size:12px;font-weight:600;margin:12px 0 6px">学习资源进度</div>
+          ${stuResProgressHtml(sel)}
           <div class="note ${sel.risk === 'low' ? 'ok' : 'warn'}" style="margin-top:12px">
             ${sel.risk === 'low' ? '该生状态良好，无需干预。' : '建议：课后单独沟通 + 推送 1 次针对性复习包，3 天后复查活跃度是否回升。'}
           </div>
@@ -2311,6 +2543,58 @@
         </div>`;
       foot = `<button class="btn" data-act="closeModal">取消</button>
         <button class="btn primary" data-act="doImportClass" ${f && !d.uploading ? '' : 'disabled'}>${icon('send', 15)} ${d.uploading ? '上传中…' : '开始导入'}</button>`;
+
+    } else if (m.type === 'resUpload') {
+      title = '上传学习资源';
+      const f = d.file;
+      const n = (d.kps || []).length;
+      body = `<div class="note" style="margin-bottom:12px">支持 PPT（.ppt/.pptx）、视频（.mp4）、图片（.jpg/.png）、Word（.doc/.docx）、PDF。上传后 AI 自动识别内容生成简介：文本类资源（PPT、Word、PDF）会自动关联知识点，图片与视频请手动点选关联。</div>
+        <div class="form-row"><label>资源标题</label>
+          <input class="input" placeholder="如：第3章 数组与循环 课堂课件" value="${h(d.title || '')}" data-bind="modal" data-key="title">
+          <div class="hint">必填，将展示给学生</div></div>
+        <div class="form-row"><label>资源文件</label>
+          <div class="import-file ${f ? 'has' : ''}">
+            <input type="file" id="resFileInput" accept=".ppt,.pptx,.mp4,.jpg,.jpeg,.png,.doc,.docx,.pdf" style="display:none" data-res-file>
+            <button class="btn sm" data-act="resPickFile">${icon('file', 14)} 选择文件</button>
+            <span class="if-name">${f ? h(f.name) + '（' + resSizeText(f.size) + '）' : '未选择文件'}</span>
+          </div>
+          <div class="hint">视频 ≤ 200MB，其余 ≤ 50MB</div></div>
+        <div class="form-row"><label>关联知识点 <span id="resKpCount" style="font-weight:400;color:var(--text-3)">${n ? '已选 ' + n + ' 个' : '未选择（AI 会自动识别关联）'}</span></label>
+          <div class="field" style="margin-bottom:8px">${icon('search', 15)}
+            <input placeholder="搜索知识点…" value="${h(d.q || '')}" data-bind="reskpq"></div>
+          <div class="pick-list" id="resKpList" style="max-height:220px">${resKpListHtml()}</div>
+          <div class="hint">可多选；手动选择将与 AI 识别结果合并保存</div></div>
+        <div class="progress-wrap" style="display:${d.uploading ? '' : 'none'}">
+          <div class="progress-track"><div class="progress-bar" id="resUploadBar" style="width:${d.progress || 0}%"></div></div>
+          <div id="resUploadText" style="font-size:12px;color:var(--text-3)">${(d.progress || 0) >= 100 ? 'AI 识别内容中…（约需十几秒，请勿关闭）' : '上传中 ' + (d.progress || 0) + '%'}</div>
+        </div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.uploading ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doResUpload" ${f && !d.uploading ? '' : 'disabled'}>${icon('send', 15)} ${d.uploading ? '上传中…' : '上传并识别'}</button>`;
+
+    } else if (m.type === 'resKp') {
+      title = '编辑关联知识点 · ' + (d.title || '');
+      const n = (d.kps || []).length;
+      body = `<div class="form-row"><label>关联知识点 <span id="resKpCount" style="font-weight:400;color:var(--text-3)">${n ? '已选 ' + n + ' 个' : '未选择'}</span></label>
+          <div class="field" style="margin-bottom:8px">${icon('search', 15)}
+            <input placeholder="搜索知识点…" value="${h(d.q || '')}" data-bind="reskpq"></div>
+          <div class="pick-list" id="resKpList" style="max-height:260px">${resKpListHtml()}</div>
+          <div class="hint">保存后覆盖原有关联，AI 识别结果与手动选择均可保留</div></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doResKpSave" ${d.busy ? 'disabled' : ''}>${d.busy ? '保存中…' : icon('check', 15) + ' 保存'}</button>`;
+
+    } else if (m.type === 'resDel') {
+      title = '删除学习资源';
+      body = `<div class="note warn" style="margin-bottom:12px">确定要删除资源 <b>${h(d.title)}</b> 吗？<b style="color:var(--danger)">操作不可恢复</b>。</div>
+        <div class="hint">${d.count ? '已有 <b>' + d.count + '</b> 名学生标记学完，删除后其学习进度记录将一并移除。' : '暂无学生学习进度记录。'}</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn danger" data-act="doResDel" ${d.busy ? 'disabled' : ''}>${icon('trash', 15)} ${d.busy ? '删除中…' : '确认删除'}</button>`;
+
+    } else if (m.type === 'resPreview') {
+      title = d.title || '资源预览';
+      body = d.kind === 'video'
+        ? `<video controls autoplay style="width:100%;max-height:60vh;border-radius:8px;background:#000" src="${d.url}"></video>`
+        : `<img src="${d.url}" alt="预览" style="width:100%;max-height:60vh;object-fit:contain;border-radius:8px">`;
+      foot = `<button class="btn primary" data-act="resPreviewClose">关闭</button>`;
 
     } else if (m.type === 'exportScores') {
       title = '导出作业成绩';
@@ -3976,6 +4260,162 @@
       xhr.send(fd);
     },
 
+    /* --- 学习资源：教师上传 / 编辑知识点 / 删除 / 学生查看与学完 --- */
+    resUploadModal() {
+      State.modal = { type: 'resUpload', data: { title: '', file: null, uploading: false, progress: 0, kps: [], q: '' } };
+      renderOverlays();
+    },
+    resPickFile() {
+      const input = document.getElementById('resFileInput');
+      if (input) input.click();
+    },
+    resKpToggle(v, id, t) {
+      const d = State.modal && State.modal.data;
+      if (!d) return;
+      d.kps = d.kps || [];
+      const i = d.kps.indexOf(v);
+      const on = i < 0;
+      if (i >= 0) d.kps.splice(i, 1); else d.kps.push(v);
+      // 局部切换选中态：整窗重渲染会重放弹窗动画（闪屏）并丢失搜索焦点
+      if (t && t.classList) {
+        t.classList.toggle('on', on);
+        const b = t.querySelector('.badge');
+        if (b) { b.className = 'badge' + (on ? ' brand' : ''); b.textContent = on ? '已选' : '＋'; }
+      }
+      const cnt = document.getElementById('resKpCount');
+      if (cnt) cnt.textContent = d.kps.length ? '已选 ' + d.kps.length + ' 个' : '未选择';
+    },
+    async doResUpload() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.uploading) return;
+      if (!d.title || !d.title.trim()) { toast('请填写资源标题'); return; }
+      const file = d.file;
+      if (!file) { toast('请选择要上传的文件'); return; }
+      const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();
+      if (resExtAllowed.indexOf(ext) < 0) { toast('仅支持 PPT / MP4 视频 / JPG、PNG 图片 / Word / PDF 格式'); return; }
+      const isVideo = ext === 'mp4';
+      if (isVideo ? file.size > 200 * 1024 * 1024 : file.size > 50 * 1024 * 1024) {
+        toast('文件超过大小上限（视频 200MB，其余 50MB）'); return;
+      }
+
+      d.uploading = true; d.progress = 0;
+      renderOverlays();
+      // XHR 上传以获取进度回调（AI 识别在服务端完成，100% 后进入识别阶段）
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/teacher/resources');
+      xhr.setRequestHeader('Authorization', 'Bearer ' + API.token());
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) {
+          d.progress = Math.min(100, Math.round(e.loaded / e.total * 100));
+          const bar = document.getElementById('resUploadBar');
+          const txt = document.getElementById('resUploadText');
+          if (bar) bar.style.width = d.progress + '%';
+          if (txt) txt.textContent = d.progress >= 100 ? 'AI 识别内容中…（约需十几秒，请勿关闭）' : '上传中 ' + d.progress + '%';
+        }
+      };
+      xhr.onload = async () => {
+        try {
+          let data = null;
+          try { data = JSON.parse(xhr.responseText); } catch (e) { /* 非 JSON */ }
+          if (xhr.status === 401) { Auth.logout(); return; }
+          if (xhr.status >= 200 && xhr.status < 300 && data && data.code === 0) {
+            const r = data.data || {};
+            const aiKp = (r.kpCodes || []).length;
+            d.uploading = false;
+            State.modal = null; renderOverlays();
+            toast('「' + (r.title || d.title) + '」上传成功，AI 关联 ' + aiKp + ' 个知识点' + (aiKp ? '' : '，可在卡片上编辑关联'), 'ok');
+            // 刷新教师资源列表（含已学完人数）
+            try {
+              DB.resources = await API.get('/teacher/resources');
+              if (State.section === 'resources') render();
+            } catch (e) { toast(e.message); }
+          } else {
+            d.uploading = false;
+            State.modal = null; renderOverlays();
+            toast((data && data.msg) || ('上传失败（' + xhr.status + '）'));
+          }
+        } catch (e) {
+          d.uploading = false;
+          State.modal = null; renderOverlays();
+          toast('上传失败：' + e.message);
+        }
+      };
+      xhr.onerror = () => {
+        d.uploading = false;
+        State.modal = null; renderOverlays();
+        toast('网络错误，上传失败');
+      };
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      fd.append('title', d.title.trim());
+      fd.append('kpCodes', (d.kps || []).join(','));
+      xhr.send(fd);
+    },
+    resEditKp(v, id) {
+      const r = (DB.resources || []).find(x => String(x.id) === String(id));
+      if (!r) return;
+      State.modal = { type: 'resKp', data: { id: r.id, title: r.title, kps: (r.kpCodes || []).slice(), q: '', busy: false } };
+      renderOverlays();
+    },
+    async doResKpSave() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        await API.put('/teacher/resources/' + d.id + '/kp', { kpCodes: d.kps || [] });
+        State.modal = null; renderOverlays();
+        toast('关联知识点已更新', 'ok');
+        try {
+          DB.resources = await API.get('/teacher/resources');
+          if (State.section === 'resources') render();
+        } catch (e) { toast(e.message); }
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast(e.message);
+      }
+    },
+    resDel(v, id) {
+      const r = (DB.resources || []).find(x => String(x.id) === String(id));
+      if (!r) return;
+      State.modal = { type: 'resDel', data: { id: r.id, title: r.title, count: r.completedCount || 0, busy: false } };
+      renderOverlays();
+    },
+    async doResDel() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        await API.del('/teacher/resources/' + d.id);
+        State.modal = null; renderOverlays();
+        toast('资源已删除', 'ok');
+        try {
+          DB.resources = await API.get('/teacher/resources');
+          if (State.section === 'resources') render();
+        } catch (e) { toast(e.message); }
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast(e.message);
+      }
+    },
+    resFile(v, id) { openResFile(id, false); },
+    resView(v, id) { openResFile(id, true); },
+    resPreviewClose() {
+      const d = State.modal && State.modal.data;
+      if (d && d.url) { try { URL.revokeObjectURL(d.url); } catch (e) { /* 忽略 */ } }
+      State.modal = null; renderOverlays();
+    },
+    async resComplete(v, id) {
+      try {
+        await API.post('/resources/' + id + '/complete');
+        const r = (DB.resources || []).find(x => String(x.id) === String(id));
+        if (r) {
+          r.myProgress = Object.assign({ viewCount: 0, completed: false }, r.myProgress || {}, { completed: true });
+        }
+        toast('已标记为学完', 'ok');
+        if (State.section === 'resources') render();
+      } catch (e) { toast(e.message); }
+    },
+
     /* --- 教师：作业成绩导出（提交批改页） --- */
     exportModal() {
       // 空数据前置拦截：班级还没有已发布作业时无需发起导出
@@ -5007,6 +5447,14 @@
         if (body) body.innerHTML = composeKpGroupsHtml();
       }
     }
+    else if (b === 'reskpq') {
+      // 学习资源弹窗知识点搜索：仅局部刷新选择列表，避免闪屏与输入丢焦点
+      if (State.modal) {
+        State.modal.data.q = t.value;
+        const box = document.getElementById('resKpList');
+        if (box) box.innerHTML = resKpListHtml();
+      }
+    }
     else if (b === 'modal') {
       if (State.modal) State.modal.data[t.dataset.key] = t.value;
       // newSession 搜索：仅局部刷新知识点选择区（面包屑/标签条随搜索态切换），
@@ -5117,6 +5565,15 @@
     }
     if (t && t.dataset && t.dataset.importFile !== undefined && State.modal
         && State.modal.type === 'importClass') {
+      const file = t.files && t.files[0];
+      if (file) {
+        State.modal.data.file = file;
+        renderOverlays();
+      }
+    }
+    // 学习资源：上传弹窗文件选择
+    if (t && t.dataset && t.dataset.resFile !== undefined && State.modal
+        && State.modal.type === 'resUpload') {
       const file = t.files && t.files[0];
       if (file) {
         State.modal.data.file = file;
