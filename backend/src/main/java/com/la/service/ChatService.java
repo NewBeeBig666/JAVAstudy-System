@@ -6,6 +6,7 @@ import com.la.dto.response.ReviewItemDto;
 import com.la.entity.*;
 import com.la.exception.BizException;
 import com.la.mapper.ExerciseMapper;
+import com.la.mapper.ExerciseRecordMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -19,9 +20,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 /**
  * 智能体对话编排：意图路由 → 上下文注入 → DeepSeek 流式 → 教学边界护栏 → 落库
@@ -43,6 +46,8 @@ public class ChatService {
     private final ReviewService reviewService;
     private final DeepSeekProperties deepSeekProperties;
     private final ObjectMapper objectMapper;
+    private final ExerciseAiService exerciseAiService;
+    private final ExerciseRecordMapper exerciseRecordMapper;
 
     /** 每用户 LLM 并发限制（防刷屏） */
     private final Map<Long, Semaphore> userSemaphores = new ConcurrentHashMap<>();
@@ -73,7 +78,7 @@ public class ChatService {
                 IntentRouter.Intent intent = intentRouter.route(content, agentHint);
 
                 switch (intent.getAction()) {
-                    case EXERCISE -> handleExercise(emitter, sessionId, kp, intent.getAgent());
+                    case EXERCISE -> handleExercise(emitter, sessionId, userId, kp, intent.getAgent());
                     case REVIEW -> handleReview(emitter, sessionId, userId);
                     default -> transferred.set(handleChat(emitter, sessionId, userId, kp,
                             content, intent.getAgent(), semaphore::release));
@@ -96,24 +101,52 @@ public class ChatService {
     }
 
     /**
-     * 出题：练习卡片不走向 LLM（数据 100% 可靠），卡片内嵌题目 DTO
+     * 出题：练习卡片不走向 LLM 渲染（数据 100% 可靠），卡片内嵌题目 DTO。
+     * 抽题策略：题库优先且排除该生已做过的题；无新题可抽（题库为空 / 已全部做完）时
+     * 调用 DeepSeek 现场生成一道新题（题干/选项/答案/解析/三级提示齐全）并落库沉淀，
+     * AI 生成失败则回退题库全量随机（学生永远有题可练）。
      */
-    private void handleExercise(SseEmitter emitter, Long sessionId, KnowledgePoint kp, String agent) {
+    private void handleExercise(SseEmitter emitter, Long sessionId, Long userId, KnowledgePoint kp, String agent) {
         Exercise ex = null;
+        boolean aiGenerated = false;
         if (kp != null) {
             List<Exercise> list = exerciseMapper.selectList(new LambdaQueryWrapper<Exercise>()
                     .eq(Exercise::getKpId, kp.getId()));
-            if (!list.isEmpty()) {
-                ex = list.get(new Random().nextInt(list.size()));
+            // 该生已做过的题目 id 集合（练习记录）
+            Set<Long> doneIds = exerciseRecordMapper.selectList(new LambdaQueryWrapper<ExerciseRecord>()
+                            .eq(ExerciseRecord::getUserId, userId))
+                    .stream().map(ExerciseRecord::getExerciseId).collect(Collectors.toSet());
+            List<Exercise> fresh = list.stream()
+                    .filter(e -> !doneIds.contains(e.getId())).toList();
+            if (!fresh.isEmpty()) {
+                ex = fresh.get(new Random().nextInt(fresh.size()));
+            } else {
+                // 无新题可抽：AI 现场生成（先告知学生等待），失败回退题库全量随机
+                sendEvent(emitter, "delta", Map.of("text",
+                        list.isEmpty()
+                                ? "题库里还没有这个知识点的练习题，我现场为你生成一道（约 10 秒）…"
+                                : "这个知识点的题你全都做过了！我现场为你生成一道新题（约 10 秒）…"));
+                try {
+                    ex = exerciseAiService.aiGenerate(kp, userId, list);
+                    aiGenerated = true;
+                } catch (Exception e) {
+                    log.warn("[AI出题·会话] 现场生成失败，回退题库随机 kp={}：{}", kp.getKpCode(), e.getMessage());
+                    if (!list.isEmpty()) {
+                        ex = list.get(new Random().nextInt(list.size()));
+                    }
+                }
             }
         }
         if (ex == null) {
             sendEvent(emitter, "error", Map.of("code", "NO_EXERCISE",
-                    "msg", "当前知识点暂无练习题"));
+                    "msg", kp == null ? "当前会话未绑定知识点，请先选择知识点再练习"
+                            : "当前知识点暂无练习题，新题生成也未成功，请稍后再试"));
             emitter.complete();
             return;
         }
-        String text = "来，用一道题验证一下你是否真的掌握了（按规则我不会直接给答案，卡住了可以逐级要提示）：";
+        String text = aiGenerated
+                ? "这道题是我刚为你生成的（" + ex.getDifficulty() + "难度），已存入题库。做完系统会自动判分并讲错因，卡住了可以逐级要提示："
+                : "来，用一道题验证一下你是否真的掌握了（按规则我不会直接给答案，卡住了可以逐级要提示）：";
         Map<String, Object> card = new LinkedHashMap<>();
         card.put("type", "exercise");
         card.put("exId", ex.getId());

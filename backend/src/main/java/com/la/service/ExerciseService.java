@@ -341,6 +341,9 @@ public class ExerciseService {
             dto.put("id", String.valueOf(r.getId()));
             dto.put("exerciseId", r.getExerciseId());
             dto.put("kp", kp != null ? kp.getKpCode() : null);
+            // 知识点中文名：历史练习可能绑定 LEGACY 旧节点（如 kp-intro），不在前端图谱数据里，
+            // 前端 kpName() 会直接显示编码；由后端统一返回名称，kp 编码保留用于筛选
+            dto.put("kpName", kp != null ? kp.getName() : null);
             dto.put("title", ex != null ? shorten(ex.getStem()) : "");
             dto.put("difficulty", ex != null ? ex.getDifficulty() : null);
             dto.put("correct", Boolean.TRUE.equals(r.getIsCorrect()));

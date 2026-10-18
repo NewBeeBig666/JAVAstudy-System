@@ -131,8 +131,13 @@ public class SessionService {
      */
     @Transactional
     public SessionDto createMulti(Long userId, List<String> kpCodes) {
+        // 知识点池与图谱/出题口径一致：只取 XLSX 课程体系节点。
+        // 库中同时存在历史兼容的 LEGACY 节点（与 XLSX 节点同名，如各有一条「Java 概述」），
+        // 不过滤会导致全局补弱模式把同名节点都取进路径，生成重复的「概念精讲/代码陪练」步骤。
         List<KnowledgePoint> all = kpMapper.selectList(new LambdaQueryWrapper<KnowledgePoint>()
-                .eq(KnowledgePoint::getLevel, 2).orderByAsc(KnowledgePoint::getSortOrder));
+                .eq(KnowledgePoint::getLevel, 2)
+                .eq(KnowledgePoint::getSource, "XLSX")
+                .orderByAsc(KnowledgePoint::getSortOrder));
         if (all.isEmpty()) {
             throw new BizException("知识点数据缺失");
         }
@@ -158,6 +163,15 @@ public class SessionService {
             }
             chosen.addAll(byCode.values());
         }
+        if (chosen.size() == 1) {
+            return create(userId, chosen.get(0).getKpCode());
+        }
+        // 按名称去重兜底：同名知识点只保留一条进入路径，杜绝重复步骤
+        Map<String, KnowledgePoint> uniqueByName = new LinkedHashMap<>();
+        for (KnowledgePoint kp : chosen) {
+            uniqueByName.putIfAbsent(kp.getName(), kp);
+        }
+        chosen = new ArrayList<>(uniqueByName.values());
         if (chosen.size() == 1) {
             return create(userId, chosen.get(0).getKpCode());
         }

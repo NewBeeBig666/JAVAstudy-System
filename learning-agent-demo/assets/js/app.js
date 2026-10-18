@@ -1506,7 +1506,7 @@
           ${st.key === 'todo' ? `<div style="margin-top:12px">
             <button class="btn primary" data-act="${a.questionCount ? 'openAnswer' : 'submitHw'}" data-val="${a.id}">${icon('send', 14)} ${a.questionCount ? '进入作业详情作答' : '提交作业'}</button></div>`
           : a.questionCount ? `<div style="margin-top:12px">
-            <button class="btn ${st.key === 'graded' ? '' : 'primary'}" data-act="openAnswer" data-val="${a.id}">${icon(st.key === 'graded' ? 'eye' : 'edit', 14)} ${st.key === 'graded' ? '查看作业详情' : '查看 / 修改作答'}</button></div>` : ''}
+            <button class="btn" data-act="openAnswer" data-val="${a.id}">${icon('eye', 14)} 查看作业详情</button></div>` : ''}
           ${extra ? '<div style="margin-top:12px">' + extra + '</div>' : ''}
         </div></div>`;
     }).join('');
@@ -1530,7 +1530,7 @@
         <thead><tr><th>时间</th><th>知识点</th><th>题目</th><th class="num">结果</th><th class="num">掌握度</th></tr></thead>
         <tbody>${recs.map(r => `<tr>
           <td style="color:var(--text-3)">${r.time}</td>
-          <td><span class="badge">${kpName(r.kp)}</span></td>
+          <td><span class="badge">${h(r.kpName || kpName(r.kp))}</span></td>
           <td>${h(r.title)}</td>
           <td class="num"><span class="badge ${r.ok ? 'ok' : 'danger'}">${r.ok ? '通过' : '未通过'}</span></td>
           <td class="num" style="font-weight:600;color:${r.delta > 0 ? 'var(--ok)' : 'var(--danger)'}">${r.delta > 0 ? '+' : ''}${r.delta}</td>
@@ -3075,8 +3075,9 @@
   function openAnswerEditor(a) {
     if (!a || !a.questionCount) { toast('该作业不支持在线作答'); return; }
     const sub = a.mySubmission;
-    // 已批改 → 只读查看模式；待提交 / 已提交待批改 → 作答模式（待批改支持修改后重新提交）
-    const mode = sub && sub.status === 'graded' ? 'view' : 'answer';
+    // 未提交 → 作答模式（临时保存过的草稿可继续修改）；已提交（待批改/已批改）→ 一律只读查看，
+    // 提交后不允许修改，仅可进入详情查看题目与本人提交内容
+    const mode = sub ? 'view' : 'answer';
     // 已提交：以提交内容为准回填（提交时草稿已清除）；未提交：沿用本地草稿
     let prefill = {};
     if (sub && Array.isArray(sub.answers) && sub.answers.length) {
@@ -3091,7 +3092,7 @@
       asId: a.id, title: a.title || '',
       startAt: a.startAt || '', endAt: a.due || '', allowLate: !!a.allowLate,
       scoreMode: a.scoreMode, totalScore: a.totalScore, mode,
-      sub: sub ? { submittedAt: sub.submittedAt, attempts: sub.attempts, score: sub.score, teacherComment: sub.teacherComment, autoScore: sub.autoScore } : null,
+      sub: sub ? { status: sub.status, submittedAt: sub.submittedAt, attempts: sub.attempts, score: sub.score, teacherComment: sub.teacherComment, autoScore: sub.autoScore } : null,
       questions: (a.questions || []).map(q => ({
         id: q.id, type: q.type, title: q.title || '',
         options: (q.options || []).map(o => ({ key: o.key, text: o.text || '' })),
@@ -3145,10 +3146,12 @@
         <button class="btn sm ghost" data-act="closeAnswer">${icon('chevronL', 15)} 返回</button>
         <span class="badge brand">${icon('clipboard', 13)} 作业详情</span>
         ${view
-          ? `<span class="badge ok">${icon('checkcircle', 13)} 已批改</span>
-             ${c.sub && c.sub.score != null ? `<span class="badge"><span style="font-weight:700;color:var(--brand)">${c.sub.score}</span> / ${c.totalScore != null ? c.totalScore : 100} 分</span>` : ''}`
+          ? `${c.sub && c.sub.status === 'graded'
+              ? `<span class="badge ok">${icon('checkcircle', 13)} 已批改</span>
+                 ${c.sub.score != null ? `<span class="badge"><span style="font-weight:700;color:var(--brand)">${c.sub.score}</span> / ${c.totalScore != null ? c.totalScore : 100} 分</span>` : ''}`
+              : `<span class="badge warn">已提交 · 待批改</span>
+                 <span class="badge">提交后不可修改</span>`}`
           : `<span class="badge" id="ansStat">已作答 ${ansAnsweredCount()}/${c.questions.length}</span>
-             ${c.sub ? `<span class="badge warn">已提交 · 待批改</span>` : ''}
              ${c.endAt ? `<span class="badge">${icon('clock', 12)} 截止 ${h(c.endAt)}</span>` : ''}
              ${c.allowLate ? '<span class="badge warn">允许补交</span>' : ''}`}
         <div class="spacer"></div>
@@ -3163,7 +3166,6 @@
           ${c.sub ? `<span>已提交：${h(c.sub.submittedAt || '-')}（第 ${c.sub.attempts || 1} 次）</span>` : `<span>作答时段：${c.startAt ? h(c.startAt) + ' 至 ' : ''}${h(c.endAt || '不限')}</span>`}
         </div>
         ${view && c.sub && c.sub.teacherComment ? `<div class="note ok" style="margin:10px 0 4px"><b>教师评语：</b>${h(c.sub.teacherComment)}</div>` : ''}
-        ${!view && c.sub ? `<div class="note" style="margin:10px 0 4px">批改完成前可修改作答并重新提交，重新提交后将以最新一次为准。</div>` : ''}
       </div>
       <div class="ans-body">
         <div class="ans-main">${body}</div>
@@ -3644,7 +3646,13 @@
       State.rightTab = 'knowledge'; State.rightOpen = true;
       renderCtx();
     },
-    quick(v) { State.draft = v; Actions.send(); },
+    quick(v) {
+      // 快捷指令与输入框已有内容组合而非覆盖：
+      // 学生常先粘贴代码/报错再点「报错解释 / 代码审查」，直接覆盖会把用户内容清掉
+      const cur = (State.draft || '').trim();
+      State.draft = cur ? v + '：\n\n' + cur : v;
+      Actions.send();
+    },
     async send() {
       const text = (State.draft || '').trim();
       if (!text) return;
