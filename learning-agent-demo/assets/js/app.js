@@ -3647,9 +3647,21 @@
     quick(v) { State.draft = v; Actions.send(); },
     async send() {
       const text = (State.draft || '').trim();
-      if (!text || State.chatting) return;
+      if (!text) return;
+      // 发送锁死自动恢复：上一条请求异常挂起（移动端切后台/断网/服务重启断流）超过 90s
+      // 仍未结束时自动解除锁定，避免此后所有发送点击静默无响应（点了没反应）。
+      // 90s 内的重复点击仍然静默忽略（防止正常回答进行中连点刷屏）。
+      if (State.chatting) {
+        if (Date.now() - (State.chattingAt || 0) < 90000) return;
+        State.chatting = false;
+        // 清理上一条遗留的 typing 气泡（挂起请求的占位回复），避免双气泡
+        const st = session();
+        const lastTyping = st && st.messages.length ? st.messages.filter(m => m.typing).pop() : null;
+        if (lastTyping) { lastTyping.typing = false; lastTyping.text = lastTyping.text || '\n⏱ 上一条回复超时未完成，可重新提问。'; }
+        toast('检测到上一条回复已无响应，已自动恢复，正在重新发送…');
+      }
       const s = session(); if (!s) return;
-      State.draft = ''; State.chatting = true; State.scrollBottom = true;
+      State.draft = ''; State.chatting = true; State.chattingAt = Date.now(); State.scrollBottom = true;
       s.messages.push({ id: 'u-' + Date.now(), from: 'user', text, time: now() });
       const tmp = { id: 'a-' + Date.now(), from: 'agent', agent: 'tutor', typing: true, text: '' };
       s.messages.push(tmp);

@@ -50,18 +50,19 @@ public class ChatService {
     private static final DateTimeFormatter TM = DateTimeFormatter.ofPattern("HH:mm");
 
     public void streamChat(Long userId, Long sessionId, String content, String agentHint, SseEmitter emitter) {
+        Semaphore semaphore = userSemaphores.computeIfAbsent(userId, k -> new Semaphore(2));
+        // 每用户并发限制在同步段（controller 调用线程）判断：
+        // 失败直接抛 BizException → 统一 400 JSON，前端提示"请求太频繁"。
+        // 不能在虚拟线程里拿到锁后立即向 emitter 发事件——此时 controller 刚返回、
+        // 容器 async 提交尚未完成，并发操作同一 Response 的 MimeHeaders 会触发 Tomcat 竞态异常。
+        if (!semaphore.tryAcquire()) {
+            throw new BizException("你的请求太频繁了，请等上一条回答完成");
+        }
         Thread.ofVirtual().name("sse-chat-", 0).start(() -> {
-            Semaphore semaphore = userSemaphores.computeIfAbsent(userId, k -> new Semaphore(2));
-            AtomicBoolean acquired = new AtomicBoolean(false);
+            // 流式对话为异步订阅：释放责任移交给 Reactive 流的 doFinally（流结束时释放）。
+            // 若在虚拟线程 finally 直接释放，subscribe() 返回即释放，每用户并发限制将失效。
+            AtomicBoolean transferred = new AtomicBoolean(false);
             try {
-                if (!semaphore.tryAcquire()) {
-                    sendEvent(emitter, "error", Map.of("code", "RATE_LIMIT",
-                            "msg", "你的请求太频繁了，请等上一条回答完成"));
-                    emitter.complete();
-                    return;
-                }
-                acquired.set(true);
-
                 // 归属校验
                 SessionEntity session = sessionService.ownedSession(userId, sessionId);
                 KnowledgePoint kp = knowledgeService.byId(session.getKpId());
@@ -74,7 +75,8 @@ public class ChatService {
                 switch (intent.getAction()) {
                     case EXERCISE -> handleExercise(emitter, sessionId, kp, intent.getAgent());
                     case REVIEW -> handleReview(emitter, sessionId, userId);
-                    default -> handleChat(emitter, sessionId, userId, kp, content, intent.getAgent());
+                    default -> transferred.set(handleChat(emitter, sessionId, userId, kp,
+                            content, intent.getAgent(), semaphore::release));
                 }
                 sessionService.touch(sessionId);
             } catch (BizException e) {
@@ -86,7 +88,7 @@ public class ChatService {
                         "msg", "智能体开小差了，请重试"));
                 emitter.complete();
             } finally {
-                if (acquired.get()) {
+                if (!transferred.get()) {
                     semaphore.release();
                 }
             }
@@ -155,10 +157,11 @@ public class ChatService {
     }
 
     /**
-     * 普通对话：DeepSeek 流式
+     * 普通对话：DeepSeek 流式。
+     * 返回 true 表示已订阅异步流，信号量释放责任移交给流的 doFinally（覆盖 complete/error/cancel）。
      */
-    private void handleChat(SseEmitter emitter, Long sessionId, Long userId, KnowledgePoint kp,
-                            String content, String agent) {
+    private boolean handleChat(SseEmitter emitter, Long sessionId, Long userId, KnowledgePoint kp,
+                               String content, String agent, Runnable release) {
         List<ChatMessage> messages = contextInjector.build(userId, sessionId, kp, agent);
         messages.add(ChatMessage.user(content));
 
@@ -194,7 +197,11 @@ public class ChatService {
                     sendEvent(emitter, "done", Map.of("messageId", String.valueOf(placeholder.getId())));
                     emitter.complete();
                 })
+                // 流终止（完成/失败/取消）时释放该用户的并发信号量——订阅后即返回，
+                // 释放必须挂在流上，否则 subscribe() 返回瞬间信号量即被释放导致限流失效
+                .doFinally(signal -> release.run())
                 .subscribe();
+        return true;
     }
 
     private void updateMessage(Message m) {
