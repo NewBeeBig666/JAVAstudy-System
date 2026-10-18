@@ -39,6 +39,8 @@ public class GradingService {
     private final UserMapper userMapper;
     private final NotificationService notificationService;
     private final SessionService sessionService;
+    private final KnowledgePointMapper knowledgePointMapper;
+    private final MasteryService masteryService;
     private final SessionMapper sessionMapper;
     /** 学生端「系统自动评分」引擎：客观题判分的唯一口径（教师端 AI 初评复用） */
     private final AutoScoreService autoScoreService;
@@ -453,6 +455,8 @@ public class GradingService {
             throw new BizException("提交不存在");
         }
         Assignment as = assignmentMapper.selectById(sub.getAssignmentId());
+        // 首次批改判定：当前 score 尚无值（后续改分重新发布不重复回写掌握度）
+        boolean firstGrade = sub.getScore() == null;
         List<Rubric> rubrics = rubricMapper.selectList(new LambdaQueryWrapper<Rubric>()
                 .eq(Rubric::getAssignmentId, as.getId()).orderByAsc(Rubric::getSortOrder));
 
@@ -485,6 +489,12 @@ public class GradingService {
         sub.setGradedAt(LocalDateTime.now());
         submissionMapper.updateById(sub);
 
+        // 知识图谱掌握度第二数据渠道：作业首次批改发布时，按作业关联知识点回写学生掌握度。
+        // 仅首次批改（score 从无到有）回写一次，教师改分重新发布不重复加减，避免掌握度被反复扰动
+        if (firstGrade) {
+            adjustMasteryByAssignment(as, sub.getStudentId(), total);
+        }
+
         // 学生通知
         notificationService.push(sub.getStudentId(),
                 "作业「" + as.getTitle() + "」已批改：" + total + " 分。查看教师评语与 Rubric 逐项得分。", "GRADE");
@@ -503,6 +513,35 @@ public class GradingService {
             sessionService.insertMessage(latest.getId(), "AGENT", "grading",
                     "你的作业「" + as.getTitle() + "」批改完成，得分 **" + total + "**。详细评语见卡片，也可在「我的作业」查看。",
                     "feedback", card);
+        }
+    }
+
+    /**
+     * 作业批改回写知识图谱掌握度：按作业关联知识点（kpIds 为 JSON 编码数组），每个知识点加/减同一分值。
+     * 口径与练习一致（练习对 +5~8 / 错 -3）：>=80 分 +8、60~79 分 +5、<60 分 -3。
+     */
+    private void adjustMasteryByAssignment(Assignment as, Long studentId, int total) {
+        if (as.getKpIds() == null || as.getKpIds().isBlank()) {
+            return;
+        }
+        try {
+            JsonNode codes = objectMapper.readTree(as.getKpIds());
+            if (!codes.isArray() || codes.isEmpty()) {
+                return;
+            }
+            int delta = total >= 80 ? 8 : total >= 60 ? 5 : -3;
+            for (JsonNode c : codes) {
+                KnowledgePoint kp = knowledgePointMapper.selectOne(new LambdaQueryWrapper<KnowledgePoint>()
+                        .eq(KnowledgePoint::getKpCode, c.asText()));
+                if (kp != null) {
+                    masteryService.adjust(studentId, kp.getId(), delta);
+                }
+            }
+            log.info("作业批改回写掌握度 assignment={} score={} delta={} 知识点数={}",
+                    as.getTitle(), total, delta, codes.size());
+        } catch (Exception e) {
+            // 掌握度回写失败不影响批改主流程
+            log.warn("作业批改回写掌握度失败 assignment={}：{}", as.getTitle(), e.getMessage());
         }
     }
 

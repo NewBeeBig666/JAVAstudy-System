@@ -79,21 +79,30 @@ public class SessionService {
 
         // 诊断 Agent 消息（规则化生成，含 diagnosis 卡片）
         StringBuilder diagText = new StringBuilder("我先调了你的历史练习记录和错题本，做了次快速诊断：\n\n");
-        diagText.append("你的「").append(kp.getName()).append("」掌握度为 **")
-                .append(chain.getChain().get(0).getMastery()).append(" 分**");
-        if (chain.getRootCause() != null) {
-            TraceChainResponse.ChainNode root = chain.getChain().stream()
-                    .filter(n -> n.getId().equals(chain.getRootCause())).findFirst().orElse(null);
-            diagText.append("，但更关键的是——**根源不在目标知识点本身**。\n\n顺着依赖链往上追：");
-            StringJoiner joiner = new StringJoiner(" ← ");
-            for (TraceChainResponse.ChainNode n : chain.getChain()) {
-                joiner.add(n.getName() + "（" + n.getMastery() + " 分）");
-            }
-            diagText.append(joiner).append("。\n\n你真正缺的是「")
-                    .append(root != null ? root.getName() : "前置基础")
-                    .append("」这块地基，直接刷目标知识点的题目，收益很低。");
+        TraceChainResponse.ChainNode targetNode = chain.getChain().get(0);
+        if (!targetNode.isHasData()) {
+            // 无掌握数据：不下"0 分"结论，引导先练习收集
+            diagText.append("你的「").append(kp.getName()).append("」**暂无掌握数据**——掌握度由会话练习和教师批改的作业自动收集，先从路径做起，做完练习会更新真实掌握度。");
         } else {
-            diagText.append("，前置链整体达标，可以直接攻克。");
+            diagText.append("你的「").append(kp.getName()).append("」掌握度为 **")
+                    .append(targetNode.getMastery()).append(" 分**");
+            if (chain.getRootCause() != null && chain.getRootCause().equals(targetNode.getId())) {
+                // 根因即目标自身：避免"先补它再回到它"的自指表述
+                diagText.append("，它正是你当前依赖链上最薄弱的环节，建议直接攻克，从做一道练习开始。");
+            } else if (chain.getRootCause() != null) {
+                TraceChainResponse.ChainNode root = chain.getChain().stream()
+                        .filter(n -> n.getId().equals(chain.getRootCause())).findFirst().orElse(null);
+                diagText.append("，但更关键的是——**根源不在目标知识点本身**。\n\n顺着依赖链往上追：");
+                StringJoiner joiner = new StringJoiner(" ← ");
+                for (TraceChainResponse.ChainNode n : chain.getChain()) {
+                    joiner.add(n.getName() + "（" + n.getMastery() + " 分）");
+                }
+                diagText.append(joiner).append("。\n\n你真正缺的是「")
+                        .append(root != null ? root.getName() : "前置基础")
+                        .append("」这块地基，直接刷目标知识点的题目，收益很低。");
+            } else {
+                diagText.append("，前置链整体达标，可以直接攻克。");
+            }
         }
 
         List<Map<String, Object>> items = new ArrayList<>();
@@ -193,10 +202,19 @@ public class SessionService {
                 item.put("mastery", node.getMastery());
                 item.put("note", node.getNote());
                 items.add(item);
-                diagText.append("「").append(node.getName()).append("」掌握度 **")
-                        .append(node.getMastery()).append(" 分**")
-                        .append(chain.getRootCause() != null ? "，前置链上存在薄弱根因，规划中已优先补强。"
-                                : "，前置链达标，可直接攻克。").append('\n');
+                if (!node.isHasData()) {
+                    // 无掌握数据：不显示误导性的"0 分"，引导练习收集
+                    diagText.append("「").append(node.getName())
+                            .append("」**暂无掌握数据**——做完会话中的练习即可自动收集。\n");
+                } else {
+                    diagText.append("「").append(node.getName()).append("」掌握度 **")
+                            .append(node.getMastery()).append(" 分**")
+                            .append(chain.getRootCause() != null && !chain.getRootCause().equals(node.getId())
+                                    ? "，前置链上存在薄弱根因，规划中已优先补强。"
+                                    : chain.getRootCause() != null
+                                    ? "，正是当前链上最薄弱的环节，建议直接攻克。"
+                                    : "，前置链达标，可直接攻克。").append('\n');
+                }
             }
         }
         if (items.isEmpty()) {

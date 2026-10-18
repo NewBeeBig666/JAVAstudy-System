@@ -16,7 +16,7 @@ class PathPlanServiceTest {
 
     private TraceChainResponse chain(String rootCause, String... codes) {
         List<TraceChainResponse.ChainNode> nodes = java.util.Arrays.stream(codes)
-                .map(c -> new TraceChainResponse.ChainNode(c, c, 50, "note"))
+                .map(c -> new TraceChainResponse.ChainNode(c, c, 50, "note", true))
                 .toList();
         return new TraceChainResponse(nodes, rootCause, "结论");
     }

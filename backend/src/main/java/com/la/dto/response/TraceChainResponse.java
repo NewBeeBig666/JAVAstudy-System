@@ -21,5 +21,7 @@ public class TraceChainResponse {
         private String name;
         private int mastery;
         private String note;
+        /** 是否已有掌握数据（学生做过该知识点的练习/作业）；false 时 mastery 的 0 不代表真实掌握度 */
+        private boolean hasData;
     }
 }

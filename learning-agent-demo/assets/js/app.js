@@ -1419,21 +1419,39 @@
   // 图7原有功能（完整保留）：依赖链溯源卡 + 最薄弱 TOP3 卡
   function kgChainCard(cur) {
     const chain = traceChain(cur.id);
-    const chainHtml = chain.map((c, i) =>
-      (i ? '<span class="chain-arrow">' + icon('chevronR', 15) + '</span>' : '') +
-      `<span class="chain-node ${c.root ? 'root' : ''}" data-act="kpCell" data-val="${c.id}">${kpName(c.id)} · ${kp(c.id).mastery} 分</span>`
-    ).join('');
+    // 链节点分数：无练习数据的知识点显示"暂无数据"，不再显示误导性的 0 分
+    const chainHtml = chain.map((c, i) => {
+      const k = kp(c.id);
+      return (i ? '<span class="chain-arrow">' + icon('chevronR', 15) + '</span>' : '') +
+        `<span class="chain-node ${c.root ? 'root' : ''}" data-act="kpCell" data-val="${c.id}">${kpName(c.id)} · ${k.hasData ? k.mastery + ' 分' : '暂无数据'}</span>`;
+    }).join('');
     const weak = DB.knowledgePoints.filter(k => k.hasData).slice().sort((a, b) => a.mastery - b.mastery).slice(0, 3);
+    // 推论文案三分支：暂无数据 → 引导收集；根因为目标自身 → 直接攻克；根因为前置 → 先补再回
+    const rootKp = chain.find(c => c.root);
+    const noData = !cur.hasData && !rootKp;
+    const selfRoot = rootKp && rootKp.id === cur.id;
+    let conclusion, conclusionCls;
+    if (noData) {
+      conclusion = '该知识点暂无掌握数据——掌握度由「学习会话的练习」和「教师批改的作业」自动收集。去学习会话做几道练习，这里就会给出前置链诊断。';
+      conclusionCls = '';
+    } else if (selfRoot) {
+      conclusion = '溯源结论：<b>' + cur.name + '</b>（' + cur.mastery + ' 分）正是你当前链上最薄弱的环节，建议直接攻克它，从做一道练习开始。';
+      conclusionCls = 'warn';
+    } else if (rootKp) {
+      conclusion = '溯源结论：真正卡住你的是 <b>' + kpName(rootKp.id) + '</b>（' + kp(rootKp.id).mastery + ' 分），先补它再回到「' + cur.name + '」收益才高。';
+      conclusionCls = 'warn';
+    } else {
+      conclusion = '该知识点前置依赖均已达标，可以直接推进。';
+      conclusionCls = 'ok';
+    }
     return `
       <div class="card"><div class="card-head">${icon('route', 15)}<h3>依赖链溯源 · ${cur.name}</h3><div class="spacer"></div>
           <span class="badge ${cur.hasData ? (cur.mastery >= 80 ? 'ok' : cur.mastery >= 60 ? '' : 'danger') : ''}">${cur.hasData ? cur.mastery + ' 分 · ' + mtext(cur.mastery) : '暂无掌握数据'}</span></div>
         <div class="card-body">
           <div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:10px">${h(cur.desc)}</div>
           <div class="chain">${chainHtml}</div>
-          <div class="note ${chain.find(c => c.root) ? 'warn' : 'ok'}">
-            ${chain.find(c => c.root)
-              ? '溯源结论：真正卡住你的是 <b>' + kpName(chain.find(c => c.root).id) + '</b>（' + kp(chain.find(c => c.root).id).mastery + ' 分），先补它再回到「' + cur.name + '」收益才高。'
-              : '该知识点前置依赖均已达标，可以直接推进。'}
+          <div class="note ${conclusionCls}">
+            ${conclusion}
           </div>
         </div></div>
 
@@ -1453,16 +1471,17 @@
     const k = kp(id);
     const out = [{ id: k.id, root: false }];
     const deps = (k.deps || []).filter(d => seen.indexOf(d) < 0);
-    if (!deps.length) { out[0].root = kp(id).mastery < 60; return out; }
+    // 无掌握数据（从未做过练习）的知识点不判为"卡住"根因——需要先收集数据而非下结论
+    if (!deps.length) { out[0].root = kp(id).hasData && kp(id).mastery < 60; return out; }
     // 取最弱的前置继续往下追
     let weakest = deps[0];
     deps.forEach(d => { if (kp(d).mastery < kp(weakest).mastery) weakest = d; });
     const rest = traceChain(weakest, seen.concat([id]));
-    // 标记链条上最弱的节点为 root
+    // 标记链条上最弱的节点为 root（仅有掌握数据且 <60 分的节点才构成根因）
     const all = rest.concat(out);
     let min = all[0];
     all.forEach(a => { if (kp(a.id).mastery < kp(min.id).mastery) min = a; });
-    if (kp(min.id).mastery < 60) min.root = true;
+    if (kp(min.id).hasData && kp(min.id).mastery < 60) min.root = true;
     return all;
   }
 

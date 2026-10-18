@@ -118,30 +118,44 @@ public class KnowledgeService {
         }
 
         KnowledgePoint rootCause = null;
+        // 根因判定：仅有掌握数据（做过练习/作业）且 <60 分的节点才构成"卡住"根因；
+        // 无数据节点显示 0 是缺数据而非真薄弱，不参与判定
         for (KnowledgePoint kp : chain) {
-            if (masteryMap.getOrDefault(kp.getId(), 0) < 60) {
+            if (masteryMap.containsKey(kp.getId()) && masteryMap.get(kp.getId()) < 60) {
                 rootCause = kp;
             }
         }
+        boolean targetHasData = masteryMap.containsKey(target.getId());
 
         List<TraceChainResponse.ChainNode> nodes = new ArrayList<>();
         for (int i = 0; i < chain.size(); i++) {
             KnowledgePoint kp = chain.get(i);
+            boolean hasData = masteryMap.containsKey(kp.getId());
+            int mastery = masteryMap.getOrDefault(kp.getId(), 0);
             String note;
-            if (i == 0) {
+            if (!hasData) {
+                note = "暂无数据 · 需练习收集";
+            } else if (i == 0) {
                 note = "目标知识点，直接得分最低";
             } else if (rootCause != null && kp.getId().equals(rootCause.getId())) {
                 note = "前置薄弱 · 判定为根本原因";
             } else {
-                note = masteryMap.getOrDefault(kp.getId(), 0) >= 60 ? "前置达标" : "前置薄弱";
+                note = mastery >= 60 ? "前置达标" : "前置薄弱";
             }
             nodes.add(new TraceChainResponse.ChainNode(kp.getKpCode(), kp.getName(),
-                    masteryMap.getOrDefault(kp.getId(), 0), note));
+                    mastery, note, hasData));
         }
 
-        String conclusion = rootCause != null
-                ? "建议优先补「" + rootCause.getName() + "」，再回到「" + target.getName() + "」。"
-                : "前置链整体达标，可直接攻克「" + target.getName() + "」。";
+        String conclusion;
+        if (!targetHasData) {
+            conclusion = "「" + target.getName() + "」暂无掌握数据——掌握度由学习会话的练习与教师批改的作业自动收集，去做几道练习即可生成前置链诊断。";
+        } else if (rootCause != null && rootCause.getId().equals(target.getId())) {
+            conclusion = "「" + target.getName() + "」（" + masteryMap.get(target.getId()) + " 分）正是当前链上最薄弱的环节，建议直接攻克它，从做一道练习开始。";
+        } else if (rootCause != null) {
+            conclusion = "建议优先补「" + rootCause.getName() + "」，再回到「" + target.getName() + "」。";
+        } else {
+            conclusion = "前置链整体达标，可直接攻克「" + target.getName() + "」。";
+        }
         return new TraceChainResponse(nodes, rootCause != null ? rootCause.getKpCode() : null, conclusion);
     }
 
