@@ -2029,12 +2029,31 @@
     if (!State.resProgress) State.resProgress = {};
     if (State.resProgress[sid] !== undefined) return;
     State.resProgress[sid] = null; // null = 加载中
+    // 修复：进度数据到位后原逻辑整窗 render() 会整体重建 .main-body（滚动容器被替换、
+    // scrollTop 归零），把点击学生时已启动的"平滑滑到底部档案卡"滚动销毁，表现为首次
+    // 点击某生不滑到底、需再点一次。改为局部刷新进度块（滚动容器不动、滚动不中断），
+    // 并补一次滚底覆盖卡片因数据撑高后的新底部。
+    const apply = () => {
+      if (State.section !== 'students' || String(State.activeStudent) !== String(sid)) return;
+      const box = document.getElementById('stuResProg');
+      const s = DB.students.find(x => String(x.id) === String(sid));
+      if (box && s) {
+        box.innerHTML = stuResProgressHtml(s);
+      } else {
+        render(); // 兜底：局部节点缺失（如结构变更）时仍整窗渲染
+        return;
+      }
+      requestAnimationFrame(() => {
+        const sc = document.querySelector('.main-body');
+        if (sc) sc.scrollTo({ top: sc.scrollHeight, behavior: 'smooth' });
+      });
+    };
     API.get('/teacher/resources/student-progress?studentId=' + encodeURIComponent(sid)).then(m => {
       State.resProgress[sid] = m;
-      if (State.section === 'students' && String(State.activeStudent) === String(sid)) render();
+      apply();
     }).catch(e => {
       State.resProgress[sid] = { total: 0, completed: 0, items: [], error: e.message };
-      if (State.section === 'students' && String(State.activeStudent) === String(sid)) render();
+      apply();
     });
   }
 
@@ -2105,7 +2124,7 @@
             }).join('')}
           </div>
           <div style="font-size:12px;font-weight:600;margin:12px 0 6px">学习资源进度</div>
-          ${stuResProgressHtml(sel)}
+          <div id="stuResProg">${stuResProgressHtml(sel)}</div>
           <div class="note ${sel.risk === 'low' ? 'ok' : 'warn'}" style="margin-top:12px">
             ${sel.risk === 'low' ? '该生状态良好，无需干预。' : '建议：课后单独沟通 + 推送 1 次针对性复习包，3 天后复查活跃度是否回升。'}
           </div>
