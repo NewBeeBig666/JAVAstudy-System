@@ -827,6 +827,25 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .as-menu-item.danger { color: var(--danger); }
 .as-menu-item.danger:hover { background: var(--danger-soft); }
 
+/* ---------- 题卡「添加知识点」搜索下拉（组卷编辑器内使用，z-index 需高于 compose-mask 的 80） ---------- */
+.qkp-menu {
+  position: absolute; z-index: 90; width: 300px; padding: 8px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; box-shadow: 0 8px 24px rgba(15, 23, 42, .14);
+}
+.qkp-menu .qkp-search { height: 32px; font-size: 12.5px; margin-bottom: 6px; }
+.qkp-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.qkp-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 7px 9px; border: 0; background: none; border-radius: 7px;
+  font-size: 13px; color: var(--text); cursor: pointer; text-align: left;
+  transition: background .12s;
+}
+.qkp-item:hover { background: var(--brand-soft); }
+.qkp-item .qkp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qkp-item .qkp-mod { flex: none; font-size: 11px; color: var(--text-3); background: var(--panel-3); padding: 1px 7px; border-radius: 999px; }
+.qkp-empty { padding: 18px 8px; text-align: center; font-size: 12.5px; color: var(--text-3); line-height: 1.8; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+
 /* ---------- 出题组卷（教师端全屏 overlay） ---------- */
 .compose-mask {
   position: fixed; inset: 0; z-index: 80;

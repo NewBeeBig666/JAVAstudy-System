@@ -421,6 +421,18 @@
         <div class="li-sub">掌握度 ${s.mastery} · 提交率 ${s.submitRate}%</div></div>
         <div class="li-extra"><span class="badge ${s.risk === 'high' ? 'danger' : s.risk === 'mid' ? 'warn' : 'ok'}">${s.risk === 'high' ? '高危' : s.risk === 'mid' ? '关注' : '正常'}</span></div>
       </button>`).join('');
+
+    } else if (sec === 'resources') {
+      // 资源类型目录：全部 + 五类（PPT/视频/图片/Word/PDF），点击过滤中间资源列表
+      head = '<div class="side-head"><div class="side-title">资源分类</div></div>';
+      const rall = DB.resources || [];
+      body = `<button class="list-item ${!State.filters.resType ? 'on' : ''}" data-act="resTypeFilter" data-val="all">
+          <div class="li-main"><div class="li-title">全部资源</div><div class="li-sub">${rall.length} 个资源</div></div></button>` +
+        Object.keys(RES_META).map(t => {
+          const n = rall.filter(r => r.fileType === t).length;
+          return `<button class="list-item ${State.filters.resType === t ? 'on' : ''}" data-act="resTypeFilter" data-val="${t}">
+            <div class="li-main"><div class="li-title">${RES_META[t].label}</div><div class="li-sub">${n} 个资源</div></div></button>`;
+        }).join('');
     }
 
     // 列表内容包进 .side-body（flex:1 + overflow-y:auto），使会话/学生等长列表可垂直滚动
@@ -1911,7 +1923,13 @@
       return { head, body: emptyBox('还没有学习资源', '上传 PPT、视频、图片、Word 或 PDF，AI 会识别内容并关联知识点，学生即可查看学习。',
         '<button class="btn primary" data-act="resUploadModal">' + icon('plus', 15) + ' 上传第一个资源</button>') };
     }
-    const body = DB.resources.map(r => `<div class="card">
+    // 左侧类型目录筛选：仅显示选中类型的资源（State.filters.resType 为空 = 全部）
+    const ft = State.filters.resType;
+    const list = ft ? DB.resources.filter(r => r.fileType === ft) : DB.resources;
+    if (!list.length) {
+      return { head, body: emptyBox('该类型暂无资源', '「' + resTypeLabel(ft) + '」分类下暂无资源，可点击左侧其他分类查看，或上传该类型的新资源。') };
+    }
+    const body = list.map(r => `<div class="card">
       <div class="card-head">
         <span class="badge brand">${resTypeLabel(r.fileType)}</span>
         <h3>${h(r.title)}</h3><div class="spacer"></div>
@@ -1933,8 +1951,12 @@
   }
 
   function viewResourcesStudent() {
-    const done = (DB.resources || []).filter(r => r.myProgress && r.myProgress.completed).length;
-    const head = mainHead('学习资源', '老师发布的学习资料（' + done + '/' + (DB.resources || []).length + ' 已学完）');
+    // 头部统计随左侧类型筛选联动（ft 为空 = 全部），避免筛选后计数与可见卡片不一致
+    const ft = State.filters.resType;
+    const src = DB.resources || [];
+    const cnt = ft ? src.filter(r => r.fileType === ft) : src;
+    const done = cnt.filter(r => r.myProgress && r.myProgress.completed).length;
+    const head = mainHead('学习资源', '老师发布的学习资料' + (ft ? ' · ' + resTypeLabel(ft) : '') + '（' + done + '/' + cnt.length + ' 已学完）');
     if (DB.resources === null || DB.resources === undefined) {
       return { head, body: '<div class="main-body"><div class="main-inner">' + skeleton() + '</div></div>' };
     }
@@ -1944,7 +1966,12 @@
     if (!DB.resources.length) {
       return { head, body: emptyBox('老师还没有发布学习资源', '有资源会第一时间出现在这里，学习进度（查看、学完）会自动记录给老师。') };
     }
-    const body = DB.resources.map(r => {
+    // 左侧类型目录筛选：仅显示选中类型的资源（ft 为空 = 全部，见函数头部声明）
+    const list = ft ? DB.resources.filter(r => r.fileType === ft) : DB.resources;
+    if (!list.length) {
+      return { head, body: emptyBox('该类型暂无资源', '「' + resTypeLabel(ft) + '」分类下暂无资源，点击左侧其他分类查看。') };
+    }
+    const body = list.map(r => {
       const p = r.myProgress;
       const completed = p && p.completed;
       const viewed = p && (p.viewCount || 0) > 0;
@@ -2903,6 +2930,8 @@
   }
 
   function renderCompose() {
+    // 题卡「添加知识点」搜索浮层随组卷整层重渲染收起（增删题会使题号索引变化，旧锚点失效）
+    closeQkpMenu();
     const c = State.compose;
     if (!c) return '';
     if (c.preview) return composePreviewHtml();
@@ -3226,10 +3255,35 @@
       ? sel.map(k => `<span class="badge brand cp-kp-pill" data-act="composeQKpDel" data-val="${h(k)}" data-id="${i}" title="点击移除「${h(kpName(k))}」">${h(kpName(k))}<span class="cp-kp-x">×</span></span>`).join('')
       : '<span style="font-size:12px;color:var(--text-3)">未关联（AI 生成将无法限定命题范围）</span>';
     const rest = DB.knowledgePoints.filter(k => sel.indexOf(k.id) < 0);
+    // 知识点全集较大，原生 select 无法内嵌搜索：改为「搜索 + 列表」浮层（Actions.qKpMenu），
+    // 支持按名称关键词过滤，方便在长列表中快速定位目标知识点
     const addSel = rest.length
-      ? `<select class="select cp-kp-add" data-kpadd="${i}" title="添加知识点"><option value="">＋ 添加知识点</option>${rest.map(k => `<option value="${k.id}">${h(k.name)}</option>`).join('')}</select>`
+      ? `<button type="button" class="btn sm ghost cp-kp-add" data-act="qKpMenu" data-id="${i}" title="搜索并添加知识点">＋ 添加知识点</button>`
       : '';
     return pills + addSel;
+  }
+
+  // 题卡「添加知识点」搜索下拉的列表区：过滤掉本题已关联的知识点；
+  // 搜索词按名称包含匹配（大小写不敏感），供输入时局部刷新（不整窗重渲染防闪屏丢焦点）
+  function qKpMenuListHtml() {
+    const c = State.compose;
+    const m = c && c._qkp;
+    if (!m) return '';
+    const q0 = c.questions[m.qi];
+    const sel = (q0 && q0.kpCodes) || [];
+    const kw = (m.q || '').trim().toLowerCase();
+    const all = DB.knowledgePoints.filter(k => sel.indexOf(k.id) < 0);
+    const modName = mid => { const mm = DB.modules.find(x => x.id === mid); return mm ? mm.name : ''; };
+    const list = kw ? all.filter(k => k.name.toLowerCase().indexOf(kw) >= 0) : all;
+    if (!list.length) {
+      return `<div class="qkp-empty">${icon('search', 16)}
+        <span>${kw ? '没有找到与「' + h(m.q.trim()) + '」匹配的知识点' : '该题已关联全部知识点'}</span>
+        ${kw ? '<button class="btn sm ghost" data-act="qKpSearchClear">清除搜索</button>' : ''}</div>`;
+    }
+    return list.map(k => `<button class="qkp-item" data-act="qKpPick" data-val="${k.id}" title="${h(k.name)}">
+        <span class="qkp-name">${h(k.name)}</span>
+        <span class="qkp-mod">${h(modName(k.module))}</span>
+      </button>`).join('');
   }
 
   /* ---------- 日期时间选择器（弹层日历 + 时:分，开始/结束共用） ---------- */
@@ -3643,6 +3697,8 @@
       if (onPage) {
         g.aiBusy = false;
         if (g.total == null || g.total === '') g.total = r.aiScore;
+        // 评语同样回填 AI 初评评分依据（教师已输入评语时不覆盖）
+        if (!(g.comment || '').trim()) g.comment = r.aiComment || '';
         renderOverlays(); renderCtx();
         toast('AI 初评完成，总分已预填 ' + r.aiScore + ' 分，请复核调整后提交', 'ok');
       }
@@ -3668,6 +3724,25 @@
   }
   function asMenuOutside(e) {
     if (asMenuEl && !asMenuEl.contains(e.target)) closeAsMenu();
+  }
+
+  /* --- 题卡「添加知识点」搜索下拉浮层（同 asMenu 模式，全局仅一个实例）：
+     点击浮层外 / 浮层外的滚动时收起（浮层内列表自身滚动不收起）；
+     组卷整层重渲染时由 renderCompose 主动收起（增删题会使题号索引变化） --- */
+  let qkpMenuEl = null;
+  function closeQkpMenu() {
+    if (qkpMenuEl) {
+      qkpMenuEl.remove();
+      qkpMenuEl = null;
+      document.removeEventListener('click', qkpMenuOutside, true);
+      window.removeEventListener('scroll', qkpMenuScroll, true);
+    }
+  }
+  function qkpMenuOutside(e) {
+    if (qkpMenuEl && !qkpMenuEl.contains(e.target)) closeQkpMenu();
+  }
+  function qkpMenuScroll(e) {
+    if (qkpMenuEl && !qkpMenuEl.contains(e.target)) closeQkpMenu();
   }
 
   const Actions = {
@@ -4418,6 +4493,11 @@
     },
     resFile(v, id) { openResFile(id, false); },
     resView(v, id) { openResFile(id, true); },
+    // 左侧资源类型目录：切换筛选（中间列表仅显示该类型资源），并保持目录选中态
+    resTypeFilter(v) {
+      State.filters.resType = (!v || v === 'all') ? '' : v;
+      render();
+    },
     resPreviewClose() {
       const d = State.modal && State.modal.data;
       if (d && d.url) { try { URL.revokeObjectURL(d.url); } catch (e) { /* 忽略 */ } }
@@ -4823,6 +4903,57 @@
       if (kb) kb.innerHTML = icon('target', 14) + ' 关联知识点' + (c.kps.length ? ' (' + c.kps.length + ')' : '');
       updateAiBtn();
     },
+    // 题卡「添加知识点」：打开搜索下拉浮层（再次点击同一按钮收起；点其他题的按钮则切换目标）
+    qKpMenu(v, id, t) {
+      const c = State.compose;
+      if (!c || !t) return;
+      if (qkpMenuEl && qkpMenuEl._qi === Number(id)) { closeQkpMenu(); return; }
+      closeQkpMenu();
+      c._qkp = { qi: Number(id), q: '' };
+      const menu = document.createElement('div');
+      menu.className = 'qkp-menu';
+      menu._qi = Number(id);
+      menu.innerHTML = `<input class="input qkp-search" placeholder="输入关键词过滤知识点…" data-bind="qkpsearch">
+        <div class="qkp-list" id="qkpList">${qKpMenuListHtml()}</div>`;
+      const r = t.getBoundingClientRect();
+      menu.style.top = (r.bottom + window.scrollY + 6) + 'px';
+      menu.style.left = Math.max(8, Math.min(r.left + window.scrollX,
+        document.documentElement.clientWidth - 308)) + 'px';
+      document.body.appendChild(menu);
+      qkpMenuEl = menu;
+      const inp = menu.querySelector('.qkp-search');
+      if (inp) inp.focus();
+      // 注册全局收起（点击浮层外 / 浮层外滚动）；延迟注册避免本次点击立即触发
+      setTimeout(() => {
+        document.addEventListener('click', qkpMenuOutside, true);
+        window.addEventListener('scroll', qkpMenuScroll, true);
+      }, 0);
+    },
+    // 选中知识点：写入该题 kpCodes，局部刷新题卡 pill 区与下拉列表（浮层保留可连续添加多个）
+    qKpPick(v) {
+      const c = State.compose;
+      if (!c || !c._qkp || !v) return;
+      const q0 = c.questions[c._qkp.qi];
+      if (!q0) { closeQkpMenu(); return; }
+      if (!Array.isArray(q0.kpCodes)) q0.kpCodes = [];
+      if (q0.kpCodes.indexOf(v) < 0) q0.kpCodes.push(v);
+      const box = document.getElementById('cpq-kp-' + c._qkp.qi);
+      if (box) box.innerHTML = composeQKpHtml(q0, c._qkp.qi);
+      const lst = document.getElementById('qkpList');
+      if (lst) lst.innerHTML = qKpMenuListHtml();
+      const inp = qkpMenuEl && qkpMenuEl.querySelector('.qkp-search');
+      if (inp) inp.focus();
+    },
+    // 清除题卡知识点下拉的搜索词，恢复完整列表
+    qKpSearchClear() {
+      const c = State.compose;
+      if (!c || !c._qkp) return;
+      c._qkp.q = '';
+      const inp = qkpMenuEl && qkpMenuEl.querySelector('.qkp-search');
+      if (inp) { inp.value = ''; inp.focus(); }
+      const lst = document.getElementById('qkpList');
+      if (lst) lst.innerHTML = qKpMenuListHtml();
+    },
     async aiGen() {
       const c = State.compose;
       if (!c || c.aiBusy) return;
@@ -4935,6 +5066,8 @@
         State.drawer = { subId: v };
         // 草稿无分数且初评结果已就绪（期间批量初评可能已完成）→ 补默认值；仍无结果则自动触发
         prepareGradingDefaults(cached, sub, a);
+        // 草稿无评语而初评结果已就绪（期间批量初评可能已完成）→ 评语同样预填 AI 评分依据
+        if (!(cached.comment || '').trim() && sub.aiComment) cached.comment = sub.aiComment;
         renderOverlays(); renderCtx();
         return;
       }
@@ -4945,7 +5078,12 @@
           : Math.round(r.max * ((sub.aiScore != null ? sub.aiScore : 70) / 100));
       });
       State.grading = {
-        subId: v, scores, comment: sub.teacherComment || '', total: null
+        // 教师评语默认预填 AI 初评评分依据（教师可修改再发布）；
+        // 已有教师评语（含已批改重开回显）优先教师评语
+        subId: v, scores, comment: sub.teacherComment || sub.aiComment || '',
+        // 已批改：回显教师发布的最终分（原 total:null 导致重开批阅页时
+        // 「合计」显示 0、总分输入框空白，被误读为"变成零分/还是AI评分"）
+        total: sub.status === 'graded' && sub.score != null ? sub.score : null
       };
       // 题目型作业：总分默认取 AI 初评结果（客观题自动判分 + 主观题 AI 评分），教师可改；
       // 尚无初评结果时自动触发单份 AI 初评（无需手动获取），完成后回填
@@ -5464,6 +5602,14 @@
         State.compose._kpQuery = t.value;
         const body = document.querySelector('.kp-panel .kp-panel-body');
         if (body) body.innerHTML = composeKpGroupsHtml();
+      }
+    }
+    else if (b === 'qkpsearch') {
+      // 题卡「添加知识点」下拉搜索：仅局部刷新列表（不整窗重渲染，避免闪屏与输入丢焦点）
+      if (State.compose && State.compose._qkp) {
+        State.compose._qkp.q = t.value;
+        const lst = document.getElementById('qkpList');
+        if (lst) lst.innerHTML = qKpMenuListHtml();
       }
     }
     else if (b === 'reskpq') {
