@@ -394,7 +394,7 @@
             <div class="li-extra">${sel ? '<span class="badge brand">已选</span>' : (pend ? '<span class="badge warn">' + pend + ' 待批</span>' : '')}</div>
           </button>`;
         }
-        return `<button class="list-item ${State.filters.subAs === a.id && sec === 'submissions' ? 'on' : ''}" data-act="subAsPick" data-val="${a.id}">
+        return `<button class="list-item ${State.filters.subAs === a.id && (sec === 'submissions' || sec === 'assignments') ? 'on' : ''}" data-act="subAsPick" data-val="${a.id}">
           <div class="li-main"><div class="li-title">${h(a.title)}</div>
           <div class="li-sub">${a.status === 'draft' ? '草稿' : '截止 ' + h(a.due)} · 已交 ${a.submitted}/${a.total}</div></div>
           ${pend ? '<div class="li-extra"><span class="badge warn">' + pend + ' 待批</span></div>' : ''}
@@ -1747,7 +1747,7 @@
               <span style="flex:1;font-size:11.5px;color:var(--text-3)">${h(r.desc)}</span>
               <span class="vl">${r.max}</span></div>`).join('')}
           </div>`;
-      return `<div class="card">
+      return `<div class="card ${State.filters.subAs === a.id ? 'card-sel' : ''}" id="asCard-${a.id}">
         <div class="card-head">${icon('clipboard', 15)}<h3>${h(a.title)}</h3><div class="spacer"></div>
           <button class="btn sm ghost" data-act="asMore" data-val="${a.id}" title="更多操作">${icon('dots', 14)} 更多</button>${stBadge}</div>
         <div class="card-body">
@@ -1787,7 +1787,9 @@
     const reviewed = list.filter(s => s.status === 'ai_reviewed').length;
     // 成绩导出按钮：位于「提交批改」标题行右侧（即上下文面板「知识点」选项左侧），
     // 导出当前班级全部学生、全部已发布作业（含最新作业）的成绩 Excel，支持时间段筛选
-    const head = mainHead('提交批改', h(a.title) + ' · 共 ' + list.length + ' 条记录 · ' + pend + ' 份待批改',
+    // 副标题统计：已提交人数（去除未提交记录）与待批改份数
+    const submittedN = list.filter(s => s.status !== 'missing').length;
+    const head = mainHead('提交批改', h(a.title) + ' · 共 ' + list.length + ' 条记录 · 已提交 ' + submittedN + ' 人 · ' + pend + ' 份待批改',
       '<button class="btn sm" data-act="exportModal" title="导出当前班级全部作业成绩 Excel（支持时间段筛选）">' + icon('download', 14) + ' 导出成绩</button>');
 
     if (!list.length) {
@@ -2714,7 +2716,8 @@
     const a = DB.assignments.find(x => x.id === sub.asId);
     const g = State.grading;
     const isQ = a.questionCount > 0;
-    const graded = sub.status === 'graded';
+    // 已批改默认只读；点击「重新批改」（reopenGrade）进入编辑态可修改并重新发布
+    const graded = sub.status === 'graded' && !(g && g.reopen);
     const all = DB.submissions;
     const idx = all.findIndex(s => s.id === sub.id);
     const prev = idx > 0 ? all[idx - 1] : null;
@@ -2768,7 +2771,7 @@
           <div style="font-weight:700;font-size:15px;letter-spacing:.2px">${h(sub.name)}</div>
           <div style="font-size:12px;line-height:1.5;color:var(--text-3);margin-top:3px">${sub.submittedAt ? '提交于 ' + h(sub.submittedAt) + '（第 ' + sub.attempts + ' 次）' : '未提交'}</div>
         </div>
-        <span class="badge ${graded ? 'ok' : sub.status === 'ai_reviewed' ? 'brand' : sub.status === 'missing' ? '' : 'warn'}">${graded ? '已批改 ' + sub.score : sub.status === 'ai_reviewed' ? 'AI初评完成 · 待复核' : sub.status === 'missing' ? '未提交' : '待批改'}</span>
+        <span class="badge ${sub.status === 'graded' ? 'ok' : sub.status === 'ai_reviewed' ? 'brand' : sub.status === 'missing' ? '' : 'warn'}">${sub.status === 'graded' ? (g.reopen ? '重新批改中 · 原 ' + sub.score + ' 分' : '已批改 ' + sub.score) : sub.status === 'ai_reviewed' ? 'AI初评完成 · 待复核' : sub.status === 'missing' ? '未提交' : '待批改'}</span>
       </div>
       <div style="font-size:12.5px;font-weight:700;letter-spacing:.4px;margin:16px 0 10px">${isQ ? '题目评分' : 'Rubric 评分'}</div>
       ${scoreArea}
@@ -2800,15 +2803,21 @@
         <aside class="grade-side">${side}</aside>
       </div>
       <div class="grade-foot">
-        ${graded
-          ? '<span class="badge ok">' + icon('check', 12) + ' 已发布反馈（得分 ' + sub.score + '）</span>'
+        ${sub.status === 'graded'
+          ? (g.reopen
+            ? '<span class="badge warn">' + icon('edit', 12) + ' 重新批改中（原 ' + sub.score + ' 分）</span>'
+            : '<span class="badge ok">' + icon('check', 12) + ' 已发布反馈（得分 ' + sub.score + '）</span>')
           : `<button class="btn" data-act="doGradeZero">记 0 分（未提交）</button>`}
         <div style="flex:1"></div>
         <span style="font-size:13.5px;font-weight:650;letter-spacing:.4px;margin-right:12px">总分：<span class="score-big" style="font-size:20px">${graded ? sub.score : scorePreview}</span><span style="color:var(--text-3);font-size:12px"> / 100</span></span>
-        ${graded
-            ? '<button class="btn" data-act="closeGradePage">关闭</button>'
-            : `<button class="btn" data-act="doGrade">${icon('send', 15)} 提交</button>
-               <button class="btn primary" data-act="doGradeNext">提交并进入下一份</button>`}
+        ${sub.status === 'graded'
+          ? (g.reopen
+            ? `<button class="btn" data-act="reopenGradeCancel">取消</button>
+               <button class="btn primary" data-act="doGrade">${icon('send', 15)} 重新发布</button>`
+            : `<button class="btn" data-act="closeGradePage">关闭</button>
+               <button class="btn primary" data-act="reopenGrade">${icon('edit', 15)} 重新批改</button>`)
+          : `<button class="btn" data-act="doGrade">${icon('send', 15)} 提交</button>
+             <button class="btn primary" data-act="doGradeNext">提交并进入下一份</button>`}
       </div>
     </div>`;
   }
@@ -3667,7 +3676,8 @@
     const g = State.grading;
     if (g && g.subId != null) {
       State.gradingDrafts = State.gradingDrafts || {};
-      State.gradingDrafts[String(g.subId)] = { subId: g.subId, scores: g.scores, comment: g.comment, total: g.total };
+      // reopen 一并缓存：重新批改中途返回列表/切换学生后，再次进入继续编辑
+      State.gradingDrafts[String(g.subId)] = { subId: g.subId, scores: g.scores, comment: g.comment, total: g.total, reopen: !!g.reopen };
     }
   }
 
@@ -3746,7 +3756,12 @@
   }
 
   const Actions = {
-    section(v) { State.section = v; State.drawer = null; loadWithSkeleton(); },
+    section(v) {
+      // 离开提交批改板块时停止批量初评轮询：批改完成会有通知，回到页面时
+      // 会拉取最新数据，无需后台持续请求（原先要空转最多 4 分钟）
+      if (v !== 'submissions' && v !== 'assignments') stopBatchPoll();
+      State.section = v; State.drawer = null; loadWithSkeleton();
+    },
     async session(v) {
       State.sessionId = v; State.scrollBottom = true; render();
       const s = session();
@@ -4397,6 +4412,15 @@
       // XHR 上传以获取进度回调（AI 识别在服务端完成，100% 后进入识别阶段）
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/teacher/resources');
+      // 超时兜底：上传 + AI 识别全程限时（10 分钟，覆盖 200MB 视频在慢速网络
+      // 的上传时长；AI 识别本身由后端 90s read-timeout 约束）。连接僵死时
+      // onerror 不会触发，无兜底会让弹窗永久停在"AI 识别内容中…"只能刷新。
+      xhr.timeout = 600000;
+      xhr.ontimeout = () => {
+        d.uploading = false;
+        State.modal = null; renderOverlays();
+        toast('上传超时：文件较大或网络不稳定，请重试');
+      };
       xhr.setRequestHeader('Authorization', 'Bearer ' + API.token());
       xhr.upload.onprogress = e => {
         if (e.lengthComputable) {
@@ -5051,7 +5075,16 @@
     },
     subAsPick(v) {
       State.filters.subAs = v;
-      if (State.section === 'assignments') State.section = 'submissions';
+      // 作业管理页点击左侧栏作业：停留本页不跳转提交批改——
+      // 中间作业卡高亮 + 平滑定位到该作业（后续点「查看提交与批改」再进入批改）
+      if (State.section === 'assignments') {
+        render();
+        requestAnimationFrame(() => {
+          const el = document.getElementById('asCard-' + v);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return;
+      }
       render();
       loadSubmissions(v);
     },
@@ -5095,7 +5128,10 @@
     closeGradePage() {
       cacheGradingDraft();
       State.drawer = null;
-      renderOverlays(); renderCtx();
+      // 批阅期间批量初评轮询只更新数据不渲染（防输入框丢焦点），返回列表时
+      // 补一次渲染，呈现轮询期间的提交状态变化
+      if (State.section === 'submissions') render();
+      else { renderOverlays(); renderCtx(); }
     },
     // 上一份 / 下一份：当前草稿写入缓存后切换学生
     gradeGo(v) {
@@ -5125,14 +5161,35 @@
       renderOverlays();
       toast('已按 AI 初评比例填充，请人工复核后发布');
     },
-    async doGrade() {
+    // 已批改作业重新批改：解锁评分/评语编辑，缓存原值供取消时恢复
+    reopenGrade() {
+      const g = State.grading;
+      if (!g) return;
+      g.reopen = true;
+      g._orig = { total: g.total, comment: g.comment, scores: Object.assign({}, g.scores) };
+      renderOverlays(); renderCtx();
+    },
+    // 取消重新批改：恢复进入编辑态前的原评分与评语
+    reopenGradeCancel() {
+      const g = State.grading;
+      if (!g) return;
+      g.reopen = false;
+      if (g._orig) {
+        g.total = g._orig.total; g.comment = g._orig.comment; g.scores = g._orig.scores;
+      }
+      renderOverlays(); renderCtx();
+    },
+    async doGrade(v, id, t) {
       const sub = DB.submissions.find(x => x.id === State.drawer.subId);
       const a = DB.assignments.find(x => x.id === sub.asId);
       const g = State.grading;
+      if (g.busy) return; // 防双击：网络慢时重复点击会重复发布（重复通知/重复会话卡片）
       if (a.questionCount > 0 && (g.total == null || g.total === '')) {
         toast('请先填写作业总分');
         return;
       }
+      g.busy = true;
+      if (t) t.disabled = true;
       try {
         await API.post('/teacher/submissions/' + sub.id + '/grade', {
           rubricScores: g.scores, comment: g.comment || '',
@@ -5145,17 +5202,24 @@
         await loadSubmissions(sub.asId);
         render();
         toast('评分已发布，学生侧已收到反馈', 'ok');
-      } catch (e) { toast(e.message); }
+      } catch (e) {
+        g.busy = false;
+        if (t) t.disabled = false;
+        toast(e.message);
+      }
     },
     // 提交并进入下一份：发布当前批改后自动打开下一份待批改的提交
-    async doGradeNext() {
+    async doGradeNext(v, id, t) {
       const sub = DB.submissions.find(x => x.id === State.drawer.subId);
       const a = DB.assignments.find(x => x.id === sub.asId);
       const g = State.grading;
+      if (g.busy) return; // 防双击重复发布
       if (a.questionCount > 0 && (g.total == null || g.total === '')) {
         toast('请先填写作业总分');
         return;
       }
+      g.busy = true;
+      if (t) t.disabled = true;
       try {
         await API.post('/teacher/submissions/' + sub.id + '/grade', {
           rubricScores: g.scores, comment: g.comment || '',
@@ -5177,13 +5241,21 @@
           render();
           toast('评分已发布，全部提交批改完成', 'ok');
         }
-      } catch (e) { toast(e.message); }
+      } catch (e) {
+        g.busy = false;
+        if (t) t.disabled = false;
+        toast(e.message);
+      }
     },
-    async doGradeZero() {
+    async doGradeZero(v, id, t) {
       const sub = DB.submissions.find(x => x.id === State.drawer.subId);
       const a = DB.assignments.find(x => x.id === sub.asId);
+      const g = State.grading;
+      if (g.busy) return; // 防双击重复发布
       const scores = {};
       a.rubric.forEach(r => { scores[r.name] = 0; });
+      g.busy = true;
+      if (t) t.disabled = true;
       try {
         await API.post('/teacher/submissions/' + sub.id + '/grade', {
           rubricScores: scores, comment: '未提交，记 0 分。请尽快补交，有困难可随时联系我。',
@@ -5194,7 +5266,11 @@
         await loadSubmissions(sub.asId);
         render();
         toast('已记 0 分并通知学生', 'ok');
-      } catch (e) { toast(e.message); }
+      } catch (e) {
+        g.busy = false;
+        if (t) t.disabled = false;
+        toast(e.message);
+      }
     },
     async batchAi() {
       try {
@@ -5290,21 +5366,28 @@
   async function loadSubmissions(asId) {
     try {
       DB.submissions = await API.get('/teacher/assignments/' + asId + '/submissions');
-      if (State.section === 'submissions') render();
+      // 批阅页打开期间（批量初评轮询等触发的刷新）不做整窗重渲染：
+      // renderOverlays 会重建批阅页 DOM，导致评分/评语输入框周期性丢焦点、
+      // 批阅页滚动重置（每 5 秒一次）。仅更新数据；关闭批阅页返回列表时
+      // 由 closeGradePage 补一次渲染呈现期间的状态变化。
+      if (State.section === 'submissions' && !State.drawer) render();
     } catch (e) { /* 忽略 */ }
   }
 
   // 批量 AI 初评进行中：每 5 秒轮询当前作业的提交列表，初评状态变化自动呈现
   //（loadSubmissions 内部会重渲染）；当前作业待批清零或超时 4 分钟后停止
+  function stopBatchPoll() {
+    if (State._batchTimer) { clearInterval(State._batchTimer); State._batchTimer = null; }
+  }
   function startBatchPoll() {
-    if (State._batchTimer) clearInterval(State._batchTimer);
+    stopBatchPoll();
     let rounds = 0;
     State._batchTimer = setInterval(async () => {
       rounds++;
       try {
         await loadSubmissions(State.filters.subAs);
         const pend = (DB.submissions || []).filter(s => s.asId === State.filters.subAs && s.status === 'pending').length;
-        if (pend === 0 || rounds >= 48) clearInterval(State._batchTimer);
+        if (pend === 0 || rounds >= 48) stopBatchPoll();
       } catch (e) { /* 忽略轮询失败 */ }
     }, 5000);
   }

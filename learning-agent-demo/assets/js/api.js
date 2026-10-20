@@ -8,13 +8,28 @@ window.API = (function () {
 
   function token() { return localStorage.getItem('la_token') || ''; }
 
-  async function request(method, path, body) {
+  async function request(method, path, body, timeoutMs) {
     const opt = { method: method, headers: { 'Authorization': 'Bearer ' + token() } };
     if (body !== undefined) {
       opt.headers['Content-Type'] = 'application/json;charset=utf-8';
       opt.body = JSON.stringify(body);
     }
-    const res = await fetch(BASE + path, opt);
+    // 超时兜底：网络僵死（切网/锁屏/连接挂起）时 fetch 永不结束，调用方的
+    // busy 锁（保存/生成/提交按钮）将永久卡死，只能刷新页面——与 SSE 空闲
+    // 超时是同一类问题。默认 120s：覆盖「一键AI生成题目」等长请求（后端
+    // DeepSeek read-timeout 90s），到时中止并抛错，busy 锁得以释放。
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs || 120000);
+    opt.signal = ctrl.signal;
+    let res;
+    try {
+      res = await fetch(BASE + path, opt);
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw new Error('请求超时无响应，请检查网络后重试');
+      throw new Error('网络连接失败，请检查网络后重试');
+    } finally {
+      clearTimeout(timer);
+    }
     if (res.status === 401) { window.Auth.logout(); throw new Error('登录已过期，请重新登录'); }
     let data = null;
     try { data = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
@@ -24,10 +39,10 @@ window.API = (function () {
     return data.data;
   }
 
-  const get = p => request('GET', p);
-  const post = (p, b) => request('POST', p, b === undefined ? {} : b);
-  const put = (p, b) => request('PUT', p, b === undefined ? {} : b);
-  const del = p => request('DELETE', p);
+  const get = (p, timeoutMs) => request('GET', p, undefined, timeoutMs);
+  const post = (p, b, timeoutMs) => request('POST', p, b === undefined ? {} : b, timeoutMs);
+  const put = (p, b, timeoutMs) => request('PUT', p, b === undefined ? {} : b, timeoutMs);
+  const del = (p, timeoutMs) => request('DELETE', p, undefined, timeoutMs);
 
   /**
    * SSE 流式请求（POST + ReadableStream 解析）
