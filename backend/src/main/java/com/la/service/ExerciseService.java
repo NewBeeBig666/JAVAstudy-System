@@ -93,7 +93,8 @@ public class ExerciseService {
             throw new BizException("请选择一个答案");
         }
         boolean correct = ex.getAnswer() != null && ex.getAnswer().equals(selected);
-        int applied = correct ? ex.getMasteryDelta() : -3;
+        // 做错不扣分（鼓励大胆试错）：掌握度记 +0；做照常加分
+        int applied = correct ? ex.getMasteryDelta() : 0;
 
         // 1) 练习记录
         ExerciseRecord record = new ExerciseRecord();
@@ -107,8 +108,11 @@ public class ExerciseService {
         record.setCreatedAt(LocalDateTime.now());
         recordMapper.insert(record);
 
-        // 2) 掌握度回写
-        int newMastery = masteryService.adjust(userId, ex.getKpId(), applied);
+        // 2) 掌握度回写：做对加分；做错不回写（保持原值，无记录不创建——
+        //    避免 0 分记录把"暂无数据"知识点误判为有数据的薄弱根因）
+        Integer newMastery = correct
+                ? masteryService.adjust(userId, ex.getKpId(), applied)
+                : masteryService.currentValue(userId, ex.getKpId());
 
         // 3) 错题本 + SM-2
         boolean wrongBookAdded = false;
@@ -174,7 +178,8 @@ public class ExerciseService {
             analysis = judge.comment != null && !judge.comment.isBlank() ? judge.comment
                     : (ex.getAnalysis() != null ? ex.getAnalysis() : "已记录你的作答，可对照参考要点复盘。");
         }
-        int applied = correct ? ex.getMasteryDelta() : -3;
+        // 做错不扣分（鼓励大胆试错）：掌握度记 +0；做照常加分
+        int applied = correct ? ex.getMasteryDelta() : 0;
 
         // 练习记录（selected 记 -1 标记文本作答，answer 存原文）
         ExerciseRecord record = new ExerciseRecord();
@@ -189,7 +194,10 @@ public class ExerciseService {
         record.setCreatedAt(LocalDateTime.now());
         recordMapper.insert(record);
 
-        int newMastery = masteryService.adjust(userId, ex.getKpId(), applied);
+        // 掌握度回写：做对加分；做错不回写（保持原值，无记录不创建）
+        Integer newMastery = correct
+                ? masteryService.adjust(userId, ex.getKpId(), applied)
+                : masteryService.currentValue(userId, ex.getKpId());
 
         boolean wrongBookAdded = false;
         LocalDate reviewNext = null;

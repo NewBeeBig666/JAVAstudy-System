@@ -242,9 +242,11 @@
 
   function setMastery(id, value) {
     const k = DB.knowledgePoints.find(x => x.id === id);
-    if (k) k.mastery = value;
+    // 做错不扣分场景下 value 可能为 null（该知识点暂无掌握数据）：不覆盖、不参与均值
+    if (k && value != null) k.mastery = value;
     if (DB.student && DB.knowledgePoints.length) {
-      DB.student.avgMastery = Math.round(DB.knowledgePoints.reduce((a, b) => a + b.mastery, 0) / DB.knowledgePoints.length);
+      const vals = DB.knowledgePoints.map(x => x.mastery).filter(v => v != null);
+      if (vals.length) DB.student.avgMastery = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
     }
   }
 
@@ -1005,6 +1007,49 @@
     </div>`;
   }
 
+  /* AI 生成题目的题干渲染：题干里的代码段识别为深色代码块（.code-block），
+     说明文字保持原换行显示，方便学生阅读。代码行启发式：以 ;/{/} 结尾、
+     或以 Java 关键字/类型声明/方法签名开头；代码段内的空行不切断段落。 */
+  function exStemHtml(stem) {
+    const lines = String(stem || '').split(/\r?\n/);
+    if (!lines.length) return '';
+    const isCodeLine = l => !!l && !!l.trim() && (
+      /(;|\{|\})\s*$/.test(l)
+      || /^\s*(public|private|protected|class|interface|enum|import|package|abstract|static|final|void|int|long|double|float|boolean|char|return|new|System\.out|@Override|for|while|if|else|switch|case|try|catch|throw)\b/.test(l)
+      || /^\s*[A-Za-z_]\w*(<[^>]*>)?\s+\w+\s*\(.*\)/.test(l)
+    );
+    let html = '', text = [], code = [];
+    const flushText = () => {
+      if (!text.length) return;
+      const t = text.join('\n');
+      if (t.trim()) html += '<div style="white-space:pre-line">' + h(t) + '</div>';
+      text = [];
+    };
+    const flushCode = () => {
+      if (!code.length) return;
+      while (code.length && !code[0].trim()) code.shift();
+      while (code.length && !code[code.length - 1].trim()) code.pop();
+      const joined = code.join('\n');
+      // 至少两行、或含花括号/分号结尾的单行才视为代码块，避免误判普通文本
+      if (code.length >= 2 || /(;|\{|\})\s*$/.test(joined) || /\bclass\s+\w+/.test(joined)) {
+        html += '<pre class="code-block cb" style="margin:8px 0">' + h(joined) + '</pre>';
+      } else {
+        text.push(joined); // 误判兜底：回退为普通文本
+      }
+      code = [];
+    };
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      const nextIsCode = i + 1 < lines.length && isCodeLine(lines[i + 1]);
+      if (code.length && !l.trim() && nextIsCode) { code.push(l); continue; } // 代码段内空行
+      if (isCodeLine(l)) { flushText(); code.push(l); continue; }
+      flushCode();
+      text.push(l);
+    }
+    flushCode(); flushText();
+    return html || '<div style="white-space:pre-line">' + h(String(stem || '')) + '</div>';
+  }
+
   function renderCard(c, msgId, s) {
     if (c.type === 'diagnosis') {
       const rows = c.items.map(i => `<div class="mini-row">
@@ -1085,7 +1130,7 @@
         <div class="work-head">${icon('edit', 15)}<span class="wt">${qType === 'CODE' ? '代码陪练题' : qType === 'JUDGE' ? '判断题' : qType === 'FILL' ? '填空题' : qType === 'SHORT' ? '简答题' : '随堂练习'} · ${kpName(ex.kp)}</span>
           <div class="spacer"></div><span class="badge ${ex.difficulty === '困难' ? 'danger' : ex.difficulty === '中等' ? 'warn' : 'ok'}">${ex.difficulty}</span></div>
         <div class="work-body">
-          <div style="font-size:13.5px;line-height:1.7;margin-bottom:10px">${h(ex.stem)}</div>
+          <div style="font-size:13.5px;line-height:1.7;margin-bottom:10px">${exStemHtml(ex.stem)}</div>
           ${ex.code ? '<pre class="code-block cb">' + h(ex.code) + '</pre>' : ''}
           ${ansArea}
           ${hints ? '<div style="margin-top:12px">' + hints + '</div>' : ''}
@@ -1109,7 +1154,7 @@
           <span class="badge ${c.ok ? 'ok' : 'danger'}">${c.ok ? '正确' : '需巩固'}</span></div>
         <div class="work-body">
           <div class="result-box ${c.ok ? 'ok' : 'bad'}">
-            <h5>${c.ok ? '回答正确，掌握度 +' + c.delta : '这题没过，掌握度 ' + c.delta}</h5>
+            <h5>${c.ok ? '回答正确，掌握度 +' + c.delta : '这题未通过 · 掌握度 +' + c.delta + '（做错不扣分，大胆试错）'}</h5>
             <div>${h(c.analysis || (ex ? ex.analysis : ''))}</div>
           </div>
         </div>
@@ -1568,7 +1613,7 @@
           <td><span class="badge">${h(r.kpName || kpName(r.kp))}</span></td>
           <td>${h(r.title)}</td>
           <td class="num"><span class="badge ${r.ok ? 'ok' : 'danger'}">${r.ok ? '通过' : '未通过'}</span></td>
-          <td class="num" style="font-weight:600;color:${r.delta > 0 ? 'var(--ok)' : 'var(--danger)'}">${r.delta > 0 ? '+' : ''}${r.delta}</td>
+          <td class="num" style="font-weight:600;color:${r.delta > 0 ? 'var(--ok)' : r.delta < 0 ? 'var(--danger)' : 'var(--text-3)'}">${r.delta >= 0 ? '+' : ''}${r.delta}</td>
         </tr>`).join('')}</tbody>
       </table></div></div>`;
     return { head, body };
@@ -3755,6 +3800,24 @@
     if (qkpMenuEl && !qkpMenuEl.contains(e.target)) closeQkpMenu();
   }
 
+  // 学习路径「继续当前步骤」推进成功后的引导高亮：
+  // 给路径卡旁的「直接来一道练习」按钮与底部对话输入框加脉冲描边，
+  // 提示学生下一步可直接练习或在输入框与智能体对话；约 2.8 秒后自动消失
+  function hintNextActions() {
+    const els = [
+      document.querySelector('[data-act="askExercise"]'),
+      document.getElementById('composerInput')
+    ].filter(Boolean);
+    if (!els.length) return;
+    els.forEach(el => {
+      el.classList.remove('glow-hint');
+      // 强制重排以便连续点击时可重新触发动画
+      void el.offsetWidth;
+      el.classList.add('glow-hint');
+    });
+    setTimeout(() => els.forEach(el => el.classList.remove('glow-hint')), 2800);
+  }
+
   const Actions = {
     section(v) {
       // 离开提交批改板块时停止批量初评轮询：批改完成会有通知，回到页面时
@@ -3935,6 +3998,8 @@
         const ns = await API.post('/sessions/' + s.id + '/steps/' + stepNo + '/start');
         replaceSession(ns);
         State.scrollBottom = true; render();
+        // 推进成功后高亮引导：提示用户可直接开始练习或在下方输入框对话
+        hintNextActions();
       } catch (e) { toast(e.message); }
     },
     askExercise() {
@@ -4011,7 +4076,22 @@
         };
         m.card.state = 'graded';
         m.card.answer = r.answer;
-        // 完成当前步骤（服务端推进步骤 + 全部完成时生成学习报告）
+        if (!r.correct) {
+          // 未通过：不推进路径步骤（原逻辑做错也会 complete），停留在当前步骤，
+          // 提示学生继续练习——做对后（下方 correct 分支）才推进步骤进度
+          const activeStep = s.steps.find(x => x.status === 'active');
+          resultMsg.text = '这题未通过，先看解析把它弄懂：';
+          s.messages.push(resultMsg);
+          s.messages.push({
+            id: 'stay-' + Date.now(), from: 'agent', agent: 'tutor', time: now(),
+            text: '**还未通过，路径停留在当前步骤**：这道题已加入错题本与复习队列。\n\n当前步骤「'
+              + (activeStep ? activeStep.title : '进行中') + '」需做对练习才会推进。点击下方「直接来一道练习」再来一道同类题，做对后路径自动进入下一步。'
+          });
+          State.scrollBottom = true;
+          render();
+          return;
+        }
+        // 做对：完成当前步骤（服务端推进步骤 + 全部完成时生成学习报告）
         const doneN = s.steps.filter(x => x.status === 'done').length + 1;
         try {
           const ns = await API.post('/sessions/' + s.id + '/steps/' + Math.min(doneN, s.steps.length) + '/complete');
@@ -4045,7 +4125,7 @@
         render();
         toast(r.correct
           ? '回答正确 · ' + kpName(ex.kp) + ' 掌握度 ' + (r.delta > 0 ? '+' : '') + r.delta
-          : '未通过 · 已加入错题本与复习队列', r.correct ? 'ok' : '');
+          : '未通过 · 掌握度不扣分，已加入错题本与复习队列', r.correct ? 'ok' : '');
         refreshStudentSideData();
       } catch (e) {
         m.card.state = 'answering';

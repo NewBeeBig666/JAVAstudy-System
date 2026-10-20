@@ -159,13 +159,20 @@ public class SessionService {
                     .sorted(Comparator.comparingInt(k -> masteryMap.getOrDefault(k.getId(), 0)))
                     .limit(3).collect(Collectors.toList());
         } else {
+            // 修复：前端分层导航可选到任意层级的 XLSX 节点（L1 模块根 / L2 章节 / L3+ 叶子），
+            // 原先仅在 Level=2 池内匹配，多选 L3+ 叶子节点会整体落空，误报"所选知识点不存在"。
+            // 匹配范围改为全层级 XLSX 节点（与前端知识树 /knowledge/graph 口径一致）；
+            // 全局补弱模式（不选）仍按 Level=2 章节粒度取最薄弱 3 个。
+            List<KnowledgePoint> anyLevel = kpMapper.selectList(new LambdaQueryWrapper<KnowledgePoint>()
+                    .eq(KnowledgePoint::getSource, "XLSX"));
             Map<String, KnowledgePoint> byCode = new LinkedHashMap<>();
             for (String code : kpCodes) {
-                KnowledgePoint kp = all.stream()
-                        .filter(k -> code != null && code.equals(k.getKpCode())).findFirst().orElse(null);
-                if (kp != null) {
-                    byCode.put(kp.getKpCode(), kp);
+                if (code == null) {
+                    continue;
                 }
+                anyLevel.stream()
+                        .filter(k -> code.equals(k.getKpCode())).findFirst()
+                        .ifPresent(k -> byCode.putIfAbsent(k.getKpCode(), k));
             }
             if (byCode.isEmpty()) {
                 throw new BizException("所选知识点不存在");

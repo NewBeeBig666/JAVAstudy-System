@@ -13,7 +13,8 @@ public class AttemptResponse {
     private Integer answer;
     private String analysis;
     private int delta;
-    private int newMastery;
+    /** 做对 = 回写后的新掌握度；做错 = 原掌握度（无记录时为 null，表示暂无数据） */
+    private Integer newMastery;
     private boolean wrongBookAdded;
     private LocalDate reviewNext;
 }

@@ -827,6 +827,14 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .as-menu-item.danger { color: var(--danger); }
 .as-menu-item.danger:hover { background: var(--danger-soft); }
 
+/* 学习路径「继续当前步骤」推进后的引导高亮：「直接来一道练习」按钮与
+   对话输入框紫色描边脉冲三次（约 2.7s），提示学生下一步操作 */
+@keyframes glow-hint-kf {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(124, 58, 237, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(124, 58, 237, .45); }
+}
+.glow-hint { animation: glow-hint-kf .9s ease-in-out 3; }
+
 /* 作业管理：左侧栏选中的作业卡片高亮（停留本页定位场景） */
 .card.card-sel {
   border-color: var(--brand-2);

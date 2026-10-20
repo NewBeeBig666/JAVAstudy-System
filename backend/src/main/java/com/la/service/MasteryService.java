@@ -42,6 +42,13 @@ public class MasteryService {
         return value;
     }
 
+    /** 当前掌握度（只读，无记录返回 null 不创建记录）——做错不扣分场景使用 */
+    public Integer currentValue(Long userId, Long kpId) {
+        Mastery m = masteryMapper.selectOne(new LambdaQueryWrapper<Mastery>()
+                .eq(Mastery::getUserId, userId).eq(Mastery::getKpId, kpId));
+        return m != null ? m.getMasteryValue() : null;
+    }
+
     /**
      * 记录当日学习时长（分钟），UPSERT 累加
      */
