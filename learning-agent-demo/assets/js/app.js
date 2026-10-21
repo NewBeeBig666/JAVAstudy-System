@@ -208,7 +208,7 @@
     quizReply: {},
     quizDone: {},
     insight: null,
-    filters: { hw: 'all', warn: 'all', subAs: 'as-2', exKp: 'all', classId: 'c1', report: 'overview' },
+    filters: { hw: 'all', warn: 'all', subAs: 'as-2', exKp: 'all', exNav: [], classId: 'c1', report: 'overview' },
     search: ''
   };
 
@@ -348,12 +348,40 @@
 
     } else if (sec === 'exercise') {
       head = '<div class="side-head"><div class="side-title">练习记录 · 按知识点</div></div>';
+      // 分层导航（参照新建学习会话的知识点分层）：顶级分组逐级下钻，
+      // 有子级的知识点点击下钻、叶子知识点点击筛选；返回上一级；
+      // 记录数统计含该节点全部后代，避免深层知识点列表过长
+      const { byId, kids } = nsKpIndex();
+      const nav = State.filters.exNav || [];
+      // 记录匹配：code 相等，或名称归一化等价（历史 LEGACY 记录与 XLSX 树节点
+      // 同名但带空格差异，如「Java 基本语法」vs「Java基本语法」）
+      const normKp = s => (s || '').replace(/\s+/g, '').toLowerCase();
+      const recCount = k => {
+        let n = DB.exerciseRecords.filter(r => r.kp === k.id
+          || (r.kpName && normKp(r.kpName) === normKp(k.name))).length;
+        (kids[k.id] || []).forEach(ch => { n += recCount(ch); });
+        return n;
+      };
+      const rows = nav.length
+        ? (kids[nav[nav.length - 1]] || [])
+        : DB.knowledgePoints.filter(k => !k.parent || !byId[k.parent]);
+      const backRow = nav.length
+        ? `<button class="list-item" data-act="exBack">
+            <div class="li-main"><div class="li-title">${icon('chevronL', 13)} 返回${h(nav.length >= 2 && byId[nav[nav.length - 2]] ? byId[nav[nav.length - 2]].name : '顶级分组')}</div></div></button>`
+        : '';
+      // 下钻层的「本级」行：筛选该节点自身+全部后代的记录（分组节点记录常挂自身）
+      const curK = nav.length ? byId[nav[nav.length - 1]] : null;
+      const curRow = curK
+        ? `<button class="list-item ${State.filters.exKp === curK.id ? 'on' : ''}" data-act="exFilter" data-val="${curK.id}">
+            <div class="li-main"><div class="li-title">${icon('search', 13)} ${h(curK.name)}（本级及以下）</div><div class="li-sub">${recCount(curK)} 条记录 · 掌握度 ${curK.mastery}</div></div></button>`
+        : '';
       body = `<button class="list-item ${State.filters.exKp === 'all' ? 'on' : ''}" data-act="exFilter" data-val="all">
-          <div class="li-main"><div class="li-title">全部记录</div><div class="li-sub">${DB.exerciseRecords.length} 条</div></div></button>` +
-        DB.knowledgePoints.map(k => {
-          const n = DB.exerciseRecords.filter(r => r.kp === k.id).length;
-          return `<button class="list-item ${State.filters.exKp === k.id ? 'on' : ''}" data-act="exFilter" data-val="${k.id}">
-            <div class="li-main"><div class="li-title">${k.name}</div><div class="li-sub">${n} 条记录 · 掌握度 ${k.mastery}</div></div></button>`;
+          <div class="li-main"><div class="li-title">全部记录</div><div class="li-sub">${DB.exerciseRecords.length} 条</div></div></button>` + backRow + curRow +
+        rows.map(k => {
+          const hasKids = (kids[k.id] || []).length > 0;
+          const n = recCount(k);
+          return `<button class="list-item ${State.filters.exKp === k.id ? 'on' : ''}" data-act="${hasKids ? 'exDrill' : 'exFilter'}" data-val="${k.id}">
+            <div class="li-main"><div class="li-title">${h(k.name)}${hasKids ? ' <span style="float:right;color:var(--text-3)">' + icon('chevronR', 13) + '</span>' : ''}</div><div class="li-sub">${n} 条记录 · 掌握度 ${k.mastery}</div></div></button>`;
         }).join('');
 
     } else if (sec === 'report') {
@@ -1596,8 +1624,21 @@
   /* ---------------- 学生：练习记录 ---------------- */
   function viewExercise() {
     const f = State.filters.exKp;
-    const recs = DB.exerciseRecords.filter(r => f === 'all' || r.kp === f);
-    const head = mainHead('练习记录', '共 ' + DB.exerciseRecords.length + ' 条 · 掌握度变化全部来自即时评测回流');
+    // 筛选匹配范围：选中节点自身+全部后代（分组节点常挂自身记录）；
+    // 历史数据兼容：早期记录 kp 为 LEGACY 编码（与 XLSX 树节点同名但带空格差异），
+    // code 命中子树任一节点或名称归一化等价均算匹配
+    let recs = DB.exerciseRecords;
+    if (f !== 'all') {
+      const { byId, kids } = nsKpIndex();
+      const normKp = s => (s || '').replace(/\s+/g, '').toLowerCase();
+      const subtree = [];
+      (function walk(k) { if (!k) return; subtree.push(k); (kids[k.id] || []).forEach(walk); })(byId[f]);
+      const codes = subtree.map(k => k.id);
+      const names = subtree.map(k => normKp(k.name));
+      recs = DB.exerciseRecords.filter(r => codes.indexOf(r.kp) >= 0
+        || (r.kpName && names.indexOf(normKp(r.kpName)) >= 0));
+    }
+    const head = mainHead('练习记录', (f === 'all' ? '全部知识点 · 共 ' + DB.exerciseRecords.length + ' 条' : h(kpName(f)) + ' · ' + recs.length + ' 条记录') + ' · 掌握度变化全部来自即时评测回流');
     if (!recs.length) {
       return {
         head,
@@ -1605,10 +1646,11 @@
           '<button class="btn primary" data-act="gotoChat">' + icon('chat', 15) + ' 去学习会话</button>')
       };
     }
-    const body = `<div class="card"><div class="card-head">${icon('book', 15)}<h3>历史练习</h3></div>
+    const body = `<div class="card"><div class="card-head">${icon('book', 15)}<h3>历史练习</h3>
+      <span class="hint" style="margin-left:auto">点击任意一行查看练习详情</span></div>
       <div style="overflow-x:auto"><table class="table">
         <thead><tr><th>时间</th><th>知识点</th><th>题目</th><th class="num">结果</th><th class="num">掌握度</th></tr></thead>
-        <tbody>${recs.map(r => `<tr>
+        <tbody>${recs.map(r => `<tr data-act="recDetail" data-val="${h(r.id)}" style="cursor:pointer" title="查看练习详情">
           <td style="color:var(--text-3)">${r.time}</td>
           <td><span class="badge">${h(r.kpName || kpName(r.kp))}</span></td>
           <td>${h(r.title)}</td>
@@ -2682,6 +2724,54 @@
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn danger" data-act="doResDel" ${d.busy ? 'disabled' : ''}>${icon('trash', 15)} ${d.busy ? '删除中…' : '确认删除'}</button>`;
 
+    } else if (m.type === 'recDetail') {
+      // 历史练习详情：题干（复用深色代码块渲染）+ 关联知识点 + 当时作答 + 正确答案 + 解析
+      const r = d.rec || {};
+      const qType = String(r.type || 'CHOICE').toUpperCase();
+      const typeName = { CHOICE: '选择题', JUDGE: '判断题', CODE: '编程题', BLANK: '填空题', SHORT: '简答题' }[qType] || '练习';
+      const opts = Array.isArray(r.options) ? r.options : [];
+      const optLabel = i => (opts[i] != null ? String.fromCharCode(65 + i) + '. ' + opts[i] : '—');
+      let mineHtml = '', rightHtml = '', optsHtml = '';
+      if (qType === 'CHOICE' || qType === 'JUDGE') {
+        const sel = r.selected != null ? r.selected : -1;
+        const ans = r.answer != null ? r.answer : -1;
+        if (qType === 'JUDGE') {
+          optsHtml = `<div class="opt">正确</div><div class="opt">错误</div>`;
+          mineHtml = sel === 0 ? '正确' : sel === 1 ? '错误' : '—';
+          rightHtml = ans === 0 ? '正确' : ans === 1 ? '错误' : '—';
+        } else {
+          // 原题选项完整展示：我的选择 sel 高亮、正确答案 ok 高亮
+          optsHtml = opts.map((o, i) => `<div class="opt ${i === ans ? 'correct' : ''} ${i === sel ? (i === ans ? 'correct sel' : 'wrong sel') : ''}">
+            <div class="opt-key">${String.fromCharCode(65 + i)}${i === ans ? ' ✓' : ''}${i === sel && i !== ans ? ' ✗' : ''}</div><div>${h(o)}</div></div>`).join('');
+          mineHtml = sel >= 0 ? h(optLabel(sel)) : '—';
+          rightHtml = ans >= 0 ? h(optLabel(ans)) : '—';
+        }
+      } else {
+        // 文本类作答（编程/填空/简答）：原文深色代码块展示
+        mineHtml = r.userAnswer != null && r.userAnswer !== ''
+          ? `<div class="code-block">${h(r.userAnswer)}</div>` : '<span style="color:var(--text-3)">—</span>';
+        rightHtml = r.analysis
+          ? h(r.analysis) : '<span style="color:var(--text-3)">本题由 AI 智能判分，无标准答案，可参考下方解析</span>';
+      }
+      title = '练习详情 · ' + typeName + ' · ' + (r.time || '');
+      body = `<div class="rec-detail">
+          <div class="rd-sec"><div class="rd-label">${icon('file', 13)} 题干</div>
+            <div class="rd-stem">${exStemHtml(r.stem || r.title || '')}</div></div>
+          ${optsHtml ? `<div class="rd-sec"><div class="rd-label">${icon('layers', 13)} 原题选项（✓ 正确答案 · ✗ 我的错选）</div>
+            <div style="margin-top:8px">${optsHtml}</div></div>` : ''}
+          <div class="rd-sec"><div class="rd-label">${icon('target', 13)} 关联知识点</div>
+            <div><span class="badge brand">${h(r.kpName || kpName(r.kp))}</span>
+              <span class="badge ${r.ok ? 'ok' : 'danger'}" style="margin-left:6px">${r.ok ? '通过' : '未通过'}</span>
+              <span class="badge" style="margin-left:6px">掌握度 ${r.delta >= 0 ? '+' : ''}${r.delta}</span></div></div>
+          <div class="rd-sec"><div class="rd-label">${icon('user', 13)} 我的作答（${r.time || '当时'}）</div>
+            <div class="rd-ans">${mineHtml}</div></div>
+          <div class="rd-sec"><div class="rd-label">${icon('check', 13)} 正确答案</div>
+            <div class="rd-ans ok">${rightHtml}</div></div>
+          <div class="rd-sec"><div class="rd-label">${icon('sparkles', 13)} 题目解析</div>
+            <div class="rd-analysis">${h(r.analysis || '暂无解析')}</div></div>
+        </div>`;
+      foot = `<button class="btn primary" data-act="closeModal">关闭</button>`;
+
     } else if (m.type === 'resPreview') {
       title = d.title || '资源预览';
       body = d.kind === 'video'
@@ -2948,11 +3038,14 @@
 
   function openComposeEditor(a) {
     if (a) {
-      // 回填编辑：题目型作业 DTO（含答案）转为编辑器结构；关联知识点由题目知识点合集推导
-      // （kp_code 支持逗号分隔多值，一道题可关联多个知识点）
-      const kps = [];
-      (a.questions || []).forEach(q => (q.kpCode || '').split(',').filter(Boolean)
-        .forEach(k => { if (kps.indexOf(k) < 0) kps.push(k); }));
+      // 回填编辑：关联知识点优先取作业级（教师发布时面板选择，与作业卡展示一致）；
+      // 旧作业（面板选择未入库）兜底由题目知识点合集推导（kp_code 逗号多值拆分）
+      const kps = (a.kp && a.kp.length)
+        ? a.kp.slice()
+        : (a.questions || []).reduce((acc, q) => {
+            (q.kpCode || '').split(',').filter(Boolean).forEach(k => { if (acc.indexOf(k) < 0) acc.push(k); });
+            return acc;
+          }, []);
       State.compose = {
         id: a.id, title: a.title || '',
         scoreMode: (a.scoreMode || 'average').toUpperCase(),
@@ -3475,6 +3568,8 @@
         title: c.title, scoreMode: c.scoreMode,
         startAt: c.startAt || null, endAt: c.endAt, allowLate: !!c.allowLate,
         status: status,
+        // 作业级知识点：教师在「关联知识点」面板的选择（作业卡与学生端展示以此为准）
+        kps: c.kps || [],
         questions: c.questions.map(q => ({
           type: q.type, title: q.title,
           options: (q.options || []).filter(o => o.text.trim()).map(o => ({ key: o.key, text: o.text })),
@@ -4197,6 +4292,13 @@
     /* --- 学生：作业 --- */
     hwFilter(v) { State.filters.hw = v; render(); },
     exFilter(v) { State.filters.exKp = v; render(); },
+    exDrill(v) { State.filters.exNav = (State.filters.exNav || []).concat([v]); render(); },
+    exBack() { State.filters.exNav = (State.filters.exNav || []).slice(0, -1); render(); },
+    recDetail(v) {
+      // 历史练习详情弹窗（题干/知识点/当时作答/正确答案/解析）
+      const rec = DB.exerciseRecords.find(r => String(r.id) === String(v));
+      if (rec) { State.modal = { type: 'recDetail', data: { rec: rec } }; renderOverlays(); }
+    },
     reportTab(v) { State.filters.report = v; render(); },
     kpCell(v) {
       // 修复：render() 全量重建 main 区会令 .main-body 的 scrollTop 归零，

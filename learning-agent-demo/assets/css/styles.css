@@ -835,6 +835,16 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 }
 .glow-hint { animation: glow-hint-kf .9s ease-in-out 3; }
 
+/* 练习记录：历史练习行可点击查看详情；详情弹窗分区排版 */
+.table tr[data-act] { cursor: pointer; transition: background .15s; }
+.table tr[data-act]:hover { background: var(--bg); }
+.rec-detail .rd-sec { margin-bottom: 14px; }
+.rec-detail .rd-label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-3); margin-bottom: 6px; }
+.rec-detail .rd-stem { line-height: 1.7; white-space: pre-wrap; }
+.rec-detail .rd-ans { padding: 8px 12px; background: var(--bg); border-radius: 8px; line-height: 1.6; }
+.rec-detail .rd-ans.ok { background: rgba(52, 211, 153, .08); color: var(--ok); font-weight: 600; }
+.rec-detail .rd-analysis { padding: 10px 12px; background: var(--bg); border-radius: 8px; line-height: 1.7; white-space: pre-wrap; }
+
 /* 作业管理：左侧栏选中的作业卡片高亮（停留本页定位场景） */
 .card.card-sel {
   border-color: var(--brand-2);

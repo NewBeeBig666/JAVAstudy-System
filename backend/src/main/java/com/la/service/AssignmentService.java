@@ -377,9 +377,19 @@ public class AssignmentService {
         }
         as.setTitle(req.getTitle());
         as.setDescription("");
-        // 作业级知识点 = 各题关联知识点的去重合集（保证学生端按知识点过滤仍有效）
-        List<String> kpCodes = questions.stream().map(ComposeRequest.QuestionReq::getKpCode)
-                .filter(Objects::nonNull).distinct().toList();
+        // 作业级知识点：以教师在「关联知识点」面板选择为准（作业卡/学生端展示与之一致）；
+        // 面板未选择时兜底取各题关联知识点合集（kp_code 逗号多值需拆分去重，避免
+        // "a,b" 合并串入库导致前端 kpName 查不到而显示原始编码）
+        List<String> kpCodes;
+        if (req.getKps() != null && !req.getKps().isEmpty()) {
+            kpCodes = req.getKps().stream().filter(Objects::nonNull).distinct().toList();
+        } else {
+            kpCodes = questions.stream().map(ComposeRequest.QuestionReq::getKpCode)
+                    .filter(Objects::nonNull).filter(s -> !s.isBlank())
+                    .flatMap(s -> Arrays.stream(s.split(",")))
+                    .map(String::trim).filter(s -> !s.isEmpty())
+                    .distinct().toList();
+        }
         as.setKpIds(toJson(kpCodes));
         as.setStartAt(startAt);
         as.setDueAt(endAt);
@@ -468,7 +478,11 @@ public class AssignmentService {
         Map<String, Object> dto = new LinkedHashMap<>();
         dto.put("id", String.valueOf(as.getId()));
         dto.put("title", as.getTitle());
-        dto.put("kp", parseArray(as.getKpIds()));
+        // 历史数据兼容：早期作业级 kpIds 存过题目 kpCode 的逗号合并串（"a,b"），
+        // 输出前逐项拆分逗号并去重，避免前端 kpName 查不到而显示原始编码
+        dto.put("kp", parseArray(as.getKpIds()).stream()
+                .filter(Objects::nonNull).flatMap(s -> Arrays.stream(s.split(",")))
+                .map(String::trim).filter(s -> !s.isEmpty()).distinct().toList());
         dto.put("desc", as.getDescription());
         dto.put("due", as.getDueAt() != null ? as.getDueAt().format(DUE) : null);
         dto.put("status", as.getStatus() != null ? as.getStatus().toLowerCase() : "draft");

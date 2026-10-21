@@ -33,6 +33,9 @@ public class ComposeRequest {
     /** DRAFT / ONGOING */
     private String status;
 
+    /** 教师在「关联知识点」面板选择的作业级知识点编码（作业展示/掌握度回写以此为准） */
+    private List<String> kps;
+
     private List<QuestionReq> questions;
 
     @Data

@@ -357,6 +357,14 @@ public class ExerciseService {
             dto.put("correct", Boolean.TRUE.equals(r.getIsCorrect()));
             dto.put("delta", r.getDelta());
             dto.put("hintUsed", r.getHintUsed());
+            // 详情弹窗所需：完整题干/题型/选项/正确答案/解析/用户当时作答
+            dto.put("type", ex != null ? ex.getType() : null);
+            dto.put("stem", ex != null ? ex.getStem() : "");
+            dto.put("options", parseOptionsList(ex != null ? ex.getOptions() : null));
+            dto.put("answer", ex != null ? ex.getAnswer() : null);
+            dto.put("analysis", ex != null ? ex.getAnalysis() : null);
+            dto.put("selected", r.getSelected());
+            dto.put("userAnswer", r.getAnswer());
             dto.put("time", r.getCreatedAt() != null
                     ? r.getCreatedAt().format(DateTimeFormatter.ofPattern("MM-dd HH:mm")) : null);
             result.add(dto);
@@ -367,6 +375,17 @@ public class ExerciseService {
     private String shorten(String stem) {
         String one = stem.replaceAll("\\s+", " ").trim();
         return one.length() > 40 ? one.substring(0, 40) + "…" : one;
+    }
+
+    /** options JSON 字符串（字符串数组）→ List，异常/空回退空列表 */
+    private List<String> parseOptionsList(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try {
+            return objectMapper.readValue(json, objectMapper.getTypeFactory()
+                    .constructCollectionType(List.class, String.class));
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     private List<String> parseJsonArray(String json) {

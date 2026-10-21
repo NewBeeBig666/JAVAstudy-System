@@ -529,16 +529,26 @@ public class GradingService {
             if (!codes.isArray() || codes.isEmpty()) {
                 return;
             }
+            // 历史数据兼容：早期作业级 kpIds 存过题目 kpCode 的逗号合并串，逐项拆分去重
+            List<String> codeList = new java.util.ArrayList<>();
+            codes.forEach(c -> {
+                for (String s : c.asText().split(",")) {
+                    String t = s.trim();
+                    if (!t.isEmpty() && !codeList.contains(t)) {
+                        codeList.add(t);
+                    }
+                }
+            });
             int delta = total >= 80 ? 8 : total >= 60 ? 5 : -3;
-            for (JsonNode c : codes) {
+            for (String code : codeList) {
                 KnowledgePoint kp = knowledgePointMapper.selectOne(new LambdaQueryWrapper<KnowledgePoint>()
-                        .eq(KnowledgePoint::getKpCode, c.asText()));
+                        .eq(KnowledgePoint::getKpCode, code));
                 if (kp != null) {
                     masteryService.adjust(studentId, kp.getId(), delta);
                 }
             }
             log.info("作业批改回写掌握度 assignment={} score={} delta={} 知识点数={}",
-                    as.getTitle(), total, delta, codes.size());
+                    as.getTitle(), total, delta, codeList.size());
         } catch (Exception e) {
             // 掌握度回写失败不影响批改主流程
             log.warn("作业批改回写掌握度失败 assignment={}：{}", as.getTitle(), e.getMessage());
