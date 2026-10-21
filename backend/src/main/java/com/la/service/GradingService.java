@@ -16,6 +16,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -44,6 +45,9 @@ public class GradingService {
     private final SessionMapper sessionMapper;
     /** 学生端「系统自动评分」引擎：客观题判分的唯一口径（教师端 AI 初评复用） */
     private final AutoScoreService autoScoreService;
+    /** 实验报告作业：模板资源查询 + Word 文本提取 */
+    private final LearningResourceMapper learningResourceMapper;
+    private final ResourceAiService resourceAiService;
 
     /**
      * 单份 AI 初评（同步）。题目型作业（scoreMode 非空）走逐题判分，Rubric 型作业走评分维度流程
@@ -57,6 +61,9 @@ public class GradingService {
         Assignment as = assignmentMapper.selectById(sub.getAssignmentId());
         if (as == null) {
             throw new BizException("作业不存在");
+        }
+        if ("LAB".equals(as.getScoreMode())) {
+            return aiGradeLabReport(sub, as);
         }
         if (as.getScoreMode() != null) {
             return aiGradeCompose(sub, as);
@@ -100,13 +107,90 @@ public class GradingService {
     }
 
     /**
-     * 题目型作业 AI 初评（全题型批量评分）：
-     * - 客观题（单选/多选/判断/填空）：复用学生端「系统自动评分」引擎（AutoScoreService），
-     *   按参考答案严格匹配判分，与学生端临时分数口径完全一致；
-     * - 简答题：AI 语义评分——核心表意与参考答案一致或高度接近即可得高分，无需逐字匹配；
-     * - 编程题：AI 多维度评审——语法正确性/逻辑符合度/功能完整性/可运行性/是否存在报错；
-     * - 逐题输出评分依据（aiComment），便于教师快速核对与人工复核调整。
+     * 实验报告型作业 AI 初评（scoreMode=LAB）：
+     * - 读取教师上传的 Word 模板（一、二、三部分通常为实验目的/环境/步骤等实验要求）
+     *   与学生上传的报告全文（四及以后为作答内容，最底部含评分表与评语区）
+     * - DeepSeek 按实验要求逐项评审学生作答，给出总分与评语初评（教师可复核修改）
      */
+    private Map<String, Object> aiGradeLabReport(Submission sub, Assignment as) {
+        long t0 = System.currentTimeMillis();
+        // 模板（作业 description 存模板关联 JSON；模板文件是学习资源）
+        Long templateId = null;
+        try {
+            JsonNode lab = objectMapper.readTree(as.getDescription() == null ? "{}" : as.getDescription());
+            templateId = lab.path("templateId").asLong(0);
+        } catch (Exception ignore) { }
+        if (templateId == null || templateId == 0) {
+            throw new BizException("该实验报告作业未关联模板，无法 AI 初评");
+        }
+        LearningResource tpl = learningResourceMapper.selectById(templateId);
+        if (tpl == null) {
+            throw new BizException("报告模板资源已删除，无法 AI 初评");
+        }
+        String tplText = resourceAiService.extractWordText(
+                Path.of("uploads", "resource", tpl.getFilePath()));
+        // 学生报告（submission answers 存数组 [{reportFile, fileName}]，兼容旧对象格式）
+        String stored = "";
+        try {
+            JsonNode ans = objectMapper.readTree(sub.getAnswers() == null ? "[]" : sub.getAnswers());
+            if (ans.isArray()) {
+                for (JsonNode n : ans) {
+                    if (!n.path("reportFile").asText("").isBlank()) {
+                        stored = n.path("reportFile").asText();
+                        break;
+                    }
+                }
+            } else if (!ans.path("reportFile").asText("").isBlank()) {
+                stored = ans.path("reportFile").asText();
+            }
+        } catch (Exception ignore) { }
+        if (stored.isBlank()) {
+            throw new BizException("该学生未上传报告文件，无法 AI 初评");
+        }
+        String stuText = resourceAiService.extractWordText(Path.of("uploads", "report", stored));
+        if (stuText == null || stuText.isBlank()) {
+            throw new BizException("学生报告内容提取失败（可能为图片型 Word），无法 AI 初评");
+        }
+        String tplForPrompt = (tplText == null || tplText.isBlank())
+                ? "（模板文本不可用，请按实验报告通用结构评审）" : tplText;
+
+        String prompt = "你是一名 Java 课程实验报告评审老师。以下是实验报告的模板与某学生的提交报告。\n\n"
+                + "【报告模板（含实验要求，通常一、二、三部分为实验目的/实验环境/实验内容与要求）】\n"
+                + tplForPrompt + "\n\n"
+                + "【学生提交的实验报告全文（四及以后部分为作答内容，最底部可能有评分表与评语区）】\n"
+                + stuText + "\n\n"
+                + "请严格依据模板中的实验要求评审学生的作答情况（完整性、正确性、规范性），"
+                + "给出百分制总分与评语初评。评分写在报告底部评分处的口径。"
+                + "评语用第二人称面向学生，指出完成情况、亮点与不足，80 字以内。\n"
+                + "只输出 JSON：{\"score\": <0-100 整数>, \"comment\": \"<评语>\"}";
+
+        String raw = chatWithRetry(List.of(ChatMessage.user(prompt)),
+                "lab-report=" + sub.getId());
+        Integer score = null;
+        String comment = null;
+        try {
+            String json = raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
+            JsonNode n = objectMapper.readTree(json);
+            score = n.path("score").asInt(-1);
+            if (score >= 0 && score <= 100) { comment = n.path("comment").asText(null); }
+            else { score = null; }
+        } catch (Exception ignore) { }
+        if (score == null) {
+            throw new BizException("AI 返回结果无法解析，请重试");
+        }
+        sub.setAiScore(score);
+        sub.setAiComment(comment);
+        sub.setStatus("AI_REVIEWED");
+        submissionMapper.updateById(sub);
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("aiScore", score);
+        resp.put("aiComment", comment);
+        log.info("实验报告 AI 初评完成 submission={} assignment={} score={} cost={}ms",
+                sub.getId(), as.getId(), score, System.currentTimeMillis() - t0);
+        return resp;
+    }
+
     private Map<String, Object> aiGradeCompose(Submission sub, Assignment as) {
         long t0 = System.currentTimeMillis();
         List<Question> questions = questionMapper.selectList(new LambdaQueryWrapper<Question>()

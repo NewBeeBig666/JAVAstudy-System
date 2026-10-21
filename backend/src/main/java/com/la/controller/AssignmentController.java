@@ -8,7 +8,9 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.Map;
@@ -37,6 +39,13 @@ public class AssignmentController {
     @PostMapping("/{id}/answer")
     public ApiResponse<Map<String, Object>> answer(@PathVariable Long id, @RequestBody AnswerRequest req) {
         return ApiResponse.ok(assignmentService.submitAnswer(CurrentUser.id(), id, req.getAnswers()));
+    }
+
+    @Operation(summary = "上传实验报告（实验报告型作业，Word 格式）")
+    @PostMapping(value = "/{id}/report", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<Map<String, Object>> submitReport(@PathVariable Long id,
+                                                         @RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(assignmentService.submitReport(CurrentUser.id(), id, file));
     }
 
     @Data

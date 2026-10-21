@@ -36,6 +36,12 @@ public class ComposeRequest {
     /** 教师在「关联知识点」面板选择的作业级知识点编码（作业展示/掌握度回写以此为准） */
     private List<String> kps;
 
+    /** 实验报告作业：Word 模板对应的学习资源 ID（scoreMode=LAB 时必填） */
+    private Long labTemplateId;
+
+    /** 实验报告作业：模板标题（资源标题，展示用） */
+    private String labTemplateTitle;
+
     private List<QuestionReq> questions;
 
     @Data

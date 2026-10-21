@@ -32,6 +32,7 @@ public class ReportService {
     private final ExerciseMapper exerciseMapper;
     private final ReviewService reviewService;
     private final ObjectMapper objectMapper;
+    private final ExerciseService exerciseService;
 
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("MM-dd");
 
@@ -139,21 +140,9 @@ public class ReportService {
     }
 
     private List<Map<String, Object>> wrongBookList(Long userId) {
-        List<WrongBook> list = wrongBookMapper.selectList(new LambdaQueryWrapper<WrongBook>()
-                .eq(WrongBook::getUserId, userId).orderByDesc(WrongBook::getLastWrongAt));
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (WrongBook wb : list) {
-            Exercise ex = exerciseMapper.selectById(wb.getExerciseId());
-            KnowledgePoint kp = kpMapper.selectById(wb.getKpId());
-            Map<String, Object> dto = new LinkedHashMap<>();
-            dto.put("id", String.valueOf(wb.getId()));
-            dto.put("kp", kp != null ? kp.getKpCode() : null);
-            dto.put("title", ex != null ? shorten(ex.getStem()) : "");
-            dto.put("wrongCount", wb.getWrongCount());
-            dto.put("lastAt", wb.getLastWrongAt() != null ? wb.getLastWrongAt().format(DT) : null);
-            result.add(dto);
-        }
-        return result;
+        // 委托 ExerciseService.wrongBook（含题目详情弹窗所需的完整字段：题干/选项/
+        // 正确答案/解析/最近作答），保持错题本接口与画像总览数据一致
+        return exerciseService.wrongBook(userId);
     }
 
     private String shorten(String stem) {

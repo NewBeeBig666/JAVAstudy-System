@@ -84,6 +84,11 @@ public class ResourceAiService {
         return new Recognition(summary, List.of());
     }
 
+    /** 提取 Word 文档纯文本（实验报告作业：模板/学生报告内容读取，供 AI 初评） */
+    public String extractWordText(Path file) {
+        return extractText("word", file);
+    }
+
     /** 文本类资源提取纯文本（按 file_path 读取磁盘文件），图片/视频返回 null */
     private String extractText(String fileType, Path file) {
         if (!"ppt".equals(fileType) && !"word".equals(fileType) && !"pdf".equals(fileType)) {

@@ -45,6 +45,36 @@ window.API = (function () {
   const del = (p, timeoutMs) => request('DELETE', p, undefined, timeoutMs);
 
   /**
+   * multipart 文件上传（FormData）：不设 Content-Type（浏览器自动带 boundary），
+   * 默认 300s 超时兜底（大文件 + 上传后端同步 AI 识别耗时）。
+   */
+  async function upload(path, formData, timeoutMs) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs || 300000);
+    let res;
+    try {
+      res = await fetch(BASE + path, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token() },
+        body: formData,
+        signal: ctrl.signal
+      });
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw new Error('上传超时无响应，请检查网络后重试');
+      throw new Error('网络连接失败，请检查网络后重试');
+    } finally {
+      clearTimeout(timer);
+    }
+    if (res.status === 401) { window.Auth.logout(); throw new Error('登录已过期，请重新登录'); }
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* 非 JSON 响应 */ }
+    if (!res.ok || !data || data.code !== 0) {
+      throw new Error((data && data.msg) || ('上传失败 (' + res.status + ')'));
+    }
+    return data.data;
+  }
+
+  /**
    * SSE 流式请求（POST + ReadableStream 解析）
    * handlers: { meta, delta, card, replace, done, error }
    *
@@ -128,5 +158,5 @@ window.API = (function () {
     if (handlers.end) handlers.end();
   }
 
-  return { get: get, post: post, put: put, del: del, sse: sse, token: token };
+  return { get: get, post: post, put: put, del: del, upload: upload, sse: sse, token: token };
 })();

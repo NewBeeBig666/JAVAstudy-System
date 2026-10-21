@@ -2,6 +2,7 @@ package com.la.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.la.dto.ComposeRequest;
 import com.la.entity.*;
@@ -10,9 +11,14 @@ import com.la.mapper.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -35,6 +41,7 @@ public class AssignmentService {
     private final UserMapper userMapper;
     private final NotificationService notificationService;
     private final ObjectMapper objectMapper;
+    private final LearningResourceMapper learningResourceMapper;
 
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
     private static final DateTimeFormatter DUE = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
@@ -58,8 +65,10 @@ public class AssignmentService {
                     .eq(Submission::getAssignmentId, as.getId())
                     .eq(Submission::getStudentId, userId));
             Map<String, Object> my = sub != null ? toSubmissionDto(sub, false) : null;
-            // 自动评分临时分数：题目型作业按标准答案即时匹配判分（不落库，不计入最终成绩）
-            if (my != null && as.getScoreMode() != null && !"GRADED".equals(sub.getStatus())) {
+            // 自动评分临时分数：题目型作业按标准答案即时匹配判分（不落库，不计入最终成绩）；
+            // 实验报告型（LAB）无客观题，不参与自动评分
+            if (my != null && as.getScoreMode() != null && !"LAB".equals(as.getScoreMode())
+                    && !"GRADED".equals(sub.getStatus())) {
                 Map<String, Object> auto = autoScoreService.objectiveScore(as.getId(), sub.getAnswers());
                 my.put("autoScore", auto.get("total"));
                 my.put("autoFullScore", auto.get("fullScore"));
@@ -224,6 +233,117 @@ public class AssignmentService {
         return result;
     }
 
+    /* ==================== 实验报告作业（LAB） ==================== */
+
+    private static final Path REPORT_DIR = Path.of("uploads", "report");
+
+    /** 学生上传实验报告（Word）：保存文件并创建/更新提交（可重复上传，上次批改作废） */
+    @Transactional
+    public Map<String, Object> submitReport(Long studentId, Long assignmentId, MultipartFile file) {
+        Assignment as = assignmentMapper.selectById(assignmentId);
+        if (as == null || !"LAB".equals(as.getScoreMode())) {
+            throw new BizException("该作业不支持报告提交");
+        }
+        if ("CLOSED".equals(as.getStatus())) {
+            throw new BizException("作业已截止，无法提交");
+        }
+        boolean overdue = as.getDueAt() != null && LocalDateTime.now().isAfter(as.getDueAt());
+        if (overdue && (as.getAllowLate() == null || as.getAllowLate() != 1)) {
+            throw new BizException("作业已截止，无法提交");
+        }
+        String fileName = file == null || file.getOriginalFilename() == null
+                ? "" : file.getOriginalFilename().trim();
+        String lower = fileName.toLowerCase();
+        if (!lower.endsWith(".doc") && !lower.endsWith(".docx")) {
+            throw new BizException("请上传 Word 格式（.doc/.docx）的实验报告");
+        }
+        if (file.getSize() > 50L * 1024 * 1024) {
+            throw new BizException("文件超过大小上限（50MB）");
+        }
+        try {
+            Files.createDirectories(REPORT_DIR);
+        } catch (IOException e) {
+            throw new BizException("创建存储目录失败，请联系管理员");
+        }
+        String storedName = "as" + assignmentId + "-u" + studentId + "-" + System.currentTimeMillis()
+                + "-" + fileName.replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
+        try {
+            file.transferTo(REPORT_DIR.resolve(storedName));
+        } catch (IOException e) {
+            throw new BizException("报告保存失败，请重试");
+        }
+
+        Submission sub = submissionMapper.selectOne(new LambdaQueryWrapper<Submission>()
+                .eq(Submission::getAssignmentId, assignmentId)
+                .eq(Submission::getStudentId, studentId));
+        if (sub == null) {
+            sub = new Submission();
+            sub.setAssignmentId(assignmentId);
+            sub.setStudentId(studentId);
+            sub.setAttempts(1);
+            sub.setSimilarity(0);
+        } else {
+            sub.setAttempts(sub.getAttempts() + 1);
+        }
+        sub.setStatus("PENDING");
+        sub.setSubmittedAt(LocalDateTime.now());
+        sub.setCode("【实验报告】" + fileName);
+        // answers 存数组（与题目型作业结构一致，parseObjects 可解析）：
+        // [{"reportFile": "存储文件名", "fileName": "原始文件名"}]
+        sub.setAnswers(toJson(List.of(Map.of("reportFile", storedName, "fileName", fileName))));
+        if (sub.getId() == null) {
+            submissionMapper.insert(sub);
+        } else {
+            submissionMapper.update(null, new LambdaUpdateWrapper<Submission>()
+                    .eq(Submission::getId, sub.getId())
+                    .set(Submission::getCode, sub.getCode())
+                    .set(Submission::getAnswers, sub.getAnswers())
+                    .set(Submission::getStatus, "PENDING")
+                    .set(Submission::getAttempts, sub.getAttempts())
+                    .set(Submission::getSubmittedAt, sub.getSubmittedAt())
+                    .set(Submission::getScore, null)
+                    .set(Submission::getAiScore, null)
+                    .set(Submission::getAiComment, null)
+                    .set(Submission::getTeacherComment, null)
+                    .set(Submission::getGradedAt, null));
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("submissionId", sub.getId());
+        result.put("fileName", fileName);
+        result.put("attempts", sub.getAttempts());
+        return result;
+    }
+
+    /** 教师批阅：读取学生上传的实验报告文件（文件对象 + 原文件名） */
+    public Map<String, Object> studentReport(Long submissionId) {
+        Submission sub = submissionMapper.selectById(submissionId);
+        if (sub == null) {
+            throw new BizException("提交不存在");
+        }
+        try {
+            // answers 存数组 [{reportFile, fileName}]（兼容旧对象格式）
+            JsonNode ans = objectMapper.readTree(sub.getAnswers() == null ? "[]" : sub.getAnswers());
+            JsonNode rep = ans.isArray() && ans.size() > 0 ? ans.get(0) : ans;
+            String stored = rep.path("reportFile").asText("");
+            String fileName = rep.path("fileName").asText("实验报告.docx");
+            if (stored.isBlank()) {
+                throw new BizException("该提交没有报告文件");
+            }
+            File f = REPORT_DIR.resolve(stored).toFile();
+            if (!f.exists()) {
+                throw new BizException("报告文件已丢失，请联系管理员");
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("file", f);
+            m.put("fileName", fileName);
+            return m;
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BizException("报告信息解析失败");
+        }
+    }
+
     /** 作答内容的可读文本（用于 code 汇总，教师批改页直接可读） */
     private String answerText(Question q, Object value) {
         boolean objective = "SINGLE".equals(q.getType()) || "MULTI".equals(q.getType()) || "JUDGE".equals(q.getType());
@@ -314,13 +434,22 @@ public class AssignmentService {
         if (req.getTitle() == null || req.getTitle().isBlank()) {
             throw new BizException("请填写作业标题");
         }
-        String scoreMode = "CUSTOM".equalsIgnoreCase(req.getScoreMode()) ? "CUSTOM" : "AVERAGE";
+        // 实验报告型作业（scoreMode=LAB）：不组卷，仅关联 Word 模板资源；
+        // 模板上传时已作为学习资源入库（学生端学习资源板块可见、可下载）
+        boolean isLab = "LAB".equalsIgnoreCase(req.getScoreMode());
+        String scoreMode = isLab ? "LAB"
+                : ("CUSTOM".equalsIgnoreCase(req.getScoreMode()) ? "CUSTOM" : "AVERAGE");
         String status = req.getStatus() != null ? req.getStatus().toUpperCase() : "DRAFT";
         if (!"DRAFT".equals(status) && !"ONGOING".equals(status)) {
             throw new BizException("作业状态不合法");
         }
-        List<ComposeRequest.QuestionReq> questions = req.getQuestions() != null ? req.getQuestions() : List.of();
-        if (questions.isEmpty()) {
+        if (isLab && (req.getLabTemplateId() == null
+                || learningResourceMapper.selectById(req.getLabTemplateId()) == null)) {
+            throw new BizException("实验报告作业需先上传 Word 报告模板");
+        }
+        List<ComposeRequest.QuestionReq> questions = isLab ? List.of()
+                : (req.getQuestions() != null ? req.getQuestions() : List.of());
+        if (questions.isEmpty() && !isLab) {
             throw new BizException("请至少添加一道题目");
         }
         Set<String> validTypes = Set.of("SINGLE", "MULTI", "FILL", "JUDGE", "SHORT", "CODE");
@@ -376,7 +505,10 @@ public class AssignmentService {
             throw new BizException("缺少发放班级");
         }
         as.setTitle(req.getTitle());
-        as.setDescription("");
+        // 实验报告型：description 存模板关联 JSON（复用现有列，零表结构变更）
+        as.setDescription(isLab ? toJson(Map.of(
+                "templateId", req.getLabTemplateId(),
+                "templateTitle", req.getLabTemplateTitle() == null ? "" : req.getLabTemplateTitle())) : "");
         // 作业级知识点：以教师在「关联知识点」面板选择为准（作业卡/学生端展示与之一致）；
         // 面板未选择时兜底取各题关联知识点合集（kp_code 逗号多值需拆分去重，避免
         // "a,b" 合并串入库导致前端 kpName 查不到而显示原始编码）
@@ -501,7 +633,23 @@ public class AssignmentService {
         dto.put("scoreMode", as.getScoreMode() != null ? as.getScoreMode().toLowerCase() : null);
         dto.put("startAt", as.getStartAt() != null ? as.getStartAt().format(DUE) : null);
         dto.put("allowLate", as.getAllowLate() != null && as.getAllowLate() == 1);
-        if (as.getScoreMode() != null) {
+        // 实验报告型：description 存模板关联 JSON，转成 lab 字段输出（desc 不再输出原始 JSON）
+        if ("LAB".equals(as.getScoreMode())) {
+            dto.put("desc", null);
+            try {
+                JsonNode lab = objectMapper.readTree(as.getDescription());
+                Map<String, Object> labDto = new LinkedHashMap<>();
+                labDto.put("templateId", lab.path("templateId").asText());
+                labDto.put("templateTitle", lab.path("templateTitle").asText(""));
+                labDto.put("templateFileName", lab.path("templateFileName").asText(""));
+                dto.put("lab", labDto);
+            } catch (Exception e) {
+                dto.put("lab", null);
+            }
+            dto.put("questionCount", 0);
+            dto.put("totalScore", "100");
+        }
+        if (as.getScoreMode() != null && !"LAB".equals(as.getScoreMode())) {
             List<Question> qs = questionMapper.selectList(new LambdaQueryWrapper<Question>()
                     .eq(Question::getAssignmentId, as.getId()).orderByAsc(Question::getSortOrder));
             dto.put("questionCount", qs.size());

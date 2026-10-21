@@ -22,9 +22,14 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -181,6 +186,24 @@ public class TeacherController {
     @PostMapping("/submissions/{id}/ai-grade")
     public ApiResponse<Map<String, Object>> aiGrade(@PathVariable Long id) {
         return ApiResponse.ok(gradingService.aiGrade(id));
+    }
+
+    @Operation(summary = "下载学生上传的实验报告（实验报告型作业）")
+    @GetMapping("/submissions/{id}/report-file")
+    public ResponseEntity<byte[]> reportFile(@PathVariable Long id) {
+        Map<String, Object> r = assignmentService.studentReport(id);
+        File f = (File) r.get("file");
+        String fileName = (String) r.get("fileName");
+        try {
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_OCTET_STREAM_VALUE)
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, java.nio.charset.StandardCharsets.UTF_8))
+                    .contentLength(f.length())
+                    .body(Files.readAllBytes(f.toPath()));
+        } catch (IOException e) {
+            throw new BizException("报告文件读取失败");
+        }
     }
 
     @Operation(summary = "批量 AI 初评（异步，完成后通知教师）")

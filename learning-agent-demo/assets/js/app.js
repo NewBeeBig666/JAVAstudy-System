@@ -1605,13 +1605,15 @@
       }
       return `<div class="card" id="hw-${a.id}" style="${State.focusHwId === a.id ? 'border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)' : ''}">
         <div class="card-head">${icon('clipboard', 15)}<h3>${h(a.title)}</h3>
-          <div class="spacer"></div><span class="badge ${st.cls}">${st.label}</span></div>
+          <div class="spacer"></div>${a.lab ? '<span class="badge brand">实验报告</span>' : ''}<span class="badge ${st.cls}">${st.label}</span></div>
         <div class="card-body">
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             ${a.kp.map(k => '<span class="badge brand">' + kpName(k) + '</span>').join('')}
             <span class="badge">${icon('clock', 12)} 截止 ${h(a.due)}</span>
           </div>
-          ${st.key === 'todo' ? `<div style="margin-top:12px">
+          ${a.lab ? `<div style="margin-top:12px">
+            <button class="btn ${st.key === 'todo' ? 'primary' : ''}" data-act="openLab" data-val="${a.id}">${icon(st.key === 'todo' ? 'send' : 'eye', 14)} ${st.key === 'todo' ? '进入实验报告作业' : '查看实验报告作业'}</button></div>`
+          : st.key === 'todo' ? `<div style="margin-top:12px">
             <button class="btn primary" data-act="${a.questionCount ? 'openAnswer' : 'submitHw'}" data-val="${a.id}">${icon('send', 14)} ${a.questionCount ? '进入作业详情作答' : '提交作业'}</button></div>`
           : a.questionCount ? `<div style="margin-top:12px">
             <button class="btn" data-act="openAnswer" data-val="${a.id}">${icon('eye', 14)} 查看作业详情</button></div>` : ''}
@@ -1714,7 +1716,7 @@
         <span class="badge warn">${DB.student.wrongBook.length} 题待复习</span></div>
         <div style="overflow-x:auto"><table class="table">
           <thead><tr><th>题目</th><th>知识点</th><th class="num">错误次数</th><th class="num">最近</th></tr></thead>
-          <tbody>${DB.student.wrongBook.map(w => `<tr>
+          <tbody>${DB.student.wrongBook.map(w => `<tr data-act="wrongDetail" data-val="${h(w.id)}" style="cursor:pointer" title="查看题目详情">
             <td>${h(w.title)}</td><td><span class="badge">${kpName(w.kp)}</span></td>
             <td class="num">${w.wrongCount}</td><td class="num" style="color:var(--text-3)">${w.lastAt}</td></tr>`).join('')}
           </tbody></table></div></div>` : emptyBox('错题本是空的', '做错的题会自动进入错题本，并按间隔重复安排复习。');
@@ -1820,8 +1822,14 @@
       const stBadge = a.status === 'draft' ? '<span class="badge">草稿</span>'
         : a.status === 'ongoing' ? '<span class="badge info">进行中</span>' : '<span class="badge ok">已截止</span>';
       const isQ = a.questionCount > 0;
-      // 题目型作业展示题型分布与题量/总分；Rubric 型作业展示原评分标准
-      const detail = isQ
+      // 题目型作业展示题型分布与题量/总分；实验报告型展示模板关联；Rubric 型作业展示原评分标准
+      const detail = a.lab
+        ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+            <span class="badge brand">实验报告作业 · 满分 100</span>
+            <span class="badge">${icon('file', 12)} 模板：${h(a.lab.templateTitle || '实验报告模板')}</span>
+            ${a.allowLate ? '<span class="badge warn">允许补交</span>' : ''}
+          </div>`
+        : isQ
         ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
             ${(a.questions || []).reduce((acc, q) => { const g = acc.find(x => x[0] === q.type); g ? g[1]++ : acc.push([q.type, 1]); return acc; }, [])
               .map(g => '<span class="badge">' + (QTYPES[g[0]] ? QTYPES[g[0]].label : g[0]) + ' × ' + g[1] + '</span>').join('')}
@@ -2392,6 +2400,7 @@
     let html = '';
     if (State.compose) html += renderCompose();
     if (State.answer) html += renderAnswer();
+    if (State.lab) html += renderLab();
     if (State.modal) html += renderModal();
     if (State.drawer) html += renderDrawer();
     box.innerHTML = html;
@@ -2706,6 +2715,24 @@
       foot = `<button class="btn" data-act="closeModal" ${d.uploading ? 'disabled' : ''}>取消</button>
         <button class="btn primary" data-act="doResUpload" ${f && !d.uploading ? '' : 'disabled'}>${icon('send', 15)} ${d.uploading ? '上传中…' : '上传并识别'}</button>`;
 
+    } else if (m.type === 'labUpload') {
+      title = '上传实验报告模板（Word）';
+      const f = d.file;
+      body = `<div class="note" style="margin-bottom:12px">上传 <b>Word 格式（.doc/.docx）</b>的实验报告模板。模板将同步发布到「学习资源」板块供学生下载；建议模板一、二、三部分为实验要求（目的/环境/内容），四及以后为学生作答区，底部留评分表与评语区（AI 初评按此结构评审）。</div>
+        <div class="form-row"><label>模板文件</label>
+          <div class="import-file ${f ? 'has' : ''}">
+            <input type="file" id="labFileInput" accept=".doc,.docx" style="display:none" data-lab-file>
+            <button class="btn sm" data-act="labPickFile">${icon('file', 14)} 选择 Word 文件</button>
+            <span class="if-name">${f ? h(f.name) + '（' + resSizeText(f.size) + '）' : '未选择文件'}</span>
+          </div>
+          <div class="hint">≤ 50MB；上传后 AI 自动识别生成资源简介</div></div>
+        <div class="progress-wrap" style="display:${d.uploading ? '' : 'none'}">
+          <div class="progress-track"><div class="progress-bar" style="width:100%"></div></div>
+          <div style="font-size:12px;color:var(--text-3)">上传中，AI 识别内容约需十几秒，请勿关闭…</div>
+        </div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.uploading ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doLabUpload" ${f && !d.uploading ? '' : 'disabled'}>${icon('send', 15)} ${d.uploading ? '上传中…' : '上传模板'}</button>`;
+
     } else if (m.type === 'resKp') {
       title = '编辑关联知识点 · ' + (d.title || '');
       const n = (d.kps || []).length;
@@ -2754,6 +2781,11 @@
           ? h(r.analysis) : '<span style="color:var(--text-3)">本题由 AI 智能判分，无标准答案，可参考下方解析</span>';
       }
       title = '练习详情 · ' + typeName + ' · ' + (r.time || '');
+      // 错题本来源：无 delta，展示错误次数；最近一次作答可能已做对（correct 字段）
+      const okv = r.ok != null ? r.ok : r.correct === true;
+      const thirdBadge = r.delta != null
+        ? `<span class="badge" style="margin-left:6px">掌握度 ${r.delta >= 0 ? '+' : ''}${r.delta}</span>`
+        : (r.wrongCount != null ? `<span class="badge warn" style="margin-left:6px">错误 ${r.wrongCount} 次</span>` : '');
       body = `<div class="rec-detail">
           <div class="rd-sec"><div class="rd-label">${icon('file', 13)} 题干</div>
             <div class="rd-stem">${exStemHtml(r.stem || r.title || '')}</div></div>
@@ -2761,8 +2793,8 @@
             <div style="margin-top:8px">${optsHtml}</div></div>` : ''}
           <div class="rd-sec"><div class="rd-label">${icon('target', 13)} 关联知识点</div>
             <div><span class="badge brand">${h(r.kpName || kpName(r.kp))}</span>
-              <span class="badge ${r.ok ? 'ok' : 'danger'}" style="margin-left:6px">${r.ok ? '通过' : '未通过'}</span>
-              <span class="badge" style="margin-left:6px">掌握度 ${r.delta >= 0 ? '+' : ''}${r.delta}</span></div></div>
+              <span class="badge ${okv ? 'ok' : 'danger'}" style="margin-left:6px">${okv ? '通过' : '未通过'}</span>
+              ${thirdBadge}</div></div>
           <div class="rd-sec"><div class="rd-label">${icon('user', 13)} 我的作答（${r.time || '当时'}）</div>
             <div class="rd-ans">${mineHtml}</div></div>
           <div class="rd-sec"><div class="rd-label">${icon('check', 13)} 正确答案</div>
@@ -2850,6 +2882,7 @@
     if (!sub) return '';
     const a = DB.assignments.find(x => x.id === sub.asId);
     const g = State.grading;
+    const isLab = !!a.lab;
     const isQ = a.questionCount > 0;
     // 已批改默认只读；点击「重新批改」（reopenGrade）进入编辑态可修改并重新发布
     const graded = sub.status === 'graded' && !(g && g.reopen);
@@ -2860,12 +2893,27 @@
     const submittedN = all.filter(s => s.status !== 'missing').length;
     const pendingN = all.filter(s => s.status === 'pending').length;
     const total = a.rubric.reduce((s, r) => s + (Number(g.scores[r.name]) || 0), 0);
-    const scorePreview = isQ ? (g.total != null ? g.total : 0) : total;
+    const scorePreview = (isQ || isLab) ? (g.total != null ? g.total : 0) : total;
 
-    /* 主内容区：题目型 = 原始题目与学生作答逐题对照；Rubric 型 = 作业要求 + 提交代码 */
+    /* 主内容区：题目型 = 原始题目与学生作答逐题对照；实验报告型 = 模板信息 + 学生报告下载；Rubric 型 = 作业要求 + 提交代码 */
     let main = '';
     if (sub.status === 'missing') {
       main = '<div class="empty" style="padding:80px 20px"><div class="empty-ico">' + icon('inbox', 24) + '</div><div class="empty-title">该学生未提交</div><div class="empty-desc">可直接记 0 分，或回到列表提醒学生补交。</div></div>';
+    } else if (isLab) {
+      const rep = (sub.answers || []).find(x => x && x.reportFile) || {};
+      main = `<div class="note warn" style="margin-bottom:12px;white-space:pre-line"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || (g.aiBusy ? '正在自动初评（AI 阅读实验报告评审中），完成后总分将自动预填，您也可以直接手动录入分数…' : '尚未初评，可稍后重试'))}</div>
+        <div class="hw-qlist-head" style="margin-bottom:12px">${icon('file', 14)} 实验报告作业 · 模板：${h(a.lab.templateTitle || '实验报告模板')} · 满分 100</div>
+        <div class="card">
+          <div class="card-head">${icon('clipboard', 15)}<h3>学生提交的实验报告</h3></div>
+          <div class="card-body">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span class="badge brand">${icon('file', 12)} ${h(rep.fileName || '实验报告.docx')}</span>
+              <span class="badge">${h(sub.submittedAt || '-')} 提交</span>
+              <button class="btn primary sm" data-act="labDownloadSub" data-id="${h(sub.id)}">${icon('download', 14)} 下载报告批阅</button>
+            </div>
+            <div class="note" style="margin-top:10px">下载学生的 Word 报告后离线批阅：报告内一、二、三部分为实验要求（模板自带），四及以后为该生作答，最底部为评分表与评语区。AI 初评已按实验要求对作答内容评审，可作参考。</div>
+          </div>
+        </div>`;
     } else if (isQ) {
       // 学生作答映射：questionId -> value
       const ansMap = {};
@@ -2889,7 +2937,7 @@
     }
 
     /* 右侧评分面板：学生信息卡 + 评分区 + 合计 + 评语 */
-    const scoreArea = isQ
+    const scoreArea = (isQ || isLab)
       ? `<div class="rubric-row" style="align-items:center">
           <div class="rn"><b>作业总分</b><span>${g.aiBusy ? 'AI 初评进行中，完成后自动预填；也可直接手动录入' : '默认预填 AI 初评结果，可直接修改'}</span></div>
           <input class="input" type="number" min="0" max="100" value="${g.total != null ? g.total : ''}" placeholder="0" data-bind="rubricTotal" ${graded ? 'disabled' : ''}>
@@ -2908,7 +2956,7 @@
         </div>
         <span class="badge ${sub.status === 'graded' ? 'ok' : sub.status === 'ai_reviewed' ? 'brand' : sub.status === 'missing' ? '' : 'warn'}">${sub.status === 'graded' ? (g.reopen ? '重新批改中 · 原 ' + sub.score + ' 分' : '已批改 ' + sub.score) : sub.status === 'ai_reviewed' ? 'AI初评完成 · 待复核' : sub.status === 'missing' ? '未提交' : '待批改'}</span>
       </div>
-      <div style="font-size:12.5px;font-weight:700;letter-spacing:.4px;margin:16px 0 10px">${isQ ? '题目评分' : 'Rubric 评分'}</div>
+      <div style="font-size:12.5px;font-weight:700;letter-spacing:.4px;margin:16px 0 10px">${isLab ? '报告评分' : isQ ? '题目评分' : 'Rubric 评分'}</div>
       ${scoreArea}
       <div style="display:flex;align-items:center;gap:10px;margin:12px 0 14px">
         <span style="font-size:13.5px;font-weight:650;letter-spacing:.4px">合计</span>
@@ -3051,6 +3099,8 @@
         scoreMode: (a.scoreMode || 'average').toUpperCase(),
         startAt: a.startAt || '', endAt: a.due || '',
         allowLate: !!a.allowLate,
+        // 实验报告型回填：模板资源关联（a.lab 由后端 DTO 输出）
+        lab: a.lab && a.lab.templateId ? { templateId: a.lab.templateId, templateTitle: a.lab.templateTitle || '' } : null,
         kps,
         questions: (a.questions || []).map(q => ({
           type: q.type, title: q.title || '',
@@ -3088,7 +3138,7 @@
       <div class="compose-top">
         <button class="btn sm ghost" data-act="closeCompose">${icon('chevronL', 15)} 返回</button>
         <input class="input compose-title" placeholder="请输入作业标题" value="${h(c.title)}" data-bind="compose" data-key="title">
-        <span class="badge brand" id="composeStat">题量 ${c.questions.length} · 总分 ${composeTotal(c)}</span>
+        <span class="badge brand" id="composeStat">${c.lab && c.lab.templateId ? '实验报告作业 · 模板已关联' : '题量 ' + c.questions.length + ' · 总分 ' + composeTotal(c)}</span>
         <div class="spacer"></div>
         <button class="btn sm ghost" data-act="composePreview">${icon('eye', 14)} 预览</button>
         <button class="btn sm" data-act="composeSave" ${c.busy ? 'disabled' : ''}>${c.busy ? '处理中…' : '保存草稿'}</button>
@@ -3114,6 +3164,7 @@
           <div class="cp-toolbar">
             <span class="cp-tb-label">${icon('plus', 14)} 添加题目</span>
             ${Object.keys(QTYPES).map(t => `<button class="btn sm" data-act="composeAddQ" data-val="${t}">${QTYPES[t].label}</button>`).join('')}
+            <button class="btn sm ${c.lab ? 'brand' : ''}" data-act="composeLab" title="上传 Word 实验报告模板，学生下载模板完成实验后上传报告提交">${icon('file', 14)} 实验报告</button>
             <div class="spacer"></div>
             <button class="btn sm ghost" id="composeKpBtn" data-act="kpPanel">${icon('target', 14)} 关联知识点${c.kps.length ? ' (' + c.kps.length + ')' : ''}</button>
             <button class="btn sm ai-gen ${aiReady(c) && !c.aiBusy ? 'ready' : ''}" id="composeAiBtn" data-act="aiGen" ${aiReady(c) && !c.aiBusy ? '' : 'disabled'} title="${aiReady(c) ? '基于关联知识点与已有题目生成新题' : '请先关联知识点并添加至少一道题目'}">${icon('sparkles', 14)} ${c.aiBusy ? '生成中…' : '一键AI生成题目'}</button>
@@ -3128,9 +3179,25 @@
 
   function composeQListHtml() {
     const c = State.compose;
+    // 实验报告型：模板卡（上传/重传/移除），与题目列表互斥展示
+    if (c.lab && c.lab.templateId) {
+      return `<div class="card" style="margin:16px 0">
+        <div class="card-head">${icon('file', 15)}<h3>实验报告模板</h3><div class="spacer"></div>
+          <span class="badge ok">${icon('check', 12)} 模板已上传</span></div>
+        <div class="card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span class="badge brand">${h(c.lab.templateTitle || 'Word 报告模板')}</span>
+            <span class="hint">学生将在「学习资源」板块与作业详情处下载此模板，完成实验后上传报告提交；AI 初评按模板中的实验要求评审</span>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:12px">
+            <button class="btn sm" data-act="composeLab">${icon('refresh', 13)} 重新上传模板</button>
+            <button class="btn sm ghost" data-act="composeLabRemove">${icon('trash', 13)} 移除（恢复组卷）</button>
+          </div>
+        </div></div>`;
+    }
     if (!c.questions.length) {
       return `<div class="empty" style="padding:48px 12px"><div class="empty-ico">${icon('file', 24)}</div>
-        <div class="empty-title">还没有题目</div><div class="empty-desc">点击上方题型按钮，添加第一道题</div></div>`;
+        <div class="empty-title">还没有题目</div><div class="empty-desc">点击上方题型按钮添加题目，或点击「实验报告」布置报告型作业</div></div>`;
     }
     return c.questions.map((q, i) => composeQCard(q, i)).join('');
   }
@@ -3544,7 +3611,12 @@
     const c = State.compose;
     if (!c || c.busy) return;
     if (!c.title || !c.title.trim()) { toast('请填写作业标题'); return; }
-    if (!c.questions.length) { toast('请至少添加一道题目'); return; }
+    // 实验报告型：不组卷，仅需上传模板；其余校验照旧
+    const isLab = !!(c.lab && c.lab.templateId);
+    if (!isLab && !c.questions.length) { toast('请至少添加一道题目'); return; }
+    if (isLab) {
+      if (!c.lab.templateId) { toast('实验报告作业需先上传 Word 报告模板'); return; }
+    }
     for (let i = 0; i < c.questions.length; i++) {
       const q = c.questions[i], no = '第 ' + (i + 1) + ' 题';
       if (!q.title.trim()) { toast(no + '缺少题干'); return; }
@@ -3565,9 +3637,12 @@
     try {
       const r = await API.post('/teacher/compose', {
         id: c.id != null ? Number(c.id) : null,
-        title: c.title, scoreMode: c.scoreMode,
+        title: c.title, scoreMode: isLab ? 'LAB' : c.scoreMode,
         startAt: c.startAt || null, endAt: c.endAt, allowLate: !!c.allowLate,
         status: status,
+        // 实验报告型：模板资源 ID（模板上传时已入学习资源板块）
+        labTemplateId: isLab ? Number(c.lab.templateId) : null,
+        labTemplateTitle: isLab ? (c.lab.templateTitle || '') : null,
         // 作业级知识点：教师在「关联知识点」面板的选择（作业卡与学生端展示以此为准）
         kps: c.kps || [],
         questions: c.questions.map(q => ({
@@ -3599,6 +3674,8 @@
 
   function openAnswerEditor(a) {
     if (!a || !a.questionCount) { toast('该作业不支持在线作答'); return; }
+    // 实验报告型作业：走实验报告专属视图（下载模板/上传报告），不进在线答题
+    if (a.lab) { openLab(a); return; }
     const sub = a.mySubmission;
     // 未提交 → 作答模式（临时保存过的草稿可继续修改）；已提交（待批改/已批改）→ 一律只读查看，
     // 提交后不允许修改，仅可进入详情查看题目与本人提交内容
@@ -3807,6 +3884,154 @@
     }
   }
 
+  /* ===== 学生：实验报告作业视图（下载模板 → 完成实验 → 上传报告） ===== */
+  function openLab(a) {
+    if (!a || !a.lab) { toast('该作业不是实验报告作业'); return; }
+    State.lab = labStateOf(a);
+    renderOverlays();
+  }
+
+  // 从作业 DTO 构建/刷新实验报告视图状态（上传成功后复用）
+  function labStateOf(a) {
+    const sub = a.mySubmission;
+    return {
+      asId: a.id, title: a.title || '', lab: a.lab,
+      endAt: a.due || '', allowLate: !!a.allowLate,
+      sub: sub ? {
+        status: sub.status, submittedAt: sub.submittedAt, attempts: sub.attempts,
+        score: sub.score, aiScore: sub.aiScore, aiComment: sub.aiComment, teacherComment: sub.teacherComment
+      } : null,
+      file: null, busy: false
+    };
+  }
+
+  // 截止校验（与后端一致：截止后未关闭时仅 allowLate 可补交）
+  function labOverdue(c) {
+    return !!c.endAt && new Date(c.endAt.replace(/-/g, '/')) < new Date() && !c.allowLate;
+  }
+
+  function renderLab() {
+    const c = State.lab;
+    if (!c) return '';
+    const overdue = labOverdue(c);
+    const graded = c.sub && c.sub.status === 'graded';
+    const submitted = !!c.sub && c.sub.status !== 'missing';
+    const tplName = c.lab.templateFileName || (c.lab.templateTitle || '实验报告模板');
+    return `<div class="compose-mask">
+      <div class="compose-top">
+        <button class="btn sm ghost" data-act="closeLab">${icon('chevronL', 15)} 返回</button>
+        <span class="badge brand">${icon('clipboard', 13)} 实验报告作业</span>
+        ${graded
+          ? `<span class="badge ok">${icon('checkcircle', 13)} 已批改</span>
+             ${c.sub.score != null ? `<span class="badge"><span style="font-weight:700;color:var(--brand)">${c.sub.score}</span> / 100 分</span>` : ''}`
+          : submitted
+            ? `<span class="badge warn">已提交 · 待批改</span>${overdue ? '' : '<span class="badge">截止前可重新上传</span>'}`
+            : `<span class="badge">未提交</span>
+               ${c.endAt ? `<span class="badge">${icon('clock', 12)} 截止 ${h(c.endAt)}</span>` : ''}
+               ${c.allowLate ? '<span class="badge warn">允许补交</span>' : ''}`}
+        <div class="spacer"></div>
+      </div>
+      <div class="ans-info">
+        <h3>${h(c.title)}</h3>
+        <div class="ans-info-meta">
+          <span>类型：实验报告（Word）</span>
+          <span>满分：100</span>
+          ${submitted ? `<span>已提交：${h(c.sub.submittedAt || '-')}（第 ${c.sub.attempts || 1} 次）</span>` : `<span>截止时间：${h(c.endAt || '不限')}</span>`}
+        </div>
+      </div>
+      <div class="ans-body">
+        <div class="ans-main">
+          <div class="card">
+            <div class="card-head">${icon('download', 15)}<h3>第一步 · 下载实验报告模板</h3></div>
+            <div class="card-body">
+              <div class="note">模板由教师发布，同时可在「学习资源」板块找到。请下载模板，按模板中的实验要求（一、二、三部分）完成实验并撰写报告（四及以后部分），最后保存为 Word 文档上传。</div>
+              <div style="margin-top:12px">
+                <button class="btn primary" data-act="labDownloadTpl">${icon('download', 14)} 下载「${h(c.lab.templateTitle || '实验报告模板')}」</button>
+              </div>
+            </div>
+          </div>
+          ${graded ? '' : `<div class="card" style="margin-top:14px">
+            <div class="card-head">${icon('upload', 15)}<h3>第二步 · 上传实验报告</h3></div>
+            <div class="card-body">
+              ${overdue ? '<div class="note">作业已截止，无法上传报告。</div>' : `
+              <div class="note">仅支持 Word 格式（.doc / .docx），大小不超过 50MB。${submitted ? '重新上传会覆盖之前提交的报告，教师批改前均可更新。' : ''}</div>
+              <input type="file" id="labReportInput" accept=".doc,.docx" style="display:none" data-lab-report>
+              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
+                <button class="btn" data-act="labPickReport" ${c.busy ? 'disabled' : ''}>${icon('file', 14)} ${c.file ? '重新选择文件' : '选择 Word 文件'}</button>
+                <button class="btn primary" data-act="labUploadSubmit" ${c.busy || !c.file ? 'disabled' : ''}>${c.busy ? '上传中…' : icon('upload', 14) + ' 上传报告'}</button>
+                ${c.file ? `<span class="badge ok">${icon('file', 12)} ${h(c.file.name)}（${(c.file.size / 1024 / 1024).toFixed(2)} MB）</span>` : ''}
+              </div>`}
+            </div>
+          </div>`}
+          ${submitted ? `<div class="card" style="margin-top:14px">
+            <div class="card-head">${icon('sparkles', 15)}<h3>提交与批改情况</h3></div>
+            <div class="card-body">
+              ${c.sub.aiScore != null ? `<div class="note" style="margin-bottom:8px"><b>AI 初评：${c.sub.aiScore} / 100 分</b>${c.sub.aiComment ? '<br>' + h(c.sub.aiComment) : ''}</div>` : '<div class="note" style="margin-bottom:8px">AI 初评未完成，完成后会显示在这里。</div>'}
+              ${graded ? `<div class="note ok"><b>教师批改：${c.sub.score} / 100 分</b>${c.sub.teacherComment ? '<br>教师评语：' + h(c.sub.teacherComment) : ''}</div>` : '<div class="note">教师批改完成后，最终成绩与评语会显示在这里。</div>'}
+            </div>
+          </div>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // 下载实验报告模板（Word：blob 触发下载，复用学习资源鉴权接口）
+  async function labDownloadTpl() {
+    const c = State.lab;
+    if (!c) return;
+    try {
+      const res = await fetch('/api/resources/' + c.lab.templateId + '/file', {
+        headers: { 'Authorization': 'Bearer ' + API.token() }
+      });
+      if (res.status === 401) { Auth.logout(); return; }
+      if (!res.ok) {
+        let msg = '模板下载失败 (' + res.status + ')';
+        try { const data = await res.json(); if (data && data.msg) msg = data.msg; } catch (e) { /* 非 JSON */ }
+        toast(msg); return;
+      }
+      const blob = await res.blob();
+      if (!blob.size) { toast('模板文件为空'); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = c.lab.templateFileName || ((c.lab.templateTitle || '实验报告模板') + '.docx');
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast('模板已下载，请按模板完成实验后上传报告', 'ok');
+    } catch (e) {
+      toast('模板下载失败，请检查网络后重试');
+    }
+  }
+
+  // 上传实验报告（Word），成功后刷新作业列表与视图状态
+  async function labUploadSubmit() {
+    const c = State.lab;
+    if (!c || c.busy) return;
+    const file = c.file;
+    if (!file) { toast('请先选择 Word 报告文件'); return; }
+    const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();
+    if (ext !== 'doc' && ext !== 'docx') { toast('实验报告仅支持 Word 格式（.doc/.docx）'); return; }
+    if (file.size > 50 * 1024 * 1024) { toast('文件超过大小上限（50MB）'); return; }
+    c.busy = true;
+    renderOverlays();
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      await API.upload('/assignments/' + c.asId + '/report', fd);
+      DB.assignments = await API.get('/assignments/my');
+      const a = DB.assignments.find(x => String(x.id) === String(c.asId));
+      State.lab = a ? labStateOf(a) : null;
+      renderOverlays();
+      render();
+      toast('实验报告已上传，等待教师批改', 'ok');
+    } catch (e) {
+      c.busy = false;
+      renderOverlays();
+      toast('上传失败：' + e.message);
+    }
+  }
+
 
   /* ===========================================================
    *  交互动作
@@ -3821,14 +4046,14 @@
     }
   }
 
-  /* 批阅页打开时的默认分数逻辑（题目型作业）：
-     - 已有 AI 初评结果 → 总分默认预填 aiScore（客观题自动判分 + 主观题 AI 评分），教师可随时手动调整；
+  /* 批阅页打开时的默认分数逻辑（题目型/实验报告型作业）：
+     - 已有 AI 初评结果 → 总分默认预填 aiScore（客观题自动判分 + 主观题 AI 评分 / 实验报告 AI 评审），教师可随时手动调整；
      - 尚无初评结果（已提交且未批改）→ 自动触发单份 AI 初评，无需教师手动获取；
        完成后回填默认分数（教师已手动录入时不覆盖）。
      - 草稿缓存恢复时同样生效（期间批量初评可能已完成）。 */
   function prepareGradingDefaults(g, sub, a) {
     g.aiBusy = false;
-    if (!a || a.questionCount <= 0) return;
+    if (!a || (a.questionCount <= 0 && !a.lab)) return;
     if (sub.status === 'missing' || sub.status === 'graded') return;
     if (g.total != null && g.total !== '') return; // 教师已手动录入分数，不覆盖
     if (sub.aiScore != null) { g.total = sub.aiScore; return; }
@@ -4299,6 +4524,11 @@
       const rec = DB.exerciseRecords.find(r => String(r.id) === String(v));
       if (rec) { State.modal = { type: 'recDetail', data: { rec: rec } }; renderOverlays(); }
     },
+    wrongDetail(v) {
+      // 错题本详情弹窗（复用练习详情弹窗，后端 DTO 字段同名对齐）
+      const w = (DB.student.wrongBook || []).find(x => String(x.id) === String(v));
+      if (w) { State.modal = { type: 'recDetail', data: { rec: w } }; renderOverlays(); }
+    },
     reportTab(v) { State.filters.report = v; render(); },
     kpCell(v) {
       // 修复：render() 全量重建 main 区会令 .main-body 的 scrollTop 归零，
@@ -4559,6 +4789,47 @@
     resPickFile() {
       const input = document.getElementById('resFileInput');
       if (input) input.click();
+    },
+    // 实验报告作业：打开模板上传弹窗（复用资源上传接口，模板自动进学习资源板块）
+    composeLab() {
+      State.modal = { type: 'labUpload', data: { file: null, uploading: false } };
+      renderOverlays();
+    },
+    composeLabRemove() {
+      const c = State.compose;
+      if (c) { c.lab = null; renderOverlays(); }
+    },
+    labPickFile() {
+      const input = document.getElementById('labFileInput');
+      if (input) input.click();
+    },
+    async doLabUpload() {
+      const d = State.modal && State.modal.data;
+      const c = State.compose;
+      if (!d || !c || d.uploading) return;
+      const file = d.file;
+      if (!file) { toast('请选择 Word 模板文件'); return; }
+      const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();
+      if (ext !== 'doc' && ext !== 'docx') { toast('实验报告模板仅支持 Word 格式（.doc/.docx）'); return; }
+      if (file.size > 50 * 1024 * 1024) { toast('文件超过大小上限（50MB）'); return; }
+      d.uploading = true; renderOverlays();
+      try {
+        const fd = new FormData();
+        // 资源标题 = 作业标题 + 实验报告模板（学生端学习资源板块可见）
+        fd.append('title', (c.title || '实验') + ' 实验报告模板');
+        fd.append('file', file);
+        if (c.kps && c.kps.length) fd.append('kpCodes', c.kps.join(','));
+        const r = await API.upload('/api/teacher/resources', fd);
+        c.lab = { templateId: r.id, templateTitle: r.title || ((c.title || '实验') + ' 实验报告模板') };
+        d.uploading = false;
+        State.modal = null; renderOverlays();
+        toast('模板已上传并关联，已同步发布到「学习资源」板块', 'ok');
+        // 刷新教师资源列表
+        try { DB.resources = await API.get('/teacher/resources'); } catch (e) { /* 忽略 */ }
+      } catch (e) {
+        d.uploading = false; renderOverlays();
+        toast(e.message);
+      }
     },
     resKpToggle(v, id, t) {
       const d = State.modal && State.modal.data;
@@ -4929,6 +5200,22 @@
       renderOverlays();
       if (!view) toast('已返回，作答内容已自动保存为草稿');
     },
+    openLab(v) {
+      const a = DB.assignments.find(x => String(x.id) === String(v));
+      if (!a) { toast('作业不存在'); return; }
+      openLab(a);
+    },
+    closeLab() {
+      State.lab = null;
+      renderOverlays();
+    },
+    labDownloadTpl() { labDownloadTpl(); },
+    // 学生端实验报告视图：选择报告文件（与教师模板弹窗的 labPickFile 区分，避免重名覆盖）
+    labPickReport() {
+      const input = document.getElementById('labReportInput');
+      if (input) input.click();
+    },
+    async labUploadSubmit() { await labUploadSubmit(); },
     ansSaveDraft() { saveAnswerDraft(false); },
     answerSubmit() {
       const c = State.answer;
@@ -5327,15 +5614,58 @@
       Actions.openSub(target.id);
     },
     closeDrawer() { State.drawer = null; renderOverlays(); renderCtx(); },
+    /* --- 教师：批阅页下载学生上传的实验报告（Word） --- */
+    async labDownloadSub(v, id, t) {
+      const sub = DB.submissions.find(x => String(x.id) === String(id));
+      if (!sub) { toast('提交记录不存在'); return; }
+      if (State.labDownBusy) return;
+      if (t) { t.disabled = true; }
+      State.labDownBusy = true;
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 120000);
+        const res = await fetch('/api/teacher/submissions/' + id + '/report-file', {
+          headers: { 'Authorization': 'Bearer ' + API.token() },
+          signal: ctrl.signal
+        });
+        clearTimeout(timer);
+        if (res.status === 401) { Auth.logout(); return; }
+        const ct = res.headers.get('Content-Type') || '';
+        if (ct.indexOf('application/json') >= 0) {
+          let data = null;
+          try { data = await res.json(); } catch (e) { /* 非 JSON */ }
+          throw new Error((data && data.msg) || ('下载失败（' + res.status + '）'));
+        }
+        if (!res.ok) throw new Error('下载失败（' + res.status + '）');
+        const blob = await res.blob();
+        if (!blob.size) throw new Error('报告文件为空');
+        let name = '实验报告.docx';
+        const cd = res.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+        if (m) { try { name = decodeURIComponent(m[1]); } catch (e) { name = m[1]; } }
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url; link.download = name;
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        toast('报告已下载：' + name, 'ok');
+      } catch (e) {
+        const msg = (e && e.name === 'AbortError') ? '下载超时无响应，请重试' : ('下载失败：' + e.message);
+        toast(msg);
+      } finally {
+        State.labDownBusy = false;
+        if (t && document.body.contains(t)) t.disabled = false;
+      }
+    },
     useAi() {
       const sub = DB.submissions.find(x => x.id === State.drawer.subId);
       const a = DB.assignments.find(x => x.id === sub.asId);
       const g = State.grading;
-      if (a.questionCount > 0) {
+      if (a.questionCount > 0 || a.lab) {
         if (sub.aiScore == null) { toast('暂无 AI 初评结果，请先稍候重试或人工评分'); return; }
         g.total = sub.aiScore;
         renderOverlays();
-        toast('已采用 AI 初评总分（客观题自动判分 + 主观题 AI 评分），请人工复核后发布');
+        toast(a.lab ? '已采用 AI 初评总分（AI 按实验要求评审学生报告），请人工复核后发布' : '已采用 AI 初评总分（客观题自动判分 + 主观题 AI 评分），请人工复核后发布');
         return;
       }
       const ratio = (sub.aiScore != null ? sub.aiScore : 70) / 100;
@@ -5366,7 +5696,7 @@
       const a = DB.assignments.find(x => x.id === sub.asId);
       const g = State.grading;
       if (g.busy) return; // 防双击：网络慢时重复点击会重复发布（重复通知/重复会话卡片）
-      if (a.questionCount > 0 && (g.total == null || g.total === '')) {
+      if ((a.questionCount > 0 || a.lab) && (g.total == null || g.total === '')) {
         toast('请先填写作业总分');
         return;
       }
@@ -5375,7 +5705,7 @@
       try {
         await API.post('/teacher/submissions/' + sub.id + '/grade', {
           rubricScores: g.scores, comment: g.comment || '',
-          totalScore: a.questionCount > 0 ? Number(g.total) : null
+          totalScore: (a.questionCount > 0 || a.lab) ? Number(g.total) : null
         });
         // 已发布的批改不再保留草稿缓存
         if (State.gradingDrafts) delete State.gradingDrafts[String(sub.id)];
@@ -5396,7 +5726,7 @@
       const a = DB.assignments.find(x => x.id === sub.asId);
       const g = State.grading;
       if (g.busy) return; // 防双击重复发布
-      if (a.questionCount > 0 && (g.total == null || g.total === '')) {
+      if ((a.questionCount > 0 || a.lab) && (g.total == null || g.total === '')) {
         toast('请先填写作业总分');
         return;
       }
@@ -5405,7 +5735,7 @@
       try {
         await API.post('/teacher/submissions/' + sub.id + '/grade', {
           rubricScores: g.scores, comment: g.comment || '',
-          totalScore: a.questionCount > 0 ? Number(g.total) : null
+          totalScore: (a.questionCount > 0 || a.lab) ? Number(g.total) : null
         });
         await loadSubmissions(sub.asId);
         // 找当前的下一位（刷新后按列表顺序），优先待批改 / AI初评完成待复核的提交
@@ -5441,7 +5771,7 @@
       try {
         await API.post('/teacher/submissions/' + sub.id + '/grade', {
           rubricScores: scores, comment: '未提交，记 0 分。请尽快补交，有困难可随时联系我。',
-          totalScore: a.questionCount > 0 ? 0 : null
+          totalScore: (a.questionCount > 0 || a.lab) ? 0 : null
         });
         State.drawer = null; State.grading = null;
         renderOverlays(); renderCtx();
@@ -6007,6 +6337,23 @@
       const file = t.files && t.files[0];
       if (file) {
         State.modal.data.file = file;
+        renderOverlays();
+      }
+    }
+    // 实验报告：模板/报告上传弹窗文件选择
+    if (t && t.dataset && t.dataset.labFile !== undefined && State.modal
+        && State.modal.type === 'labUpload') {
+      const file = t.files && t.files[0];
+      if (file) {
+        State.modal.data.file = file;
+        renderOverlays();
+      }
+    }
+    // 实验报告：学生视图内报告文件选择
+    if (t && t.dataset && t.dataset.labReport !== undefined && State.lab) {
+      const file = t.files && t.files[0];
+      if (file) {
+        State.lab.file = file;
         renderOverlays();
       }
     }

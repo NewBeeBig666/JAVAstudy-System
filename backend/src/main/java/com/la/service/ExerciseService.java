@@ -316,10 +316,28 @@ public class ExerciseService {
             dto.put("id", String.valueOf(wb.getId()));
             dto.put("exerciseId", wb.getExerciseId());
             dto.put("kp", kp != null ? kp.getKpCode() : null);
+            dto.put("kpName", kp != null ? kp.getName() : null);
             dto.put("title", ex != null ? shorten(ex.getStem()) : "");
             dto.put("wrongCount", wb.getWrongCount());
             dto.put("lastAt", wb.getLastWrongAt() != null
                     ? wb.getLastWrongAt().format(DateTimeFormatter.ofPattern("MM-dd")) : null);
+            // 详情弹窗所需（与练习记录 records DTO 同名字段，前端复用同一弹窗）
+            dto.put("type", ex != null ? ex.getType() : null);
+            dto.put("stem", ex != null ? ex.getStem() : "");
+            dto.put("options", parseOptionsList(ex != null ? ex.getOptions() : null));
+            dto.put("answer", ex != null ? ex.getAnswer() : null);
+            dto.put("analysis", ex != null ? ex.getAnalysis() : null);
+            // 最近一次作答（错题详情展示「我的作答」）
+            ExerciseRecord last = recordMapper.selectOne(new LambdaQueryWrapper<ExerciseRecord>()
+                    .eq(ExerciseRecord::getUserId, userId).eq(ExerciseRecord::getExerciseId, wb.getExerciseId())
+                    .orderByDesc(ExerciseRecord::getCreatedAt).last("limit 1"));
+            if (last != null) {
+                dto.put("selected", last.getSelected());
+                dto.put("userAnswer", last.getAnswer());
+                dto.put("correct", Boolean.TRUE.equals(last.getIsCorrect()));
+                dto.put("time", last.getCreatedAt() != null
+                        ? last.getCreatedAt().format(DateTimeFormatter.ofPattern("MM-dd HH:mm")) : null);
+            }
             result.add(dto);
         }
         return result;
