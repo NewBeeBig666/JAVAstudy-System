@@ -224,6 +224,7 @@
     teacher: [
       { key: 'dashboard', label: '学情看板', icon: 'grid' },
       { key: 'resources', label: '学习资源', icon: 'layers' },
+      { key: 'knowledge', label: '知识图谱', icon: 'target' },
       { key: 'assignments', label: '作业管理', icon: 'clipboard' },
       { key: 'submissions', label: '提交批改', icon: 'check' },
       { key: 'warnings', label: '预警中心', icon: 'alert' },
@@ -277,7 +278,7 @@
   function renderTopbar() {
     const st = State.role === 'student';
     return `
-      ${State.role === 'student' && State.section === 'knowledge' ? '' : `<button class="icon-btn mobile-only" data-act="toggleSide" title="功能面板">${icon('menu', 18)}</button>`}
+      ${State.section === 'knowledge' ? '' : `<button class="icon-btn mobile-only" data-act="toggleSide" title="功能面板">${icon('menu', 18)}</button>`}
       <div class="brand">
         <div class="brand-mark">${icon('sparkles', 17)}</div>
         <div>
@@ -500,13 +501,14 @@
     } else {
       if (sec === 'dashboard') { const r = viewDashboard(); head = r.head; body = r.body; }
       else if (sec === 'resources') { const r = viewResources(); head = r.head; body = r.body; }
+      else if (sec === 'knowledge') { const r = viewKnowledge(); head = r.head; body = r.body; }
       else if (sec === 'assignments') { const r = viewAssignments(); head = r.head; body = r.body; }
       else if (sec === 'submissions') { const r = viewSubmissions(); head = r.head; body = r.body; }
       else if (sec === 'warnings') { const r = viewWarnings(); head = r.head; body = r.body; }
       else if (sec === 'students') { const r = viewStudents(); head = r.head; body = r.body; }
     }
     // 知识图谱视图使用加宽容器（kg-inner-wide 解除 980px 上限），配合左侧面板移除后的全宽布局
-    const innerCls = (State.role === 'student' && sec === 'knowledge') ? ' class="main-inner kg-inner-wide"' : ' class="main-inner"';
+    const innerCls = sec === 'knowledge' ? ' class="main-inner kg-inner-wide"' : ' class="main-inner"';
     box.innerHTML = head + '<div class="main-body"><div' + innerCls + '>' + body + '</div></div>';
     afterRender();
   }
@@ -1471,9 +1473,16 @@
   }
 
   function viewKnowledge() {
+    const isTeacher = State.role === 'teacher';
+    // 教师端默认选中首个有效知识点（activeKp 初始值不在树上时），保证关联资源卡有内容可看
+    if (isTeacher && !DB.knowledgePoints.some(k => k.id === State.activeKp) && DB.knowledgePoints.length) {
+      State.activeKp = DB.knowledgePoints[0].id;
+    }
+    // 教师/学生端关联资源卡均依赖资源数据（懒加载，学生端含个人学习进度）
+    ensureResources();
     const cur = kp(State.activeKp);
     const kg = State.kgView || { mode: 'home' };
-    const head = mainHead('知识图谱', '课程知识点全景 · 共 ' + DB.knowledgePoints.length + ' 个节点 · 点击节点查看掌握情况与依赖链');
+    const head = mainHead('知识图谱', '课程知识点全景 · 共 ' + DB.knowledgePoints.length + ' 个节点 · ' + (isTeacher ? '点击节点查看该知识点关联的学习资源' : '点击节点查看掌握情况与依赖链'));
 
     const side = `<div class="kg-search">${icon('search', 14)}
         <input id="kgSearchInput" placeholder="搜索知识点…" value="${h(State.kgQ || '')}" data-bind="kgq"></div>
@@ -1500,9 +1509,114 @@
         </div>
       </div>
       <div class="split" style="margin-top:12px">
-      ${kgChainCard(cur)}
-      </div>`;
+      ${isTeacher ? kgTeacherResCard(cur) : kgChainCard(cur)}
+      </div>
+      ${isTeacher ? '' : kgStudentResCard(cur)}`;
     return { head, body };
+  }
+
+  /* ---------------- 学生：知识图谱学习资源关联卡 ----------------
+     置于依赖链溯源/最薄弱 TOP3 双卡下方，展示当前选中知识点关联的学习资源；
+     支持折叠/展开（偏好持久化到 localStorage），点击资源条目可打开学习。 */
+  const KG_RES_OPEN_KEY = 'la-kg-res-open';
+  function kgResOpen() {
+    if (State.kgResOpen == null) {
+      try { State.kgResOpen = localStorage.getItem(KG_RES_OPEN_KEY) !== '0'; } catch (e) { State.kgResOpen = true; }
+    }
+    return State.kgResOpen;
+  }
+  function kgStudentResCard(cur) {
+    // 资源懒加载中 / 失败：折叠态占位（不打断原有卡片），就绪后 ensureResources 会重渲染
+    const loading = DB.resources === null || DB.resources === undefined;
+    const res = loading ? [] : (DB.resources || []).filter(r => (r.kpCodes || []).indexOf(cur.id) >= 0);
+    const open = kgResOpen();
+    let listHtml = '';
+    if (open && !loading) {
+      listHtml = res.length
+        ? `<div class="card-body" style="padding-top:4px">
+            <div class="note" style="margin:0 0 8px">当前选中 <b>${h(cur.name)}</b>，点击「打开学习」查看老师发布的对应资料。</div>
+            ${res.map(r => {
+              const p = r.myProgress;
+              const completed = p && p.completed;
+              const viewed = p && (p.viewCount || 0) > 0;
+              const status = completed ? '<span class="badge ok">' + icon('checkcircle', 11) + ' 已学完</span>'
+                : viewed ? '<span class="badge warn">学习中</span>' : '<span class="badge">未学习</span>';
+              return `<div class="mini-row" style="padding:8px 0;cursor:default;flex-wrap:wrap;gap:8px">
+                <span class="badge brand" style="flex:none">${resTypeLabel(r.fileType)}</span>
+                <span class="nm" style="flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${h(r.title)}">${h(r.title)}</span>
+                ${status}
+                <button class="btn sm" data-act="resView" data-id="${r.id}">${icon('eye', 13)} 打开学习</button>
+              </div>`;
+            }).join('')}
+          </div>`
+        // 空态：紧凑提示（学生端无上传权限，引导看别的知识点或去学习资源板块）
+        : `<div class="card-body" style="padding-top:4px">
+            <div class="note" style="margin:0">「${h(cur.name)}」暂无关联的学习资源——老师还未为该知识点发布资料，可到「学习资源」板块查看全部资料，或点击图谱其他知识点看看。</div>
+          </div>`;
+    }
+    return `<div class="card" style="margin-top:12px">
+      <div class="card-head" style="cursor:pointer" data-act="kgResToggle" title="${open ? '折叠' : '展开'}学习资源卡">
+        ${icon('layers', 15)}<h3>学习资源 · ${h(cur.name)}</h3>
+        <span class="badge">${loading ? '加载中…' : res.length + ' 个资源'}</span>
+        <div class="spacer"></div>
+        <span style="font-size:12px;color:var(--text-3)">${open ? '收起' : '展开'}</span>
+        <span class="icon-btn" style="width:26px;height:26px;transform:rotate(${open ? 0 : -90}deg);transition:transform .2s">${icon('chevronD', 15)}</span>
+      </div>
+      ${listHtml}
+    </div>`;
+  }
+
+  /* ---------------- 教师：知识图谱关联学习资源卡 ----------------
+     与学生端图谱下方的「依赖链溯源 + 最薄弱TOP3」区分：教师端仅展示
+     当前选中知识点关联的学习资源（资源 kpCodes 含该知识点编码），
+     未配置资源时明确提示「暂无学习资源」。 */
+  function kgTeacherResCard(cur) {
+    // 资源数据懒加载：教师端首次进入知识图谱时拉取（完成后 ensureResources 会触发重渲染）
+    if (DB.resources === null || DB.resources === undefined) {
+      return `<div class="card"><div class="card-head">${icon('layers', 15)}<h3>知识点学习资源 · ${h(cur.name)}</h3></div>
+        <div class="card-body">${skeleton()}</div></div>`;
+    }
+    if (DB.resLoadError) {
+      return `<div class="card"><div class="card-head">${icon('layers', 15)}<h3>知识点学习资源 · ${h(cur.name)}</h3></div>
+        <div class="card-body"><div class="empty"><div class="empty-title">学习资源加载失败</div>
+        <div class="empty-desc">${h(DB.resLoadError)}</div></div></div></div>`;
+    }
+    const res = (DB.resources || []).filter(r => (r.kpCodes || []).indexOf(cur.id) >= 0);
+    let resHtml;
+    if (!res.length) {
+      // 边界场景：该知识点尚未配置学习资源（含资源板块为空 / 均未关联此知识点）
+      resHtml = `<div class="empty" style="padding:40px 20px">
+        <div class="empty-ico">${icon('layers', 24)}</div>
+        <div class="empty-title">暂无学习资源</div>
+        <div class="empty-desc">「${h(cur.name)}」还没有关联的学习资源。可到「学习资源」板块上传 PPT、视频、文档等资源并在上传时关联该知识点，学生即可在此知识点下看到对应资料。</div>
+        <button class="btn primary sm" data-act="gotoResources" style="margin-top:10px">${icon('plus', 14)} 去上传学习资源</button>
+      </div>`;
+    } else {
+      resHtml = res.map(r => `<div class="card">
+        <div class="card-head">
+          <span class="badge brand">${resTypeLabel(r.fileType)}</span>
+          <h3>${h(r.title)}</h3><div class="spacer"></div>
+          <span class="badge ok">${icon('checkcircle', 12)} ${r.completedCount || 0} 人已学完</span>
+          <button class="btn sm ghost" data-act="resFile" data-id="${r.id}" title="预览/下载">${icon('eye', 14)}</button>
+        </div>
+        <div class="card-body">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+            <span class="badge">${h(r.fileName)}</span>
+            <span class="badge">${resSizeText(r.fileSize || 0)}</span>
+            <span class="badge">${h((r.createdAt || '').slice(0, 10))}</span>
+            ${(r.kpCodes || []).map(c => '<span class="badge brand" title="' + h(c) + '">' + h(kpName(c)) + '</span>').join('')}
+          </div>
+          ${r.aiSummary ? '<div class="note" style="margin:0">' + icon('sparkles', 13) + ' AI：' + h(r.aiSummary) + '</div>' : ''}
+        </div></div>`).join('');
+    }
+    return `<div class="card" style="margin-bottom:12px">
+      <div class="card-head">${icon('layers', 15)}<h3>知识点学习资源 · ${h(cur.name)}</h3><div class="spacer"></div>
+        <span class="badge">${res.length} 个资源</span>
+        <button class="btn sm ghost" data-act="gotoResources">${icon('grid', 13)} 查看全部资源</button></div>
+      <div class="card-body">
+        <div class="note" style="margin:0">当前选中的知识点为 <b>${h(cur.name)}</b>，下方展示关联到该知识点的学习资源；点击图谱其他节点可切换查看。</div>
+      </div></div>
+      ${resHtml}`;
   }
 
   // 图7原有功能（完整保留）：依赖链溯源卡 + 最薄弱 TOP3 卡
@@ -1977,11 +2091,12 @@
     const path = State.role === 'teacher' ? '/teacher/resources' : '/resources';
     API.get(path).then(list => {
       DB.resources = list || [];
-      if (State.section === 'resources') render();
+      // 知识图谱板块（教师端关联资源卡）同样依赖资源数据，加载完成后需重渲染
+      if (State.section === 'resources' || State.section === 'knowledge') render();
     }).catch(e => {
       DB.resources = [];
       DB.resLoadError = e.message;
-      if (State.section === 'resources') render();
+      if (State.section === 'resources' || State.section === 'knowledge') render();
     });
   }
 
@@ -4175,6 +4290,23 @@
       loadWithSkeleton();
       loadSubmissions(v);
     },
+    // 教师端知识图谱 → 学习资源板块（关联资源卡的「去上传 / 查看全部」入口）
+    gotoResources() { State.section = 'resources'; loadWithSkeleton(); },
+    // 学生端知识图谱·学习资源关联卡：折叠/展开（偏好持久化，重进页面保持上次状态）
+    kgResToggle() {
+      // 整窗 render() 会重建 .main-body 滚动容器（innerHTML 整体替换导致 scrollTop 归零），
+      // 表现为点击收起/展开后页面自动跳回顶部——渲染前记录位置、渲染后恢复（与 kpCell 同款修复）。
+      // 折叠/展开仅改变该卡自身高度，卡头位置不变，恢复原 scrollTop 即可停在操作位置。
+      const keepMain = document.querySelector('.main-body');
+      const keepTop = keepMain ? keepMain.scrollTop : 0;
+      State.kgResOpen = !kgResOpen();
+      try { localStorage.setItem('la-kg-res-open', State.kgResOpen ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
+      render();
+      if (keepTop > 0) {
+        const nb = document.querySelector('.main-body');
+        if (nb) nb.scrollTop = keepTop;
+      }
+    },
     settings() { State.modal = { type: 'settings', data: {} }; renderOverlays(); },
     accountSettings() {
       State.modal = { type: 'changePassword', data: { oldPwd: '', newPwd: '', newPwd2: '', busy: false } };
@@ -5995,7 +6127,8 @@
     const sideEl = $('#side');
     sideEl.innerHTML = renderSide();
     // 知识图谱视图已移除左侧「知识模块」面板：隐藏边栏，让图谱主区占满左侧释放的全部横向空间
-    sideEl.style.display = (State.role === 'student' && State.section === 'knowledge') ? 'none' : '';
+    // （学生端/教师端一致：图谱自带 kg-side 模块导航在主区内部）
+    sideEl.style.display = State.section === 'knowledge' ? 'none' : '';
     renderMain();
     renderCtx();
     renderOverlays();
