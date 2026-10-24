@@ -239,7 +239,7 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .mh-spacer { flex: 1; }
 .mh-actions { display: flex; align-items: center; gap: 6px; }
 .main-body { flex: 1; overflow-y: auto; min-height: 0; }
-.main-inner { max-width: 980px; margin: 0 auto; padding: 18px 20px 28px; }
+.main-inner { max-width: 980px; margin: 0 auto; padding: 20px 22px 30px; }
 /* 知识图谱视图：左侧「知识模块」面板移除后，解除宽度上限以占满全部横向空间 */
 .main-inner.kg-inner-wide { max-width: none; }
 
@@ -349,23 +349,30 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   transition: box-shadow .25s var(--ease), border-color .25s var(--ease);
 }
 .card:hover { box-shadow: 0 1px 2px rgba(29, 31, 39, .05), 0 6px 18px rgba(29, 31, 39, .06); }
-.card + .card { margin-top: 12px; }
+.card + .card { margin-top: 16px; }
+/* 栅格容器内的相邻卡豁免 margin-top（grid/split 自带 gap）：
+   此前该全局规则误伤 KPI 四卡与双栏卡——相邻卡被下推 16px，
+   表现为顶部错位、等高失效、间距疏密不均（本次看板间距错乱的真正根因） */
+.grid > .card, .grid > .card + .card,
+.split > .card, .split > .card + .card { margin-top: 0; }
 .card-head {
-  padding: 13px 16px; border-bottom: 1px solid var(--border-2);
+  padding: 14px 18px; border-bottom: 1px solid var(--border-2);
   display: flex; align-items: center; gap: 9px;
 }
 .card-head h3 { margin: 0; font-size: 14px; font-weight: 650; }
 .card-head .spacer { flex: 1; }
-.card-body { padding: 14px 16px; }
-.grid { display: grid; gap: 12px; }
+.card-body { padding: 16px 18px; }
+.grid { display: grid; gap: 16px; align-items: stretch; }
+/* 栅格内卡片严格等高（学情看板 KPI 四卡统一高度）：grid 拉伸 + 100% 高度双保险 */
+.grid > .card { height: 100%; }
 .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 
-.kpi { padding: 14px 16px; }
+.kpi { padding: 17px 20px; min-height: 112px; }
 .kpi-label { font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 6px; }
-.kpi-value { font-size: 25px; font-weight: 680; letter-spacing: -.5px; margin-top: 6px; }
-.kpi-delta { font-size: 12px; margin-top: 4px; color: var(--text-3); }
+.kpi-value { font-size: 26px; font-weight: 680; letter-spacing: -.5px; margin-top: 8px; }
+.kpi-delta { font-size: 12px; margin-top: 5px; color: var(--text-3); }
 .kpi-delta.up { color: var(--ok); }
 .kpi-delta.down { color: var(--danger); }
 
@@ -540,37 +547,82 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .result-box.bad { background: var(--danger-soft); border: 1px solid #f3d2ce; }
 .result-box h5 { margin: 0 0 6px; font-size: 13.5px; display: flex; align-items: center; gap: 6px; }
 
-.mini-list { display: flex; flex-direction: column; gap: 7px; }
+.mini-list { display: flex; flex-direction: column; gap: 9px; }
 .mini-row { display: flex; align-items: center; gap: 10px; font-size: 12.8px; }
 .mini-row .nm { width: 108px; flex: none; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini-row .bar { flex: 1; }
 .mini-row .vl { width: 42px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-2); font-weight: 600; }
 
-/* 快捷指令 + 输入区 */
-.composer-wrap { flex: none; border-top: 1px solid var(--border); background: var(--panel); padding: 10px 0 12px; }
-.composer-inner { max-width: 900px; margin: 0 auto; padding: 0 20px; }
-.quick-chips { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 9px; }
-.composer {
-  border: 1px solid var(--border); border-radius: var(--r-lg);
-  background: var(--panel); padding: 9px 10px 9px 13px;
-  display: flex; align-items: flex-end; gap: 8px;
-  transition: all .2s var(--ease); box-shadow: var(--sh-1);
+/* 快捷指令 + 输入区（最外层容器：蓝灰渐变填充圆角矩形，与消息区脱离形成独立底栏卡片） */
+.composer-wrap {
+  flex: none; margin: 8px 12px 10px;
+  background: linear-gradient(165deg, #eff2f7 0%, #e4e9f2 50%, #dbe2ee 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: 0 2px 10px rgba(90, 105, 140, .08);
+  padding: 10px 12px 12px;
 }
-.composer:focus-within { border-color: var(--brand-2); box-shadow: 0 0 0 3.5px var(--brand-soft), var(--sh-1); }
+.composer-inner { max-width: 880px; margin: 0 auto; padding: 0 12px; }
+.quick-chips { display: flex; gap: 7px; flex-wrap: wrap; margin-bottom: 9px; }
+/* 学生端学习会话·对话框外框：红橙渐变填充圆角矩形 + 立体质感
+   （仅视觉层，交互逻辑/布局尺寸/无障碍属性不变）
+   立体语言：外凸（inset 顶部受光高光 + 底部暗边厚度）+ 双层柔影托浮；
+   聚焦悬浮：轻上浮 1px + 光环增强 + 阴影扩远；按压/禁用态见下方 send 规则 */
+.composer {
+  border: 1px solid rgba(255, 143, 74, .35); border-radius: var(--r-lg);
+  background: linear-gradient(155deg, #f6533a 0%, #fb7433 52%, #ff8f4a 100%);
+  padding: 9px 10px 9px 13px;
+  display: flex; align-items: flex-end; gap: 8px;
+  transition: transform .25s var(--ease-out), box-shadow .25s var(--ease), border-color .25s var(--ease);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .28),
+    inset 0 -1px 0 rgba(150, 40, 10, .14),
+    0 2px 6px rgba(246, 83, 58, .20),
+    0 10px 24px rgba(120, 30, 10, .12);
+}
+.composer:focus-within {
+  border-color: rgba(255, 143, 74, .6);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .32),
+    inset 0 -1px 0 rgba(150, 40, 10, .14),
+    0 0 0 3.5px rgba(255, 143, 74, .26),
+    0 6px 14px rgba(246, 83, 58, .22),
+    0 16px 36px rgba(120, 30, 10, .15);
+}
 .composer textarea {
   flex: 1; border: none; outline: none; resize: none;
   max-height: 132px; min-height: 22px; line-height: 1.6; font-size: 13.5px; background: none;
+  color: #fff;
 }
+.composer textarea::placeholder { color: rgba(255, 255, 255, .78); }
 .composer .send {
   width: 32px; height: 32px; border-radius: var(--r); flex: none;
-  background: linear-gradient(155deg, var(--brand-2), var(--brand)); color: #fff;
+  background: #ffffff; color: #f6533a;
   display: flex; align-items: center; justify-content: center;
-  transition: all .2s var(--ease);
-  box-shadow: 0 2px 8px rgba(90, 95, 212, .28), inset 0 1px 0 rgba(255, 255, 255, .18);
+  transition: transform .18s var(--ease-out), box-shadow .18s var(--ease), filter .18s var(--ease);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .95),
+    inset 0 -1px 0 rgba(120, 30, 10, .08),
+    0 2px 6px rgba(120, 30, 10, .20);
 }
-.composer .send:hover { filter: brightness(1.05); box-shadow: 0 4px 12px rgba(90, 95, 212, .36); }
-.composer .send:active { transform: scale(.93); }
-.composer .send:disabled { background: var(--panel-3); color: var(--text-3); cursor: not-allowed; box-shadow: none; }
+.composer .send:hover {
+  filter: brightness(.97);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .95),
+    inset 0 -1px 0 rgba(120, 30, 10, .08),
+    0 4px 10px rgba(120, 30, 10, .24);
+}
+.composer .send:active {
+  transform: scale(.93);
+  box-shadow:
+    inset 0 2px 4px rgba(120, 30, 10, .18),
+    0 1px 2px rgba(120, 30, 10, .10);
+}
+.composer .send:disabled {
+  background: rgba(255, 255, 255, .38); color: rgba(255, 255, 255, .85); cursor: not-allowed;
+  box-shadow: inset 0 1px 2px rgba(120, 30, 10, .10);
+}
 .composer-tip { font-size: 11.5px; color: var(--text-3); margin-top: 6px; display: flex; align-items: center; gap: 5px; }
 
 /* ---------------- 知识图谱 ---------------- */
@@ -744,7 +796,99 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .spark { display: flex; align-items: flex-end; gap: 3px; height: 26px; }
 .spark i { width: 5px; border-radius: 2px 2px 0 0; background: var(--brand-2); display: block; }
 
-.split { display: grid; grid-template-columns: 1fr 320px; gap: 14px; }
+/* 同行双卡（卡点 TOP6 | 重点关注学生）严格等高：stretch + 100% 双保险，内容再悬殊也对齐 */
+.split { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: stretch; }
+.split > .card { height: 100%; }
+/* 双栏卡内行距彻底统一：两卡数据行无论有无 .mini-list 容器包裹，
+   行距一律 = padding 10px 上下相接 = 20px（学生行原无容器 gap、靠内联 7px 相接，
+   TOP6 行原 9px gap+12px padding，疏密不一致的根因在此，现统一为同一公式） */
+.split .card .mini-list { gap: 0; }
+.split .card .mini-row { padding: 10px 0 !important; }
+/* 学情看板等页面：KPI 行(grid)与下方双栏区(split)、split 与后续卡片之间的垂直节奏 */
+.main-inner > .grid + .split { margin-top: 16px; }
+.main-inner > .split + .card { margin-top: 16px; }
+/* KPI 栅格行与其后直接卡片之间的垂直节奏（学生报告·学习概览等页面） */
+.main-inner > .grid + .card { margin-top: 16px; }
+
+/* ---- 学情看板七卡固定配色（红橙黄绿青蓝紫 · 低饱和浅色系）----
+   作用域：以 :has() 结构特征精确锁定学情看板（main-inner 直接子级为 grid-4 紧跟
+   split 再跟卡片，学生报告页/知识图谱页同结构元素不受影响）；
+   旧浏览器不支持 :has() 时自动降级为无配色，不破坏任何布局。
+   背景亮度均 ≥93%，深色正文对比度 >10:1、次级文字 ≥3:1，符合可读性要求。
+   ①红=班级人数 ②橙=平均掌握度 ③黄=作业提交率 ④绿=待处理预警
+   ⑤青=卡点TOP6 ⑥蓝=重点关注学生 ⑦紫=学情Agent */
+.main-inner:has(> .grid-4 + .split + .card) > .grid-4 > .card:nth-child(1) { background: #fdf0ef; } /* 红 */
+.main-inner:has(> .grid-4 + .split + .card) > .grid-4 > .card:nth-child(2) { background: #fdf3e9; } /* 橙 */
+.main-inner:has(> .grid-4 + .split + .card) > .grid-4 > .card:nth-child(3) { background: #fdf9e8; } /* 黄 */
+.main-inner:has(> .grid-4 + .split + .card) > .grid-4 > .card:nth-child(4) { background: #eef8f0; } /* 绿 */
+.main-inner:has(> .grid-4 + .split + .card) > .split > .card:nth-child(1) { background: #ecf7f8; }   /* 青 */
+.main-inner:has(> .grid-4 + .split + .card) > .split > .card:nth-child(2) { background: #eaf2fb; }   /* 蓝 */
+.main-inner:has(> .grid-4 + .split + .card) > .split + .card { background: #f5f1fb; }                /* 紫 */
+
+/* ---- 学情看板七卡立体感增强（三态阴影 + 左上光源 + 微 3D 交互）----
+   常态：浅彩底上叠一层左上白色高光渐变（模拟左上光源照射），配三层柔影（近距定形/中距环境/远距托浮）；
+   hover：Z 轴浮起 4px + 微透视旋转（迎光微倾），阴影同步加深扩远，悬浮质感；
+   点击：轻按压回落收紧，即时反馈。3D/悬停增强仅在支持 hover 的精确指针设备启用，
+   触屏降级为轻按压（避免 hover 粘滞）；transform 纯视觉不参与布局，等高规则不受影响。 */
+.main-inner:has(> .grid-4 + .split + .card) > .grid-4 > .card,
+.main-inner:has(> .grid-4 + .split + .card) > .split > .card,
+.main-inner:has(> .grid-4 + .split + .card) > .split + .card {
+  background-image: radial-gradient(130% 90% at 18% -8%, rgba(255, 255, 255, .8), rgba(255, 255, 255, 0) 55%);
+  box-shadow:
+    0 1px 2px rgba(29, 31, 39, .05),
+    0 4px 10px rgba(29, 31, 39, .06),
+    0 14px 32px rgba(29, 31, 39, .08);
+  transition: transform .28s var(--ease-out), box-shadow .28s var(--ease);
+}
+.main-inner:has(> .grid-4 + .split + .card) > .grid-4 > .card:active,
+.main-inner:has(> .grid-4 + .split + .card) > .split > .card:active,
+.main-inner:has(> .grid-4 + .split + .card) > .split + .card:active {
+  transform: perspective(900px) translateY(-1px) scale(.98);
+  box-shadow: 0 1px 2px rgba(29, 31, 39, .06), 0 3px 8px rgba(29, 31, 39, .07);
+  transition-duration: .1s;
+}
+@media (hover: hover) and (pointer: fine) {
+  .main-inner:has(> .grid-4 + .split + .card) > .grid-4 > .card:hover,
+  .main-inner:has(> .grid-4 + .split + .card) > .split > .card:hover,
+  .main-inner:has(> .grid-4 + .split + .card) > .split + .card:hover {
+    transform: perspective(900px) translateY(-4px) rotateX(1.4deg) rotateY(-.7deg);
+    box-shadow:
+      0 2px 4px rgba(29, 31, 39, .05),
+      0 10px 22px rgba(29, 31, 39, .08),
+      0 24px 52px rgba(29, 31, 39, .13);
+  }
+}
+
+/* ---- 学生端「画像与报告 · 学习概览」卡片立体效果 ----
+   与教师端学情看板完全一致的三态视觉（常态柔影+左上光源 / hover 微 3D 浮起 / 点击按压）。
+   作用域 :has(> .grid-4 + .card)：KPI 栅格行后直接跟卡片是学习概览独有结构特征
+   （教师看板为 grid-4 + split，报告其他 tab 无此结构），互不干扰；
+   间距沿用全局规范（栅格 gap 16px、相邻卡 16px、栅格行与后续卡 16px）。 */
+.main-inner:has(> .grid-4 + .card) > .grid-4 > .card,
+.main-inner:has(> .grid-4 + .card) > .card {
+  background-image: radial-gradient(130% 90% at 18% -8%, rgba(255, 255, 255, .8), rgba(255, 255, 255, 0) 55%);
+  box-shadow:
+    0 1px 2px rgba(29, 31, 39, .05),
+    0 4px 10px rgba(29, 31, 39, .06),
+    0 14px 32px rgba(29, 31, 39, .08);
+  transition: transform .28s var(--ease-out), box-shadow .28s var(--ease);
+}
+.main-inner:has(> .grid-4 + .card) > .grid-4 > .card:active,
+.main-inner:has(> .grid-4 + .card) > .card:active {
+  transform: perspective(900px) translateY(-1px) scale(.98);
+  box-shadow: 0 1px 2px rgba(29, 31, 39, .06), 0 3px 8px rgba(29, 31, 39, .07);
+  transition-duration: .1s;
+}
+@media (hover: hover) and (pointer: fine) {
+  .main-inner:has(> .grid-4 + .card) > .grid-4 > .card:hover,
+  .main-inner:has(> .grid-4 + .card) > .card:hover {
+    transform: perspective(900px) translateY(-4px) rotateX(1.4deg) rotateY(-.7deg);
+    box-shadow:
+      0 2px 4px rgba(29, 31, 39, .05),
+      0 10px 22px rgba(29, 31, 39, .08),
+      0 24px 52px rgba(29, 31, 39, .13);
+  }
+}
 @media (max-width: 1280px) { .split { grid-template-columns: 1fr; } }
 @media (max-width: 1100px) { .grid-4 { grid-template-columns: repeat(2, minmax(0,1fr)); } .ctx { width: 280px; } }
 
