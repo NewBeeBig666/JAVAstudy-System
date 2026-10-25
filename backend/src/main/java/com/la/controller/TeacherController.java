@@ -14,6 +14,7 @@ import com.la.service.ComposeAiService;
 import com.la.service.ComposeImportService;
 import com.la.service.GradingService;
 import com.la.service.TeacherService;
+import com.la.service.TeacherAssistantService;
 import com.la.service.ClassImportService;
 import com.la.service.ScoreExportService;
 import com.la.service.SubmissionExportService;
@@ -51,6 +52,7 @@ public class TeacherController {
     private final ClassImportService classImportService;
     private final ScoreExportService scoreExportService;
     private final SubmissionExportService submissionExportService;
+    private final TeacherAssistantService teacherAssistantService;
 
     @Operation(summary = "上传 Excel/Word 名单批量添加班级（.xlsx/.xls/.docx/.doc）")
     @PostMapping(value = "/classes/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -262,6 +264,19 @@ public class TeacherController {
     public ApiResponse<Map<String, Object>> runInsight(@RequestParam(required = false) Long classId) {
         return ApiResponse.ok(teacherService.runInsight(CurrentUser.id(),
                 classId != null ? classId : defaultClassId()));
+    }
+
+    /** 右侧栏「智能助手」：DeepSeek 多轮对话（前端持有历史，每次回传最近若干轮） */
+    @Operation(summary = "智能助手对话（注入班级学情上下文）")
+    @PostMapping("/assistant")
+    public ApiResponse<Map<String, Object>> assistant(@RequestBody AssistantRequest req) {
+        return ApiResponse.ok(teacherAssistantService.chat(CurrentUser.id(), defaultClassId(), req.getMessages()));
+    }
+
+    @Data
+    public static class AssistantRequest {
+        /** [{role: "user"|"assistant", content: "..."}]，按时间升序，末条为本次提问 */
+        private List<Map<String, String>> messages;
     }
 
     private Long defaultClassId() {

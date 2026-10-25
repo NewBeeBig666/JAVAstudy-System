@@ -9,13 +9,12 @@
   const MOCK = window.MOCK;
   let DB;
 
-  /* 初始化空 DB：静态展示数据（agents/快捷指令/片段）仍来自 mock-data.js */
+  /* 初始化空 DB：静态展示数据（agents/快捷指令）仍来自 mock-data.js */
   function initDB(me) {
     DB = {
       me: me || {},
       agents: MOCK.agents,
       quickPrompts: MOCK.quickPrompts,
-      snippets: MOCK.snippets,
       modules: [],
       knowledgePoints: [],
       sessions: [],
@@ -190,7 +189,6 @@
     section: 'chat',
     sessionId: 'se-1',
     rightOpen: true,
-    rightTab: 'knowledge',
     loading: false,
     booting: true,
     draft: '',
@@ -205,6 +203,7 @@
     answer: null,
     grading: null,
     gradingDrafts: {},
+    assistant: null,
     quizReply: {},
     quizDone: {},
     insight: null,
@@ -2376,49 +2375,117 @@
    * =========================================================== */
   function renderCtx() {
     const box = $('#ctx');
+    // 教师端右侧栏：智能助手（DeepSeek 对话）；
+    // 学生端差异化配置：学习会话页完整保留「知识点」模块（交互/样式/数据规则不变），
+    // 其余页面统一展示「智能助手」（学生学习伙伴版）
+    if (State.role === 'teacher') { renderAssistantCtx(box); return; }
+    if (State.section !== 'chat') { renderAssistantCtx(box); return; }
     if (!State.rightOpen) {
       box.className = 'ctx collapsed';
-      box.innerHTML = '<div class="ctx-rail">' +
-        [['knowledge', 'target'], ['homework', 'clipboard'], ['code', 'code']].map(t =>
-          `<button class="icon-btn ${State.rightTab === t[0] ? 'active' : ''}" data-act="ctxTab" data-val="${t[0]}" title="${t[0]}">${icon(t[1], 17)}</button>`
-        ).join('') + '</div>';
+      box.innerHTML = `<div class="ctx-rail">
+        <button class="icon-btn active" data-act="toggleCtx" title="知识点">${icon('target', 17)}</button>
+      </div>`;
       return;
     }
     box.className = 'ctx';
-    const tabs = [
-      ['knowledge', '知识点', 'target'],
-      ['homework', '作业', 'clipboard'],
-      ['code', '代码片段', 'code']
-    ];
-    let inner = '';
-    if (State.rightTab === 'knowledge') inner = ctxKnowledge();
-    else if (State.rightTab === 'homework') inner = ctxHomework();
-    else inner = ctxCode();
-
     box.innerHTML = `<div class="ctx-head">
-        <div class="ctx-tabs">${tabs.map(t => `<button class="ctx-tab ${State.rightTab === t[0] ? 'on' : ''}" data-act="ctxTab" data-val="${t[0]}">${icon(t[2], 14)}${t[1]}</button>`).join('')}</div>
+        <span class="ctx-title">${icon('target', 15)} 知识点</span>
+        <div class="spacer"></div>
         <button class="icon-btn" data-act="toggleCtx" title="折叠">${icon('chevronR', 16)}</button>
       </div>
-      <div class="ctx-body">${inner}</div>`;
+      <div class="ctx-body">${ctxKnowledge()}</div>`;
+  }
+
+  /* ---------------- 右侧栏 · 智能助手（TRAE IDE 风格，教师/学生双态） ----------------
+     收起态：单图标 rail（点击展开，复用 toggleCtx，宽度过渡等基础交互保留）；
+     展开态：标题栏（助手名 + DeepSeek 徽章 + 新对话 + 折叠）+ 消息流 + 快捷建议 + 输入区。
+     对话历史存前端 State.assistant（刷新清空，轻量定位）；
+     教师版注入班级学情上下文；学生版注入本人学情、遵循引导式学习（不代写作业）。
+     学生端仅在学习会话页以外的页面展示（会话页保留「知识点」模块）。 */
+  const ASA_CFG = {
+    teacher: {
+      url: '/teacher/assistant',
+      welcome: '基于 DeepSeek 与你班级的实时学情，回答教学问题、分析学情并给出建议。',
+      tip: 'Enter 发送 · Shift+Enter 换行 · 结合班级实时学情回答',
+      placeholder: '输入问题，Enter 发送…',
+      quicks: [
+        '分析班级学情，给出本周教学建议',
+        '哪些知识点需要重点讲解？',
+        'Java 面向对象怎么讲更易懂？',
+        '帮我设计一道数组与循环的练习题'
+      ]
+    },
+    student: {
+      url: '/student/assistant',
+      welcome: '你的 Java 学习伙伴：结合你的掌握度数据答疑、讲知识点、推荐练习。提问作业题会先给思路提示，引导你完成。',
+      tip: 'Enter 发送 · Shift+Enter 换行 · 结合你的学情 · 引导学习不代写',
+      placeholder: '输入问题，Enter 发送…',
+      quicks: [
+        '帮我分析薄弱知识点，怎么补？',
+        '给我制定本周的学习计划',
+        '用简单例子讲讲面向对象',
+        '推荐几道数组与循环的练习题'
+      ]
+    }
+  };
+  const asaCfg = () => ASA_CFG[State.role] || ASA_CFG.student;
+  // 「DeepSeek」品牌徽章展示开关（教师/学生两端统一）：false=默认不渲染，需要展示时改为 true
+  const ASA_SHOW_BRAND = false;
+  function asaState() {
+    if (!State.assistant) State.assistant = { messages: [], input: '', busy: false };
+    return State.assistant;
+  }
+  function renderAssistantCtx(box) {
+    const a = asaState();
+    const cfg = asaCfg();
+    if (!State.rightOpen) {
+      box.className = 'ctx collapsed';
+      box.innerHTML = `<div class="ctx-rail">
+        <button class="icon-btn ${a.busy ? 'active' : ''}" data-act="toggleCtx" title="智能助手">${icon('sparkles', 17)}</button>
+      </div>`;
+      return;
+    }
+    box.className = 'ctx';
+    const msgs = a.messages;
+    let flow = '';
+    if (!msgs.length) {
+      // 欢迎空态：介绍 + 快捷建议（点击填入输入框）
+      flow = `<div class="asa-welcome">
+          <div class="asa-welcome-ico">${icon('sparkles', 22)}</div>
+          <div class="asa-welcome-title">智能助手</div>
+          <div class="asa-welcome-desc">${cfg.welcome}</div>
+          <div class="asa-chips">${cfg.quicks.map(q => `<button class="asa-chip" data-act="assistantQuick" data-val="${h(q)}">${icon('sparkles', 12)} ${h(q)}</button>`).join('')}</div>
+        </div>`;
+    } else {
+      flow = msgs.map(m => m.role === 'user'
+        ? `<div class="asa-msg user"><div class="asa-bubble-user">${h(m.content)}</div></div>`
+        : `<div class="asa-msg ai"><div class="asa-bubble-ai">${md(m.content)}</div></div>`
+      ).join('');
+      if (a.busy) flow += `<div class="asa-msg ai"><div class="asa-bubble-ai"><span class="typing"><i></i><i></i><i></i></span></div></div>`;
+    }
+    box.innerHTML = `<div class="ctx-head asa-head">
+        <span class="asa-title">${icon('sparkles', 15)} 智能助手</span>
+        ${ASA_SHOW_BRAND ? '<span class="badge brand" style="font-size:10.5px">DeepSeek</span>' : ''}
+        <div class="spacer"></div>
+        <button class="icon-btn" data-act="assistantNew" title="开始新对话">${icon('refresh', 15)}</button>
+        <button class="icon-btn" data-act="toggleCtx" title="折叠">${icon('chevronR', 16)}</button>
+      </div>
+      <div class="asa-body" id="asaMsgs">${flow}</div>
+      <div class="asa-input-wrap">
+        <div class="asa-composer">
+          <textarea id="asaInput" data-bind="assistant" placeholder="${h(cfg.placeholder)}">${h(a.input || '')}</textarea>
+          <button class="asa-send" data-act="assistantSend" ${a.busy ? 'disabled' : ''} title="发送">${icon('send', 15)}</button>
+        </div>
+        <div class="asa-tip">${cfg.tip}</div>
+      </div>`;
+    // 消息流滚底（新消息始终落入可视区域）
+    const body = document.getElementById('asaMsgs');
+    if (body) body.scrollTop = body.scrollHeight;
+    const ta = document.getElementById('asaInput');
+    if (ta) { ta.disabled = a.busy; autoGrow(ta); }
   }
 
   function ctxKnowledge() {
-    if (State.role === 'teacher') {
-      const sel = DB.students.find(s => s.id === State.activeStudent);
-      return `<div class="ctx-card"><h4>班级卡点知识点</h4>
-        ${DB.classStuckPoints.slice(0, 5).map(p => `<div class="mini-row" style="padding:4px 0">
-          <span class="nm">${p.name}</span>
-          <div class="bar ${bcls(p.avg)}"><i style="width:${p.avg}%"></i></div>
-          <span class="vl">${p.avg}</span></div>`).join('')}
-      </div>
-      ${sel ? `<div class="ctx-card"><h4>当前学生</h4>
-        <div class="ctx-kv"><span>姓名</span><span>${sel.name}</span></div>
-        <div class="ctx-kv"><span>平均掌握度</span><span>${sel.mastery}</span></div>
-        <div class="ctx-kv"><span>提交率</span><span>${sel.submitRate}%</span></div>
-        <div class="ctx-kv"><span>连续未登录</span><span>${sel.absDays} 天</span></div>
-        <div class="ctx-kv"><span>薄弱点</span><span>${sel.weak.map(kpName).join('、') || '—'}</span></div>
-      </div>` : '<div class="ctx-card"><h4>当前学生</h4><div style="font-size:12.5px;color:var(--text-3)">在「班级学生」或「预警中心」中选择一名学生查看档案。</div></div>'}`;
-    }
     const s = session();
     const id = s ? s.kp : State.activeKp;
     const k = kp(id);
@@ -2443,67 +2510,6 @@
     </div>` : ''}
     <div class="ctx-card"><h4>参考资源</h4>
       ${(k.resources || []).map(r => '<div style="font-size:12.5px;padding:3px 0;color:var(--info)">· ' + h(r) + '</div>').join('') || '<div style="font-size:12.5px;color:var(--text-3)">暂无</div>'}
-    </div>`;
-  }
-
-  function ctxHomework() {
-    if (State.role === 'teacher') {
-      const a = DB.assignments.find(x => x.id === State.filters.subAs) || DB.assignments[0];
-      if (!a) {
-        return '<div class="ctx-card"><h4>当前作业</h4><div style="font-size:12.5px;color:var(--text-3)">还没有作业，发布后这里会显示作业详情与 Rubric 评分标准。</div></div>';
-      }
-      return `<div class="ctx-card"><h4>当前作业</h4>
-        <div style="font-size:13.5px;font-weight:650;margin-bottom:6px">${h(a.title)}</div>
-        <div class="ctx-kv"><span>状态</span><span>${a.status === 'draft' ? '草稿' : a.status === 'ongoing' ? '进行中' : '已截止'}</span></div>
-        <div class="ctx-kv"><span>截止</span><span>${h(a.due)}</span></div>
-        <div class="ctx-kv"><span>提交</span><span>${a.submitted}/${a.total}</span></div>
-      </div>
-      <div class="ctx-card"><h4>Rubric 评分标准</h4>
-        ${a.rubric.map(r => `<div class="ctx-kv"><span>${h(r.name)}</span><span>${r.max} 分</span></div>`).join('')}
-        <div class="note" style="margin-top:10px">评分任务锁定固定模型版本、Temperature=0，Prompt 模板快照可回溯审计。</div>
-      </div>`;
-    }
-    const list = DB.assignments.filter(a => a.status !== 'draft');
-    const a = list.find(x => homeworkStatusOf(x.id).key !== 'graded') || list[0];
-    if (!a) return '<div class="ctx-card"><h4>作业</h4><div style="font-size:12.5px;color:var(--text-3)">教师还没有发布作业。</div></div>';
-    const st = homeworkStatusOf(a.id);
-    const sub = subOf(a.id);
-    return `<div class="ctx-card"><h4>当前作业</h4>
-      <div style="font-size:13.5px;font-weight:650;margin-bottom:6px">${h(a.title)}</div>
-      <div class="ctx-kv"><span>状态</span><span class="badge ${st.cls}">${st.label}</span></div>
-      <div class="ctx-kv"><span>截止</span><span>${h(a.due)}</span></div>
-      <div class="ctx-kv"><span>知识点</span><span style="text-align:right">${a.kp.map(kpName).join('、')}</span></div>
-      ${st.key === 'graded' && sub ? `<div class="ctx-kv"><span>得分</span><span style="font-weight:700;color:var(--brand)">${sub.score}/100</span></div>
-        <div class="ctx-kv"><span>批改人</span><span>${DB.teacher.name}</span></div>` : ''}
-    </div>
-    <div class="ctx-card"><h4>Rubric 评分标准</h4>
-      ${a.rubric.map(r => `<div class="ctx-kv"><span>${h(r.name)}</span>
-        <span>${sub && sub.rubricScores ? (sub.rubricScores[r.name] || 0) + '/' + r.max : '—/' + r.max}</span></div>`).join('')}
-    </div>
-    <div class="ctx-card"><h4>提交要求</h4>
-      <div style="font-size:12.5px;color:var(--text-2);line-height:1.65">${h(a.desc)}</div>
-    </div>`;
-  }
-
-  function ctxCode() {
-    if (State.role === 'teacher' && State.drawer) {
-      const s = DB.submissions.find(x => x.id === State.drawer.subId);
-      if (s) return `<div class="ctx-card"><h4>正在批改 · ${s.name}</h4>
-        <div class="ctx-kv"><span>相似度</span><span style="color:${s.similarity > 60 ? 'var(--danger)' : 'var(--text)'}">${s.similarity}%</span></div>
-        <div class="ctx-kv"><span>提交次数</span><span>${s.attempts}</span></div>
-        <div class="ctx-kv"><span>AI 初评</span><span>${s.aiScore != null ? s.aiScore : '—'}</span></div>
-        <pre class="code-block" style="margin-top:10px;font-size:11.5px;max-height:280px">${h(s.code || '（未提交）')}</pre>
-      </div>`;
-    }
-    return `<div class="ctx-card"><h4>上下文代码片段</h4>
-      <div style="font-size:12px;color:var(--text-3);margin-bottom:10px">随会话与作业自动收集，点击可展开查看</div>
-      ${DB.snippets.map(sn => `<div style="margin-bottom:12px;cursor:pointer" data-act="snip" data-val="${sn.id}">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-          <span class="badge info">${sn.lang}</span>
-          <span style="font-size:12.5px;font-weight:600">${h(sn.title)}</span></div>
-        <div style="font-size:11.5px;color:var(--text-3);margin-bottom:6px">${h(sn.from)}</div>
-        <pre class="code-block" style="font-size:11.5px">${h(sn.code)}</pre>
-      </div>`).join('')}
     </div>`;
   }
 
@@ -4275,7 +4281,44 @@
     },
     logout() { Auth.logout(); },
     toggleCtx() { State.rightOpen = !State.rightOpen; renderCtx(); },
-    ctxTab(v) { State.rightTab = v; State.rightOpen = true; renderCtx(); },
+    /* --- 教师端·智能助手（右侧栏 DeepSeek 对话） --- */
+    async assistantSend() {
+      const a = asaState();
+      if (a.busy) return;
+      const q = (a.input || '').trim();
+      if (!q) { toast('请输入你的问题'); return; }
+      a.messages.push({ role: 'user', content: q });
+      a.input = '';
+      a.busy = true;
+      renderCtx();
+      try {
+        // api.js 默认 120s 超时兜底 > 后端 DeepSeek read-timeout 90s；
+        // URL 按角色分流（教师=班级学情版 / 学生=本人学情·引导式学习版）
+        const r = await API.post(asaCfg().url, { messages: a.messages });
+        a.messages.push({ role: 'assistant', content: (r && r.reply) || '（未返回内容）' });
+      } catch (e) {
+        // 失败移除本次提问（保留干净历史），教师可直接重发
+        a.messages.pop();
+        toast('智能助手回答失败：' + e.message);
+      }
+      a.busy = false;
+      renderCtx();
+    },
+    assistantNew() {
+      const a = asaState();
+      if (a.busy) { toast('正在回答中，请稍候'); return; }
+      a.messages = []; a.input = '';
+      renderCtx();
+    },
+    // 快捷建议：填入输入框并聚焦（教师可修改后再发送）
+    assistantQuick(v) {
+      const a = asaState();
+      if (a.busy) return;
+      a.input = v || '';
+      renderCtx();
+      const ta = document.getElementById('asaInput');
+      if (ta) { ta.focus(); ta.selectionStart = ta.value.length; }
+    },
     gotoChat() { State.section = 'chat'; loadWithSkeleton(); },
     gotoHw() {
       State.section = 'homework';
@@ -4587,7 +4630,7 @@
     },
     stepClick(v) {
       const s = session(); if (!s) return;
-      State.rightTab = 'knowledge'; State.rightOpen = true;
+      State.rightOpen = true;
       renderCtx();
     },
     quick(v) {
@@ -4644,7 +4687,6 @@
       m.card.revealed = Math.min(3, (m.card.revealed || 0) + 1);
       render();
     },
-    snip() { /* 展示型，无需动作 */ },
 
     /* --- 学生：作业 --- */
     hwFilter(v) { State.filters.hw = v; render(); },
@@ -4668,7 +4710,7 @@
       const keepMain = document.querySelector('.main-body');
       const keepTop = keepMain ? keepMain.scrollTop : 0;
       State.activeKp = v;
-      State.rightTab = 'knowledge'; State.rightOpen = true;
+      State.rightOpen = true;
       render();
       if (keepMain) {
         const nb = document.querySelector('.main-body');
@@ -4749,7 +4791,6 @@
     focusHw(v) {
       State.filters.hw = 'all';
       State.focusHwId = v;
-      State.rightTab = 'homework'; State.rightOpen = true;
       render();
       setTimeout(() => {
         const el = document.getElementById('hw-' + v);
@@ -5256,7 +5297,7 @@
       const keepSide = State.section === 'students' ? document.querySelector('.side-body') : null;
       const keepTop = keepSide ? keepSide.scrollTop : 0;
       State.activeStudent = v;
-      State.rightTab = 'knowledge'; State.rightOpen = true;
+      State.rightOpen = true;
       if (State.section !== 'students') { State.section = 'students'; }
       render();
       if (keepSide) {
@@ -6318,6 +6359,10 @@
     const t = e.target, b = t.dataset.bind;
     if (!b) return;
     if (b === 'draft') { State.draft = t.value; autoGrow(t); }
+    else if (b === 'assistant') {
+      // 教师端智能助手输入：仅更新 State 不重渲染（输入过程不丢焦点）
+      const a = asaState(); a.input = t.value; autoGrow(t);
+    }
     else if (b === 'kgq') {
       // 知识图谱搜索：仅局部刷新结果列表，不整页重渲染（避免输入丢焦点）
       State.kgQ = t.value;
@@ -6552,6 +6597,11 @@
     if (e.target.id === 'composerInput' && e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       Actions.send();
+    }
+    // 教师端智能助手输入框：Enter 发送、Shift+Enter 换行
+    if (e.target.id === 'asaInput' && e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      Actions.assistantSend();
     }
   });
 

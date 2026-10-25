@@ -19,9 +19,9 @@ async function api(method, p, { token, body } = {}) {
   const tToken = await api('POST', '/auth/login', { body: { username: 'teacher', password: '123456' } }).then(r => r.token);
   const sToken = await api('POST', '/auth/login', { body: { username: 'student', password: '123456' } }).then(r => r.token);
 
-  const subs = await api('GET', '/teacher/assignments/34/submissions', { token: tToken });
+  const subs = await api('GET', '/teacher/assignments/35/submissions', { token: tToken });
   const target = subs.find(s => s.status === 'ai_reviewed');
-  if (!target) throw new Error('未找到 ai_reviewed 提交（前面 E2E 已跑过 AI 初评）');
+  if (!target) throw new Error('未找到 ai_reviewed 提交（先跑 lab-e2e-test.mjs 生成 AI 初评）');
   console.log('[1] 提交状态 ai_reviewed, aiScore=' + target.aiScore);
 
   // 教师复核后发布：总分 85 + 评语
@@ -33,7 +33,7 @@ async function api(method, p, { token, body } = {}) {
 
   // 学生端确认
   const my = await api('GET', '/assignments/my', { token: sToken });
-  const a = my.find(x => x.id === '34');
+  const a = my.find(x => x.id === '35');
   const sub = a && a.mySubmission;
   if (!sub || sub.status !== 'graded') throw new Error('学生端状态异常: ' + JSON.stringify(sub && sub.status));
   if (sub.score !== 85) throw new Error('学生端分数异常: ' + sub.score);

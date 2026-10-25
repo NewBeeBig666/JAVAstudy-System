@@ -50,6 +50,7 @@ public class SecurityConfig {
                             "/actuator/health"
                     ).permitAll()
                     .requestMatchers("/api/teacher/**").hasRole("TEACHER")
+                    .requestMatchers("/api/student/**").hasRole("STUDENT")
                     .requestMatchers("/api/**").authenticated()
                     .anyRequest().permitAll())
             .exceptionHandling(ex -> ex
