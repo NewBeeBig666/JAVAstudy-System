@@ -744,6 +744,12 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   display: flex; flex-direction: column; overflow: hidden;
   animation: pop .24s var(--ease-out);
 }
+/* 学习资源在线预览：加宽容器（视频/PDF/文档文本阅读体验），窄屏自动回落 max-width */
+.modal.wide { width: 760px; }
+@media (max-width: 820px) {
+  .modal.wide { width: 100%; }
+  .modal.wide .modal-body { padding: 12px; }
+}
 @keyframes pop { from { transform: translateY(14px) scale(.975); opacity: .55; } to { transform: none; opacity: 1; } }
 .modal-head { padding: 15px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 9px; }
 .modal-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
@@ -886,6 +892,23 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
    TOP6 行原 9px gap+12px padding，疏密不一致的根因在此，现统一为同一公式） */
 .split .card .mini-list { gap: 0; }
 .split .card .mini-row { padding: 10px 0 !important; }
+/* ---- 学生端知识图谱底部三卡并排（学情卡 | 学习资源卡 | 最薄弱TOP3）----
+   三卡同一水平线、学情卡与资源卡等宽（三等分列），缩短原学情卡在全宽容器下的横向长度；
+   stretch 等高保证三卡底边严格对齐；min-width:0 + 标题省略号防窄列内容溢出 */
+.split.kg-bottom-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.split.kg-bottom-3 > .card { min-width: 0; }
+.split.kg-bottom-3 > .card > .card-head h3 {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 响应式回落：中屏两列（TOP3 跨两列回到底行），窄屏单列堆叠 */
+@media (max-width: 1280px) {
+  .split.kg-bottom-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .split.kg-bottom-3 > .card:nth-child(3) { grid-column: 1 / -1; }
+}
+@media (max-width: 760px) {
+  .split.kg-bottom-3 { grid-template-columns: minmax(0, 1fr); }
+  .split.kg-bottom-3 > .card:nth-child(3) { grid-column: auto; }
+}
 /* 学情看板等页面：KPI 行(grid)与下方双栏区(split)、split 与后续卡片之间的垂直节奏 */
 .main-inner > .grid + .split { margin-top: 16px; }
 .main-inner > .split + .card { margin-top: 16px; }

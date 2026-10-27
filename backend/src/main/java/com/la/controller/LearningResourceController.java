@@ -9,6 +9,7 @@ import com.la.exception.BizException;
 import com.la.mapper.ClassMapper;
 import com.la.mapper.UserMapper;
 import com.la.security.CurrentUser;
+import com.la.service.ResourceAiService;
 import com.la.service.ResourceService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -24,6 +25,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -38,6 +40,7 @@ import java.util.Map;
 public class LearningResourceController {
 
     private final ResourceService resourceService;
+    private final ResourceAiService resourceAiService;
     private final UserMapper userMapper;
     private final ClassMapper classMapper;
 
@@ -130,6 +133,19 @@ public class LearningResourceController {
         } catch (IOException e) {
             throw new BizException("文件读取失败，请稍后重试");
         }
+    }
+
+    @Operation(summary = "资源文本内容（Word/PPT/PDF 在线文本预览；图片/视频返回空）")
+    @GetMapping("/api/resources/{id}/text")
+    public ApiResponse<Map<String, Object>> text(@PathVariable Long id) {
+        checkAccess(id);
+        LearningResource r = resourceService.getById(id);
+        File f = resourceService.getFile(id);
+        String text = resourceAiService.extractText(r.getFileType(), f.toPath());
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("text", text == null ? "" : text);
+        m.put("fileType", r.getFileType());
+        return ApiResponse.ok(m);
     }
 
     /* ==================== 鉴权与工具 ==================== */

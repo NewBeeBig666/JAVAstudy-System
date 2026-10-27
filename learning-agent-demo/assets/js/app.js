@@ -393,9 +393,17 @@
     } else if (sec === 'dashboard') {
       head = '<div class="side-head"><div class="side-title">授课班级</div></div>';
       foot = '<button class="btn primary block" data-act="importClassModal">' + icon('plus', 15) + ' 添加班级</button>';
-      body = DB.classes.map(c => `<button class="list-item ${State.filters.classId === c.id ? 'on' : ''}" data-act="classPick" data-val="${c.id}">
-        <div class="li-main"><div class="li-title">${c.name}</div><div class="li-sub">${DB.students.length} 名在读学生</div></div>
-      </button>`).join('');
+      // 班级切换组件：String 比较兼容数字/字符串 id；切换中禁用重复点击，目标班标记「切换中…」
+      const switching = !!State._classSwitching;
+      body = DB.classes.map(c => {
+        const on = String(State.filters.classId) === String(c.id);
+        const pending = switching && String(State._classPending) === String(c.id);
+        return `<button class="list-item ${on || pending ? 'on' : ''}" data-act="classPick" data-val="${c.id}"
+          ${switching ? 'disabled style="opacity:.6;pointer-events:none"' : ''}>
+          <div class="li-main"><div class="li-title">${h(c.name)}${pending ? ' <span class="badge brand">切换中…</span>' : ''}</div>
+          <div class="li-sub">${c.studentCount != null ? c.studentCount : DB.students.length} 名在读学生</div></div>
+        </button>`;
+      }).join('');
 
     } else if (sec === 'assignments' || sec === 'submissions') {
       // 提交批改：支持「AI 批量初评」多选模式——勾选多份作业一键触发
@@ -446,7 +454,7 @@
 
     } else if (sec === 'students') {
       head = '<div class="side-head"><div class="side-title">班级学生</div></div>';
-      body = DB.students.map(s => `<button class="list-item ${State.activeStudent === s.id ? 'on' : ''}" data-act="studentPick" data-val="${s.id}">
+      body = DB.students.map(s => `<button class="list-item ${String(State.activeStudent) === String(s.id) ? 'on' : ''}" data-act="studentPick" data-val="${s.id}">
         <div class="li-main"><div class="li-title">${s.name}${s.id === 's01' ? ' · 我' : ''}</div>
         <div class="li-sub">掌握度 ${s.mastery} · 提交率 ${s.submitRate}%</div></div>
         <div class="li-extra"><span class="badge ${s.risk === 'high' ? 'danger' : s.risk === 'mid' ? 'warn' : 'ok'}">${s.risk === 'high' ? '高危' : s.risk === 'mid' ? '关注' : '正常'}</span></div>
@@ -1507,10 +1515,9 @@
           ${(() => { try { return kgSvg(kg); } catch (e) { return '<div style="padding:40px;color:#f87171;font-size:13px">图谱渲染异常：' + h(e.message) + '</div>'; } })()}
         </div>
       </div>
-      <div class="split" style="margin-top:12px">
-      ${isTeacher ? kgTeacherResCard(cur) : kgChainCard(cur)}
-      </div>
-      ${isTeacher ? '' : kgStudentResCard(cur)}`;
+      <div class="split ${isTeacher ? '' : 'kg-bottom-3'}" style="margin-top:12px">
+      ${isTeacher ? kgTeacherResCard(cur) : (kgChainCard(cur) + kgStudentResCard(cur) + kgWeakCard())}
+      </div>`;
     return { head, body };
   }
 
@@ -1553,13 +1560,13 @@
             <div class="note" style="margin:0">「${h(cur.name)}」暂无关联的学习资源——老师还未为该知识点发布资料，可到「学习资源」板块查看全部资料，或点击图谱其他知识点看看。</div>
           </div>`;
     }
-    return `<div class="card" style="margin-top:12px">
+    return `<div class="card">
       <div class="card-head" style="cursor:pointer" data-act="kgResToggle" title="${open ? '折叠' : '展开'}学习资源卡">
-        ${icon('layers', 15)}<h3>学习资源 · ${h(cur.name)}</h3>
-        <span class="badge">${loading ? '加载中…' : res.length + ' 个资源'}</span>
+        ${icon('layers', 15)}<h3 title="学习资源 · ${h(cur.name)}">学习资源 · ${h(cur.name)}</h3>
+        <span class="badge" style="flex:none">${loading ? '加载中…' : res.length + ' 个资源'}</span>
         <div class="spacer"></div>
-        <span style="font-size:12px;color:var(--text-3)">${open ? '收起' : '展开'}</span>
-        <span class="icon-btn" style="width:26px;height:26px;transform:rotate(${open ? 0 : -90}deg);transition:transform .2s">${icon('chevronD', 15)}</span>
+        <span style="font-size:12px;color:var(--text-3);flex:none">${open ? '收起' : '展开'}</span>
+        <span class="icon-btn" style="width:26px;height:26px;flex:none;transform:rotate(${open ? 0 : -90}deg);transition:transform .2s">${icon('chevronD', 15)}</span>
       </div>
       ${listHtml}
     </div>`;
@@ -1618,7 +1625,7 @@
       ${resHtml}`;
   }
 
-  // 图7原有功能（完整保留）：依赖链溯源卡 + 最薄弱 TOP3 卡
+  // 图7原有功能（完整保留）：依赖链溯源卡（学情卡）；最薄弱 TOP3 卡拆分为 kgWeakCard
   function kgChainCard(cur) {
     const chain = traceChain(cur.id);
     // 链节点分数：无练习数据的知识点显示"暂无数据"，不再显示误导性的 0 分
@@ -1627,7 +1634,6 @@
       return (i ? '<span class="chain-arrow">' + icon('chevronR', 15) + '</span>' : '') +
         `<span class="chain-node ${c.root ? 'root' : ''}" data-act="kpCell" data-val="${c.id}">${kpName(c.id)} · ${k.hasData ? k.mastery + ' 分' : '暂无数据'}</span>`;
     }).join('');
-    const weak = DB.knowledgePoints.filter(k => k.hasData).slice().sort((a, b) => a.mastery - b.mastery).slice(0, 3);
     // 推论文案三分支：暂无数据 → 引导收集；根因为目标自身 → 直接攻克；根因为前置 → 先补再回
     const rootKp = chain.find(c => c.root);
     const noData = !cur.hasData && !rootKp;
@@ -1647,16 +1653,21 @@
       conclusionCls = 'ok';
     }
     return `
-      <div class="card"><div class="card-head">${icon('route', 15)}<h3>依赖链溯源 · ${cur.name}</h3><div class="spacer"></div>
-          <span class="badge ${cur.hasData ? (cur.mastery >= 80 ? 'ok' : cur.mastery >= 60 ? '' : 'danger') : ''}">${cur.hasData ? cur.mastery + ' 分 · ' + mtext(cur.mastery) : '暂无掌握数据'}</span></div>
+      <div class="card"><div class="card-head">${icon('route', 15)}<h3 title="依赖链溯源 · ${h(cur.name)}">依赖链溯源 · ${cur.name}</h3><div class="spacer"></div>
+          <span class="badge ${cur.hasData ? (cur.mastery >= 80 ? 'ok' : cur.mastery >= 60 ? '' : 'danger') : ''}" style="flex:none">${cur.hasData ? cur.mastery + ' 分 · ' + mtext(cur.mastery) : '暂无掌握数据'}</span></div>
         <div class="card-body">
           <div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:10px">${h(cur.desc)}</div>
           <div class="chain">${chainHtml}</div>
           <div class="note ${conclusionCls}">
             ${conclusion}
           </div>
-        </div></div>
+        </div></div>`;
+  }
 
+  // 最薄弱 TOP3 卡（从原 kgChainCard 拆出，内容与交互不变）
+  function kgWeakCard() {
+    const weak = DB.knowledgePoints.filter(k => k.hasData).slice().sort((a, b) => a.mastery - b.mastery).slice(0, 3);
+    return `
       <div class="card"><div class="card-head">${icon('flame', 15)}<h3>最薄弱 TOP 3</h3></div>
         <div class="card-body"><div class="mini-list">
           ${weak.map(k => `<div class="mini-row" data-act="kpCell" data-val="${k.id}" style="cursor:pointer">
@@ -2186,6 +2197,9 @@
       const p = r.myProgress;
       const completed = p && p.completed;
       const viewed = p && (p.viewCount || 0) > 0;
+      // 学习达标校验：完整浏览资源（预览容器内计时/视频进度达标）后按钮才解锁；
+      // 达标状态本地持久化（同一浏览器刷新不丢），服务端完成记录见 myProgress.completed
+      const learnOk = completed || resLearnOk(r.id);
       const status = completed ? '<span class="badge ok">' + icon('checkcircle', 12) + ' 已学完</span>'
         : viewed ? '<span class="badge warn">学习中（已看 ' + p.viewCount + ' 次）</span>'
         : '<span class="badge">未学习</span>';
@@ -2203,17 +2217,162 @@
             ${(r.kpCodes || []).map(c => '<span class="badge brand" title="' + h(c) + '">' + h(kpName(c)) + '</span>').join('')}
           </div>
           ${r.aiSummary ? '<div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:12px">' + icon('sparkles', 13) + ' ' + h(r.aiSummary) + '</div>' : ''}
-          <div style="display:flex;gap:8px">
-            <button class="btn sm primary" data-act="resView" data-id="${r.id}">${icon('eye', 14)} ${r.fileType === 'ppt' || r.fileType === 'word' ? '查看 / 下载' : '打开学习'}</button>
-            ${completed ? '' : '<button class="btn sm" data-act="resComplete" data-id="${r.id}">' + icon('check', 14) + ' 标记已学完</button>'}
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button class="btn sm primary" data-act="resView" data-id="${r.id}">${icon('eye', 14)} 查看</button>
+            <button class="btn sm" data-act="resDownload" data-id="${r.id}">${icon('download', 14)} 下载</button>
+            ${completed
+              ? '<span class="badge ok">' + icon('checkcircle', 12) + ' 已学完，进度已记录</span>'
+              : `<button class="btn sm" data-act="resComplete" data-id="${r.id}" ${learnOk ? '' : 'disabled title="在预览中从头到尾完整滚动阅读后，系统会自动记录学完"'}>${icon('check', 14)} 标记已学完</button>
+                ${learnOk ? '' : '<span style="font-size:12px;color:var(--text-3)">完整阅读后自动记录</span>'}`}
           </div>
         </div></div>`;
     }).join('');
     return { head, body };
   }
 
-  // 打开资源文件：isStudent=true 时先记一次查看进度再取文件流。
-  // 图片/视频 → 弹窗内嵌预览；PDF → 新窗口浏览器原生阅读；PPT/Word → 直接触发下载
+  /* ---------------- 学习资源：在线预览 + 学习达标校验（滚动位置判定版） ----------------
+   * 完成判定（不含任何时间条件）：
+   * - 文本类（Word/PPT/PDF 文本预览）：滚动覆盖区间合并——用户实际滚过的内容区间
+   *   累计覆盖全部内容高度 ≥98% 才判完成；直接拖到底部/跳转只覆盖起止两段，无法达标；
+   * - 图片：打开即全部内容可见，直接判完成；
+   * - 视频：播放进度 ≥90%（内容消费进度，非时长）。
+   * 达标后自动同步后端 /complete（实时记录学习档案），失败时提供手动补记按钮。 */
+  function resLearnedMap() {
+    try { return JSON.parse(localStorage.getItem('la_res_learned') || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function resLearnOk(id) { return !!resLearnedMap()[String(id)]; }
+  function resMarkLearned(id) {
+    const m = resLearnedMap();
+    m[String(id)] = Date.now();
+    try { localStorage.setItem('la_res_learned', JSON.stringify(m)); } catch (e) { /* 隐私模式等场景忽略 */ }
+  }
+
+  // 滚动覆盖区间合并：记录用户真实浏览过的内容区间 [s,e]，相邻/重叠段合并
+  function resCoverMerge(d, s, e) {
+    if (!(e > s)) return;
+    const iv = d.cover = d.cover || [];
+    iv.push([s, e]);
+    iv.sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const seg of iv) {
+      const last = merged[merged.length - 1];
+      if (last && seg[0] <= last[1]) { last[1] = Math.max(last[1], seg[1]); }
+      else merged.push([seg[0], seg[1]]);
+    }
+    d.cover = merged;
+    d.covered = merged.reduce((n, seg) => n + (seg[1] - seg[0]), 0);
+  }
+
+  // 学习达标进度（0~1）：视频=播放进度/90%；文本=滚动覆盖比；图片=全可见即 1
+  function resLearnPct(d) {
+    if (d.kind === 'video') return Math.min(1, (d.playedPct || 0) / 0.9);
+    if (d.kind === 'text') {
+      if (!d.scrollHeight) return 0;
+      return Math.min(1, (d.covered || 0) / d.scrollHeight);
+    }
+    return 1;
+  }
+  function resLearnStatusText(d) {
+    if (d.kind === 'video') {
+      const pct = Math.round((d.playedPct || 0) * 100);
+      return pct >= 90 ? '已观看 ' + pct + '%，即将自动记录' : '已观看 ' + pct + '%（观看至 90% 自动记录学完）';
+    }
+    if (d.kind === 'text') {
+      const pct = Math.round(resLearnPct(d) * 100);
+      return '已完整阅读 ' + pct + '%（滚动至底部自动记录学完）';
+    }
+    return '内容已完整展示';
+  }
+
+  // 预览弹窗渲染后挂载：文本绑定滚动监听、视频绑定播放进度、图片立即达标
+  function mountResPreview() {
+    const m = State.modal;
+    if (!m || m.type !== 'resPreview' || !m.data || !m.data.learn) return;
+    const d = m.data;
+    if (d.done) return;
+    if (d.kind === 'video') {
+      const v = document.getElementById('resPrevMedia');
+      if (v) {
+        v.addEventListener('timeupdate', () => {
+          if (v.duration > 0) d.playedPct = Math.max(d.playedPct || 0, v.currentTime / v.duration);
+          resLearnTick(d);
+        });
+        v.addEventListener('ended', () => { d.playedPct = 1; resLearnTick(d); });
+      }
+      return;
+    }
+    if (d.kind === 'image') {
+      // 图片内容打开即全部可见：完整浏览成立，立即达标（无时间条件）
+      resLearnAchieve(d);
+      return;
+    }
+    // 文本预览：绑定滚动容器（文本异步加载后 renderOverlays 重建会重新挂载）
+    const el = document.getElementById('resPrevScroll');
+    if (el) {
+      d.scrollHeight = el.scrollHeight;
+      // 内容不足一屏（无需滚动即全部可见）→ 直接达标
+      if (el.scrollHeight - el.clientHeight <= 4) { resLearnAchieve(d); return; }
+      // 初始可视区间 [0, clientHeight]（打开即看到的首屏）计入已浏览覆盖——
+      // 否则首屏内容永远不计入，连续滚动到顶部也差一段到不了达标线
+      resCoverMerge(d, 0, el.clientHeight);
+      resLearnTick(d); // 同步刷新初始覆盖率显示
+      el.addEventListener('scroll', () => resOnScroll(d, el), { passive: true });
+    }
+  }
+  // 滚动处理：合并可视区间 → 覆盖率达标（≥98%，容差防边界舍入漏判）即完成
+  function resOnScroll(d, el) {
+    if (d.done) return;
+    d.scrollHeight = el.scrollHeight;
+    if (el.scrollHeight - el.clientHeight <= 4) { resLearnAchieve(d); return; }
+    resCoverMerge(d, el.scrollTop, el.scrollTop + el.clientHeight);
+    resLearnTick(d);
+  }
+  // 进度局部刷新（不重渲染弹窗，滚动位置/视频播放不受影响）；达标走 resLearnAchieve
+  function resLearnTick(d) {
+    if (d.done) return;
+    if (resLearnPct(d) >= 0.98) { resLearnAchieve(d); return; }
+    const bar = document.getElementById('resLearnBar');
+    const txt = document.getElementById('resLearnText');
+    if (bar) bar.style.width = Math.round(resLearnPct(d) * 100) + '%';
+    if (txt) txt.textContent = resLearnStatusText(d);
+  }
+  // 达标统一入口：本地持久化 + 进度区局部替换为完成态 + 实时同步后端学习进度
+  async function resLearnAchieve(d) {
+    if (d.done) return;
+    d.done = true;
+    resMarkLearned(d.id);
+    const box = document.getElementById('resLearnBox');
+    if (box) box.innerHTML = resLearnDoneHtml(d);
+    if (State.section === 'resources') render(); // 卡片状态同步
+    try {
+      await API.post('/resources/' + d.id + '/complete');
+      const r = (DB.resources || []).find(x => String(x.id) === String(d.id));
+      if (r) r.myProgress = Object.assign({ viewCount: 0, completed: false }, r.myProgress || {}, { completed: true });
+      d.completed = true;
+      const box2 = document.getElementById('resLearnBox');
+      if (box2) box2.innerHTML = resLearnDoneHtml(d);
+      toast('学习完成，进度已自动记录至学习档案', 'ok');
+      if (State.section === 'resources') render();
+    } catch (e) {
+      d.syncFail = true;
+      const box3 = document.getElementById('resLearnBox');
+      if (box3) box3.innerHTML = resLearnDoneHtml(d);
+      toast('学习完成，但进度同步失败：' + e.message);
+    }
+  }
+  // 完成态进度区 HTML（局部替换用；同步失败时给手动补记按钮）
+  function resLearnDoneHtml(d) {
+    return `<div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap">
+      <span class="badge ok">${icon('checkcircle', 13)} ${d.completed ? '已完成学习，进度已记录至学习档案' : '学习完成，正在同步进度…'}</span>
+      ${d.completed ? '' : (d.syncFail
+        ? `<button class="btn sm primary" data-act="resComplete" data-id="${d.id}">${icon('refresh', 13)} 手动补记学完</button>`
+        : '')}
+    </div>`;
+  }
+
+  // 「查看」：打开内置预览容器（图片/视频原生渲染；Word/PPT/PDF 文本模式——PDF 原生
+  // iframe 无法监听内部滚动，统一走后端文本提取以保证滚动判定可靠）
   async function openResFile(id, isStudent) {
     const r = (DB.resources || []).find(x => String(x.id) === String(id)) || {};
     if (isStudent) {
@@ -2226,6 +2385,30 @@
       } catch (e) { /* 进度记录失败不阻断打开 */ }
       if (State.section === 'resources') render();
     }
+    // 预览弹窗骨架先行（大文件取流期间即有反馈，无卡顿感）
+    const kind = r.fileType === 'image' ? 'image' : r.fileType === 'video' ? 'video' : 'text';
+    const completed = !!(isStudent && r.myProgress && r.myProgress.completed);
+    const data = {
+      id: r.id, kind: kind, title: r.title || '资源预览', fileName: r.fileName || '',
+      url: null, text: '', textLoading: kind === 'text',
+      learn: !!isStudent, playedPct: 0, cover: [], covered: 0, scrollHeight: 0,
+      completed: completed, done: completed
+    };
+    State.modal = { type: 'resPreview', data: data };
+    renderOverlays();
+    if (kind === 'text') {
+      // Word/PPT/PDF：拉取后端提取的文本内容渲染（加载中文案占位）
+      try {
+        const t = await API.get('/resources/' + id + '/text');
+        data.text = (t && t.text) || '';
+        data.textLoading = false;
+      } catch (e) {
+        data.text = ''; data.textLoading = false;
+        data.textError = e.message || '文本内容加载失败';
+      }
+      if (State.modal && State.modal.type === 'resPreview') renderOverlays();
+      return;
+    }
     try {
       const res = await fetch('/api/resources/' + id + '/file', {
         headers: { 'Authorization': 'Bearer ' + API.token() }
@@ -2233,31 +2416,47 @@
       if (res.status === 401) { Auth.logout(); return; }
       if (!res.ok) {
         let msg = '资源打开失败 (' + res.status + ')';
-        try { const data = await res.json(); if (data && data.msg) msg = data.msg; } catch (e) { /* 非 JSON */ }
+        try { const jd = await res.json(); if (jd && jd.msg) msg = jd.msg; } catch (e) { /* 非 JSON */ }
+        toast(msg);
+        if (State.modal && State.modal.type === 'resPreview') { State.modal = null; renderOverlays(); }
+        return;
+      }
+      const blob = await res.blob();
+      if (!blob.size) { toast('资源文件为空'); return; }
+      data.url = URL.createObjectURL(blob);
+      if (State.modal && State.modal.type === 'resPreview') renderOverlays();
+    } catch (e) {
+      toast('资源打开失败，请检查网络后重试');
+      if (State.modal && State.modal.type === 'resPreview') { State.modal = null; renderOverlays(); }
+    }
+  }
+
+  // 「下载」：独立下载按钮（与在线预览完全解耦）
+  async function downloadResFile(id) {
+    const r = (DB.resources || []).find(x => String(x.id) === String(id)) || {};
+    try {
+      const res = await fetch('/api/resources/' + id + '/file', {
+        headers: { 'Authorization': 'Bearer ' + API.token() }
+      });
+      if (res.status === 401) { Auth.logout(); return; }
+      if (!res.ok) {
+        let msg = '资源下载失败 (' + res.status + ')';
+        try { const jd = await res.json(); if (jd && jd.msg) msg = jd.msg; } catch (e) { /* 非 JSON */ }
         toast(msg); return;
       }
       const blob = await res.blob();
       if (!blob.size) { toast('资源文件为空'); return; }
       const url = URL.createObjectURL(blob);
-      if (r.fileType === 'image') {
-        State.modal = { type: 'resPreview', data: { url: url, kind: 'image', title: r.title || '图片预览' } };
-        renderOverlays();
-      } else if (r.fileType === 'video') {
-        State.modal = { type: 'resPreview', data: { url: url, kind: 'video', title: r.title || '视频学习' } };
-        renderOverlays();
-      } else if (r.fileType === 'pdf') {
-        window.open(url, '_blank');
-      } else {
-        // PPT / Word：浏览器无法直接预览，触发下载
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = r.fileName || 'resource';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = r.fileName || 'resource';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast('已开始下载：' + (r.fileName || '资源'), 'ok');
     } catch (e) {
-      toast('资源打开失败，请检查网络后重试');
+      toast('资源下载失败，请检查网络后重试');
     }
   }
 
@@ -2325,13 +2524,13 @@
 
   function viewStudents() {
     const head = mainHead('班级学生', '点击任意学生查看档案与知识点明细');
-    const sel = DB.students.find(s => s.id === State.activeStudent);
+    const sel = DB.students.find(s => String(s.id) === String(State.activeStudent));
     if (sel) ensureStudentResProgress(sel.id);
     const body = `<div class="card"><div class="card-head">${icon('users', 15)}<h3>学生列表</h3><div class="spacer"></div>
       <span class="badge">${DB.students.length} 人（示例数据）</span></div>
       <div style="overflow-x:auto"><table class="table">
         <thead><tr><th>学生</th><th>掌握度</th><th class="num">提交率</th><th class="num">连续未登录</th><th>近 7 日活跃</th><th>薄弱知识点</th><th>风险</th></tr></thead>
-        <tbody>${DB.students.map(s => `<tr data-act="studentPick" data-val="${s.id}" class="${State.activeStudent === s.id ? 'on' : ''}">
+        <tbody>${DB.students.map(s => `<tr data-act="studentPick" data-val="${s.id}" class="${String(State.activeStudent) === String(s.id) ? 'on' : ''}">
           <td><b>${s.name}</b>${s.id === 's01' ? ' <span class="badge brand">我</span>' : ''}</td>
           <td style="width:150px"><div style="display:flex;align-items:center;gap:8px">
             <div class="bar ${bcls(s.mastery)}" style="flex:1"><i style="width:${s.mastery}%"></i></div><span style="font-weight:600">${s.mastery}</span></div></td>
@@ -2527,6 +2726,8 @@
     box.innerHTML = html;
     // 装载代码编辑器（作业答题页 / 弹窗内的编程题输入框）
     mountCodeEditors();
+    // 学习资源预览：视频进度监听 + 浏览计时（局部更新，不重建媒体元素）
+    mountResPreview();
     // 组卷题卡题干框：首帧即按已有内容自适应高度（编辑已有作业的长题干场景）
     composeAutoSizeTitles();
   }
@@ -2926,11 +3127,42 @@
       foot = `<button class="btn primary" data-act="closeModal">关闭</button>`;
 
     } else if (m.type === 'resPreview') {
-      title = d.title || '资源预览';
-      body = d.kind === 'video'
-        ? `<video controls autoplay style="width:100%;max-height:60vh;border-radius:8px;background:#000" src="${d.url}"></video>`
-        : `<img src="${d.url}" alt="预览" style="width:100%;max-height:60vh;object-fit:contain;border-radius:8px">`;
-      foot = `<button class="btn primary" data-act="resPreviewClose">关闭</button>`;
+      title = (d.title || '资源预览') + (d.fileName ? ' · ' + d.fileName : '');
+      // 内容区：图片/视频原生渲染；Word/PPT/PDF 文本模式预览（可滚动，滚动覆盖判定学习完成）
+      let media;
+      if (d.textLoading) {
+        media = '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">文本内容加载中…</div>';
+      } else if (d.kind === 'video') {
+        media = d.url
+          ? `<video id="resPrevMedia" controls playsinline style="width:100%;max-height:56vh;border-radius:8px;background:#000" src="${d.url}"></video>`
+          : '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">视频加载中…</div>';
+      } else if (d.kind === 'image') {
+        media = d.url
+          ? `<img src="${d.url}" alt="预览" style="width:100%;max-height:56vh;object-fit:contain;border-radius:8px">`
+          : '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">图片加载中…</div>';
+      } else {
+        media = d.textError
+          ? '<div class="note warn" style="margin:0">文本预览加载失败：' + h(d.textError) + '，可点击「下载」获取原文件。</div>'
+          : (d.text && d.text.trim()
+            ? '<div id="resPrevScroll" style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:14px 16px;font-size:13.5px;line-height:1.9;white-space:pre-wrap;word-break:break-word;color:var(--text-1)">' + h(d.text) + '</div><div class="hint" style="margin-top:6px">文本模式预览（已提取正文内容）；需要完整排版请使用「下载」。</div>'
+            : '<div class="note" style="margin:0">该文档未提取到文本内容（可能为纯图片型文档），请使用「下载」查看原文件。</div>');
+      }
+      // 学生端：学习进度区（#resLearnBox 局部替换容器——达标时只换此块，滚动位置与媒体播放不受影响）
+      const learnBox = !d.learn ? '' :
+        `<div id="resLearnBox">${d.done ? resLearnDoneHtml(d) : `
+          <div style="margin-top:12px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+              <span style="font-size:12.5px;color:var(--text-2)">${icon('target', 13)} 学习进度</span>
+              <span id="resLearnText" style="font-size:12.5px;color:var(--text-3)">${resLearnStatusText(d)}</span>
+            </div>
+            <div class="progress-track"><div class="progress-bar" id="resLearnBar" style="width:${Math.round(resLearnPct(d) * 100)}%"></div></div>
+            <div class="hint" style="margin-top:6px">${d.kind === 'video'
+              ? '完整观看视频（播放进度 ≥90%）后自动记录学完并同步学习档案。'
+              : '从头到尾完整滚动阅读后自动记录学完并同步学习档案；直接跳转到底部不会计为完成。'}</div>
+          </div>`}</div>`;
+      body = media + learnBox;
+      foot = `<button class="btn" data-act="resDownload" data-id="${d.id}">${icon('download', 15)} 下载</button>
+        <button class="btn primary" data-act="resPreviewClose">关闭</button>`;
 
     } else if (m.type === 'exportScores') {
       title = '导出作业成绩';
@@ -2990,7 +3222,7 @@
       </div>`;
       foot = '<button class="btn primary" data-act="closeModal">关闭</button>';
     }
-    return `<div class="mask"><div class="modal">
+    return `<div class="mask"><div class="modal${m.type === 'resPreview' ? ' wide' : ''}">
       <div class="modal-head">${icon('sparkles', 16)}<h3>${h(title)}</h3><div class="spacer"></div>
         <button class="icon-btn" data-act="closeModal">${icon('x', 16)}</button></div>
       <div class="modal-body">${body}</div>
@@ -4293,8 +4525,10 @@
       renderCtx();
       try {
         // api.js 默认 120s 超时兜底 > 后端 DeepSeek read-timeout 90s；
-        // URL 按角色分流（教师=班级学情版 / 学生=本人学情·引导式学习版）
-        const r = await API.post(asaCfg().url, { messages: a.messages });
+        // URL 按角色分流（教师=当前选中班级学情版 / 学生=本人学情·引导式学习版）
+        const url = State.role === 'teacher' && State.filters.classId != null
+          ? asaCfg().url + '?classId=' + encodeURIComponent(State.filters.classId) : asaCfg().url;
+        const r = await API.post(url, { messages: a.messages });
         a.messages.push({ role: 'assistant', content: (r && r.reply) || '（未返回内容）' });
       } catch (e) {
         // 失败移除本次提问（保留干净历史），教师可直接重发
@@ -4921,10 +5155,11 @@
         renderOverlays();
         toast(msg, ok ? 'ok' : '');
         if (ok) {
-          // 实时刷新授课班级列表与学生数据
+          // 实时刷新授课班级列表；学生/看板数据按当前选中班级拉取（新导入班级不影响在看班级）
           try {
+            const qs = '?classId=' + encodeURIComponent(State.filters.classId);
             const [classes, students, dash] = await Promise.all([
-              API.get('/teacher/classes'), API.get('/teacher/students'), API.get('/teacher/dashboard')
+              API.get('/teacher/classes'), API.get('/teacher/students' + qs), API.get('/teacher/dashboard' + qs)
             ]);
             DB.classes = classes; DB.students = students; DB.teacherDash = dash;
             DB.classStuckPoints = dash.stuckPoints || [];
@@ -4992,7 +5227,7 @@
         fd.append('title', (c.title || '实验') + ' 实验报告模板');
         fd.append('file', file);
         if (c.kps && c.kps.length) fd.append('kpCodes', c.kps.join(','));
-        const r = await API.upload('/api/teacher/resources', fd);
+        const r = await API.upload('/teacher/resources', fd);
         c.lab = { templateId: r.id, templateTitle: r.title || ((c.title || '实验') + ' 实验报告模板') };
         d.uploading = false;
         State.modal = null; renderOverlays();
@@ -5143,6 +5378,7 @@
     },
     resFile(v, id) { openResFile(id, false); },
     resView(v, id) { openResFile(id, true); },
+    resDownload(v, id) { downloadResFile(id); },
     // 左侧资源类型目录：切换筛选（中间列表仅显示该类型资源），并保持目录选中态
     resTypeFilter(v) {
       State.filters.resType = (!v || v === 'all') ? '' : v;
@@ -5150,17 +5386,31 @@
     },
     resPreviewClose() {
       const d = State.modal && State.modal.data;
+      // 清理 blob URL，防内存泄漏（滚动判定无计时器，无需清理定时器）
       if (d && d.url) { try { URL.revokeObjectURL(d.url); } catch (e) { /* 忽略 */ } }
       State.modal = null; renderOverlays();
     },
     async resComplete(v, id) {
+      // 手动补记入口：滚动/播放达标后自动同步失败时由学生手动补记（正常路径已自动完成）
+      const r = (DB.resources || []).find(x => String(x.id) === String(id));
+      if (r && !(r.myProgress && r.myProgress.completed) && !resLearnOk(id)) {
+        toast('请先点击「查看」，完整滚动阅读资源内容后会自动记录学完');
+        return;
+      }
       try {
         await API.post('/resources/' + id + '/complete');
-        const r = (DB.resources || []).find(x => String(x.id) === String(id));
         if (r) {
           r.myProgress = Object.assign({ viewCount: 0, completed: false }, r.myProgress || {}, { completed: true });
         }
-        toast('已标记为学完', 'ok');
+        // 在预览弹窗内补记时：更新弹窗完成态（不关闭，保留阅读位置）
+        if (State.modal && State.modal.type === 'resPreview' && State.modal.data
+          && String(State.modal.data.id) === String(id)) {
+          State.modal.data.completed = true;
+          State.modal.data.syncFail = false;
+          const box = document.getElementById('resLearnBox');
+          if (box) box.innerHTML = resLearnDoneHtml(State.modal.data);
+        }
+        toast('学习进度已补记至学习档案', 'ok');
         if (State.section === 'resources') render();
       } catch (e) { toast(e.message); }
     },
@@ -5189,7 +5439,9 @@
       }
       d.busy = true; renderOverlays();
       try {
-        const qs = range ? '?start=' + encodeURIComponent(d.start) + '&end=' + encodeURIComponent(d.end) : '';
+        // 导出当前选中班级的成绩（跟随班级切换）
+        const qs = '?classId=' + encodeURIComponent(State.filters.classId)
+          + (range ? '&start=' + encodeURIComponent(d.start) + '&end=' + encodeURIComponent(d.end) : '');
         const res = await fetch('/api/teacher/export/scores' + qs, {
           headers: { 'Authorization': 'Bearer ' + API.token() }
         });
@@ -5283,12 +5535,46 @@
     },
 
     /* --- 教师 --- */
+    // 班级切换：四接口（看板/学生/预警/作业）并行拉取，全部成功后统一落库渲染——
+    // 任一失败保持原班级数据不变，避免半新半旧；切换期间骨架屏 + 侧栏禁用防重复点击
     async classPick(v) {
-      State.filters.classId = v;
+      if (State._classSwitching) return;
+      if (String(State.filters.classId) === String(v)) return;
+      State._classSwitching = true;
+      State._classPending = v;
+      State.loading = true; // 主区域骨架屏（侧栏独立容器不受影响）
+      render();
       try {
-        DB.teacherDash = await API.get('/teacher/dashboard');
+        const qs = '?classId=' + encodeURIComponent(v);
+        const [dash, students, warnings, assignments] = await Promise.all([
+          API.get('/teacher/dashboard' + qs),
+          API.get('/teacher/students' + qs),
+          API.get('/teacher/warnings' + qs),
+          API.get('/teacher/assignments' + qs)
+        ]);
+        // 统一落库：看板 KPI/卡点/重点关注 + 学生列表 + 预警中心 + 作业列表
+        State.filters.classId = v;
+        DB.teacherDash = dash;
+        DB.classStuckPoints = dash.stuckPoints || [];
+        DB.students = students;
+        DB.warnings = warnings;
+        DB.assignments = assignments;
+        // 班级维度状态复位：学情报告/选中学生不残留旧班数据；批阅目标重置为新班首个作业
+        State.insight = null;
+        State.activeStudent = null;
+        State.filters.subAs = assignments.length ? assignments[0].id : null;
+        if (assignments.length) loadSubmissions(assignments[0].id);
+        else DB.submissions = [];
+        const c = DB.classes.find(x => String(x.id) === String(v));
+        toast('已切换到「' + (c ? c.name : '班级') + '」，学情数据已更新', 'ok');
+      } catch (e) {
+        toast('班级数据加载失败：' + e.message);
+      } finally {
+        State._classSwitching = false;
+        State._classPending = null;
+        State.loading = false;
         render();
-      } catch (e) { toast(e.message); }
+      }
     },
     studentPick(v) {
       // 修复：render() 全量重建 #side 会令左侧名单 .side-body 的 scrollTop 归零，
@@ -6020,7 +6306,8 @@
       const steps = 4;
       for (let i = 1; i <= steps; i++) { await delay(420); State.insight.stage = i; render(); }
       try {
-        const r = await API.post('/teacher/insight/run');
+        // 学情报告按当前选中班级生成（跟随班级切换）
+        const r = await API.post('/teacher/insight/run?classId=' + encodeURIComponent(State.filters.classId));
         State.insight.done = true;
         State.insight.report = r.report;
         State.insight.mock = r.mock;
@@ -6124,6 +6411,8 @@
       ]);
       applyKnowledgeGraph(graph);
       DB.classes = classes; DB.students = students;
+      // 初始选中班级 = 第一个授课班级（后续 classPick 切换均以 String 比较保持高亮一致）
+      State.filters.classId = classes.length ? classes[0].id : State.filters.classId;
       DB.teacherDash = dash;
       DB.classStuckPoints = dash.stuckPoints || [];
       DB.warnings = warnings; DB.assignments = assignments;

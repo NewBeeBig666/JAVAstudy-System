@@ -89,8 +89,9 @@ public class ResourceAiService {
         return extractText("word", file);
     }
 
-    /** 文本类资源提取纯文本（按 file_path 读取磁盘文件），图片/视频返回 null */
-    private String extractText(String fileType, Path file) {
+    /** 文本类资源提取纯文本（按 file_path 读取磁盘文件），图片/视频返回 null；
+     *  public：学习资源在线文本预览（Word/PPT/PDF）复用此提取 */
+    public String extractText(String fileType, Path file) {
         if (!"ppt".equals(fileType) && !"word".equals(fileType) && !"pdf".equals(fileType)) {
             return null;
         }

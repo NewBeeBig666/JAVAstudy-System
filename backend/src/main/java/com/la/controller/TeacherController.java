@@ -7,6 +7,7 @@ import com.la.entity.Assignment;
 import com.la.entity.ClassEntity;
 import com.la.mapper.AssignmentMapper;
 import com.la.mapper.ClassMapper;
+import com.la.mapper.UserMapper;
 import com.la.security.CurrentUser;
 import com.la.exception.BizException;
 import com.la.service.AssignmentService;
@@ -48,6 +49,7 @@ public class TeacherController {
     private final ComposeImportService composeImportService;
     private final GradingService gradingService;
     private final ClassMapper classMapper;
+    private final UserMapper userMapper;
     private final AssignmentMapper assignmentMapper;
     private final ClassImportService classImportService;
     private final ScoreExportService scoreExportService;
@@ -67,13 +69,25 @@ public class TeacherController {
                 classId != null ? classId : defaultClassId()));
     }
 
-    @Operation(summary = "班级列表")
+    @Operation(summary = "班级列表（含每班在读学生数）")
     @GetMapping("/classes")
-    public ApiResponse<List<ClassEntity>> classes() {
+    public ApiResponse<List<Map<String, Object>>> classes() {
         // 优先返回当前教师授课的班级，无授课班级时回退到全部（兼容演示账号）
         List<ClassEntity> own = classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
                 .eq(ClassEntity::getTeacherId, CurrentUser.id()));
-        return ApiResponse.ok(own.isEmpty() ? classMapper.selectList(null) : own);
+        List<ClassEntity> list = own.isEmpty() ? classMapper.selectList(null) : own;
+        // 附带每班在读学生数：教师端班级切换组件展示各自班级人数
+        return ApiResponse.ok(list.stream().map(c -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", c.getId());
+            m.put("name", c.getName());
+            m.put("grade", c.getGrade());
+            m.put("studentCount", userMapper.selectCount(
+                    new LambdaQueryWrapper<com.la.entity.User>()
+                            .eq(com.la.entity.User::getClassId, c.getId())
+                            .eq(com.la.entity.User::getRole, "STUDENT")));
+            return m;
+        }).toList());
     }
 
     @Operation(summary = "学生列表（掌握度/提交率/风险/趋势）")
@@ -238,11 +252,12 @@ public class TeacherController {
         return ApiResponse.ok();
     }
 
-    @Operation(summary = "预警列表")
+    @Operation(summary = "预警列表（跟随班级切换）")
     @GetMapping("/warnings")
-    public ApiResponse<List<Map<String, Object>>> warnings(@RequestParam(required = false) String level,
+    public ApiResponse<List<Map<String, Object>>> warnings(@RequestParam(required = false) Long classId,
+                                                           @RequestParam(required = false) String level,
                                                            @RequestParam(required = false) Boolean handled) {
-        return ApiResponse.ok(teacherService.warnings(defaultClassId(), level, handled));
+        return ApiResponse.ok(teacherService.warnings(classId != null ? classId : defaultClassId(), level, handled));
     }
 
     @Operation(summary = "标记预警已处理")
@@ -267,10 +282,12 @@ public class TeacherController {
     }
 
     /** 右侧栏「智能助手」：DeepSeek 多轮对话（前端持有历史，每次回传最近若干轮） */
-    @Operation(summary = "智能助手对话（注入班级学情上下文）")
+    @Operation(summary = "智能助手对话（注入当前选中班级的学情上下文）")
     @PostMapping("/assistant")
-    public ApiResponse<Map<String, Object>> assistant(@RequestBody AssistantRequest req) {
-        return ApiResponse.ok(teacherAssistantService.chat(CurrentUser.id(), defaultClassId(), req.getMessages()));
+    public ApiResponse<Map<String, Object>> assistant(@RequestParam(required = false) Long classId,
+                                                      @RequestBody AssistantRequest req) {
+        return ApiResponse.ok(teacherAssistantService.chat(CurrentUser.id(),
+                classId != null ? classId : defaultClassId(), req.getMessages()));
     }
 
     @Data
