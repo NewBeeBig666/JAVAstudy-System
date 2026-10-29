@@ -31,6 +31,9 @@ public class KnowledgePoint {
     /** 教学大纲单元号 1-11 */
     private Integer unitNo;
 
+    /** 教师端软删除 0/1（重置可恢复；CUSTOM 节点重置时物理清除） */
+    private Integer deleted;
+
     private String description;
 
     /** JSON 数组字符串 */

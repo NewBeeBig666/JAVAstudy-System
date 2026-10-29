@@ -892,6 +892,27 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
    TOP6 行原 9px gap+12px padding，疏密不一致的根因在此，现统一为同一公式） */
 .split .card .mini-list { gap: 0; }
 .split .card .mini-row { padding: 10px 0 !important; }
+/* ---- 作业文件夹侧栏分组（教师端作业管理/选择作业）----
+   文件夹行：轻量分组头（图标旋转 + 名称 + 数量徽章）；展开/收起仅切 class 与
+   子列表 display，交互零卡顿；子作业行复用 .list-item 原样式与交互 */
+.as-folder {
+  display: flex; align-items: center; gap: 7px;
+  margin: 3px 6px; padding: 8px 10px; border-radius: 10px;
+  cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-1);
+  transition: background .15s var(--ease);
+  user-select: none;
+}
+.as-folder:hover { background: var(--panel-2); }
+.as-folder .asf-chev { color: var(--text-3); display: flex; transition: transform .18s var(--ease); }
+.as-folder.closed .asf-chev { transform: rotate(-90deg); }
+.as-folder .asf-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.as-folder .asf-count {
+  font-size: 11px; font-weight: 600; color: var(--text-3);
+  background: var(--panel-2); border-radius: 8px; padding: 1px 7px; flex: none;
+}
+.as-folder:hover .asf-count { background: var(--brand-soft); color: var(--brand-2); }
+.as-folder-items { display: flex; flex-direction: column; gap: 2px; padding: 0 6px 6px 12px; }
+.asf-empty { padding: 5px 10px 8px; font-size: 12px; color: var(--text-3); }
 /* ---- 学生端知识图谱底部三卡并排（学情卡 | 学习资源卡 | 最薄弱TOP3）----
    三卡同一水平线、学情卡与资源卡等宽（三等分列），缩短原学情卡在全宽容器下的横向长度；
    stretch 等高保证三卡底边严格对齐；min-width:0 + 标题省略号防窄列内容溢出 */
@@ -1566,8 +1587,12 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   -webkit-user-select: none; user-select: none;
 }
 .kg-svg.kg-dragging { cursor: grabbing; }
-.kg-export {
+/* 画布左上角工具栏：导出图片 + 重置（教师端） */
+.kg-toolbar {
   position: absolute; top: 10px; left: 10px; z-index: 5;
+  display: flex; gap: 6px;
+}
+.kg-export {
   display: inline-flex; align-items: center; gap: 6px;
   height: 30px; padding: 0 13px; border-radius: var(--r); cursor: pointer;
   background: rgba(16,22,69,.72); border: 1px solid rgba(140,160,240,.3);
@@ -1576,6 +1601,31 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 }
 .kg-export:hover { background: rgba(99,102,241,.42); color: #fff; }
 .kg-export:active { transform: scale(.96); }
+/* 教师端节点操作菜单：选中知识点后出现在工具栏下方（深色玻璃风格与画布控件统一） */
+.kg-node-menu {
+  position: absolute; top: 48px; left: 10px; z-index: 5;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  max-width: calc(100% - 20px);
+  padding: 5px 7px; border-radius: var(--r);
+  background: rgba(16,22,69,.78); border: 1px solid rgba(140,160,240,.3);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.kg-node-menu .kg-nm-name {
+  display: inline-flex; align-items: center; gap: 5px;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #e2e8f0; font-size: 12.5px; font-weight: 600; padding: 0 4px;
+}
+.kg-nm-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 28px; padding: 0 11px; border-radius: var(--r); cursor: pointer;
+  background: rgba(99,102,241,.22); border: 1px solid rgba(140,160,240,.35);
+  color: #cdd6f4; font-size: 12px; transition: all .18s var(--ease);
+}
+.kg-nm-btn:hover { background: rgba(99,102,241,.5); color: #fff; }
+.kg-nm-btn:active { transform: scale(.96); }
+.kg-nm-btn.danger { background: rgba(248,113,113,.16); border-color: rgba(248,113,113,.4); color: #fca5a5; }
+.kg-nm-btn.danger:hover { background: rgba(248,113,113,.42); color: #fff; }
+.kg-nm-lock { font-size: 11.5px; color: #94a3b8; padding: 0 4px; }
 /* 缩放控制条（画布右下角）：放大 / 当前百分比 / 缩小 / 重置 */
 .kg-zoom-bar {
   position: absolute; right: 12px; bottom: 12px; z-index: 5;

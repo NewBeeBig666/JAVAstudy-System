@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.la.dto.ApiResponse;
 import com.la.dto.ComposeRequest;
 import com.la.entity.Assignment;
+import com.la.entity.AssignmentFolder;
 import com.la.entity.ClassEntity;
+import com.la.mapper.AssignmentFolderMapper;
 import com.la.mapper.AssignmentMapper;
 import com.la.mapper.ClassMapper;
 import com.la.mapper.UserMapper;
@@ -51,6 +53,7 @@ public class TeacherController {
     private final ClassMapper classMapper;
     private final UserMapper userMapper;
     private final AssignmentMapper assignmentMapper;
+    private final AssignmentFolderMapper assignmentFolderMapper;
     private final ClassImportService classImportService;
     private final ScoreExportService scoreExportService;
     private final SubmissionExportService submissionExportService;
@@ -243,6 +246,57 @@ public class TeacherController {
     public static class AiBatchGradeRequest {
         /** 勾选的作业 ID 列表 */
         private List<Long> assignmentIds;
+    }
+
+    /* ==================== 作业文件夹（左侧栏分组收纳） ==================== */
+
+    @Operation(summary = "文件夹列表（作业数量由前端按当前班级作业统计；NULL folder_id = 内置「其他」）")
+    @GetMapping("/folders")
+    public ApiResponse<List<Map<String, Object>>> folders() {
+        List<AssignmentFolder> list = assignmentFolderMapper.selectList(
+                new LambdaQueryWrapper<AssignmentFolder>()
+                        .eq(AssignmentFolder::getTeacherId, CurrentUser.id())
+                        .orderByAsc(AssignmentFolder::getCreatedAt));
+        return ApiResponse.ok(list.stream().map(f -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", String.valueOf(f.getId()));
+            m.put("name", f.getName());
+            return m;
+        }).toList());
+    }
+
+    @Operation(summary = "新建作业文件夹（名称必填、50 字以内、同一教师下不可重名）")
+    @PostMapping("/folders")
+    public ApiResponse<Map<String, Object>> createFolder(@RequestBody FolderRequest req) {
+        String name = req.getName() == null ? "" : req.getName().trim();
+        if (name.isEmpty()) {
+            throw new BizException("请输入文件夹名称");
+        }
+        if (name.length() > 50) {
+            throw new BizException("文件夹名称不能超过 50 字");
+        }
+        if ("其他".equals(name)) {
+            throw new BizException("「其他」为系统内置文件夹，请换一个名称");
+        }
+        Long cnt = assignmentFolderMapper.selectCount(new LambdaQueryWrapper<AssignmentFolder>()
+                .eq(AssignmentFolder::getTeacherId, CurrentUser.id())
+                .eq(AssignmentFolder::getName, name));
+        if (cnt > 0) {
+            throw new BizException("已存在同名文件夹「" + name + "」");
+        }
+        AssignmentFolder f = new AssignmentFolder();
+        f.setTeacherId(CurrentUser.id());
+        f.setName(name);
+        assignmentFolderMapper.insert(f);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", String.valueOf(f.getId()));
+        m.put("name", f.getName());
+        return ApiResponse.ok(m);
+    }
+
+    @Data
+    public static class FolderRequest {
+        private String name;
     }
 
     @Operation(summary = "教师评分发布（回流学生通知+会话卡片）")

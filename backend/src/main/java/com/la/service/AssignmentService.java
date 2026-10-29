@@ -42,6 +42,7 @@ public class AssignmentService {
     private final NotificationService notificationService;
     private final ObjectMapper objectMapper;
     private final LearningResourceMapper learningResourceMapper;
+    private final AssignmentFolderMapper assignmentFolderMapper;
 
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
     private static final DateTimeFormatter DUE = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
@@ -528,6 +529,13 @@ public class AssignmentService {
         as.setStatus(status);
         as.setScoreMode(scoreMode);
         as.setAllowLate(Boolean.TRUE.equals(req.getAllowLate()) ? 1 : 0);
+        // 作业文件夹：新建时按传入值（NULL=其他）；修改时仅在明确传入时覆盖，
+        // 避免旧客户端/编辑场景未携带 folderId 把已有分组清回「其他」
+        if (req.getFolderId() != null) {
+            as.setFolderId(req.getFolderId());
+        } else if (as.getId() == null) {
+            as.setFolderId(null);
+        }
         if (as.getId() == null) {
             assignmentMapper.insert(as);
         } else {
@@ -629,6 +637,14 @@ public class AssignmentService {
             return rm;
         }).collect(Collectors.toList()));
         dto.put("createdAt", as.getCreatedAt() != null ? as.getCreatedAt().format(DT) : null);
+        // 作业文件夹分组（NULL = 内置「其他」）：folderId 与作业 id 一致以字符串输出
+        dto.put("folderId", as.getFolderId() == null ? null : String.valueOf(as.getFolderId()));
+        if (as.getFolderId() != null) {
+            AssignmentFolder folder = assignmentFolderMapper.selectById(as.getFolderId());
+            dto.put("folderName", folder != null ? folder.getName() : null);
+        } else {
+            dto.put("folderName", null);
+        }
         // 出题组卷扩展：评分机制 / 有效时段 / 允许补交 / 题目
         dto.put("scoreMode", as.getScoreMode() != null ? as.getScoreMode().toLowerCase() : null);
         dto.put("startAt", as.getStartAt() != null ? as.getStartAt().format(DUE) : null);

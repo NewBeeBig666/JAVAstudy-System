@@ -42,6 +42,9 @@ public class ComposeRequest {
     /** 实验报告作业：模板标题（资源标题，展示用） */
     private String labTemplateTitle;
 
+    /** 所属作业文件夹（NULL/缺省 = 内置「其他」；修改时仅在该值非空时覆盖） */
+    private Long folderId;
+
     private List<QuestionReq> questions;
 
     @Data

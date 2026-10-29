@@ -166,7 +166,8 @@ public class KnowledgeService {
      */
     public KnowledgeGraphResponse graph(Long userId) {
         List<KnowledgePoint> all = kpMapper.selectList(new LambdaQueryWrapper<KnowledgePoint>()
-                .eq(KnowledgePoint::getSource, "XLSX")
+                .in(KnowledgePoint::getSource, "XLSX", "CUSTOM")
+                .eq(KnowledgePoint::getDeleted, 0)
                 .orderByAsc(KnowledgePoint::getSortOrder));
         Map<Long, KnowledgePoint> byId = all.stream()
                 .collect(Collectors.toMap(KnowledgePoint::getId, k -> k));
@@ -210,6 +211,129 @@ public class KnowledgeService {
             }
         }
         return new KnowledgeGraphResponse(modules, nodes, edges);
+    }
+
+    /* ==================== 教师端图谱维护：添加子节点 / 删除子树 / 重置 ====================
+     * 自定义节点 source=CUSTOM（重置时物理清除）；删除为软删除（deleted=1 级联子树，
+     * 重置恢复），掌握度/练习/资源关联等业务数据一律不动。 */
+
+    /** 添加子知识点：挂到指定父节点下（level 继承 +1，模块归属继承，source=CUSTOM） */
+    @org.springframework.transaction.annotation.Transactional
+    public KnowledgeGraphResponse addChildNode(Long teacherId, String parentCode, String name) {
+        if (name == null || name.isBlank()) {
+            throw new BizException("请输入知识点名称");
+        }
+        name = name.trim();
+        if (name.length() > 50) {
+            throw new BizException("知识点名称不能超过 50 字");
+        }
+        KnowledgePoint parent = kpMapper.selectOne(new LambdaQueryWrapper<KnowledgePoint>()
+                .eq(KnowledgePoint::getKpCode, parentCode)
+                .eq(KnowledgePoint::getDeleted, 0));
+        if (parent == null) {
+            throw new BizException("父知识点不存在或已被删除");
+        }
+        // 同名兄弟去重提示（允许跨层级同名，如不同模块都有「泛型」）
+        Long same = kpMapper.selectCount(new LambdaQueryWrapper<KnowledgePoint>()
+                .eq(KnowledgePoint::getParentId, parent.getId())
+                .eq(KnowledgePoint::getName, name)
+                .eq(KnowledgePoint::getDeleted, 0));
+        if (same > 0) {
+            throw new BizException("「" + parent.getName() + "」下已存在同名子知识点「" + name + "」");
+        }
+        Integer maxSort = kpMapper.selectList(new LambdaQueryWrapper<KnowledgePoint>()
+                        .eq(KnowledgePoint::getParentId, parent.getId()))
+                .stream().map(KnowledgePoint::getSortOrder)
+                .filter(Objects::nonNull).max(Integer::compareTo).orElse(0);
+        KnowledgePoint node = new KnowledgePoint();
+        node.setKpCode("cst-" + System.currentTimeMillis());
+        node.setName(name);
+        node.setParentId(parent.getId());
+        node.setLevel(Math.min((parent.getLevel() == null ? 2 : parent.getLevel()) + 1, 7));
+        node.setModuleCode(parent.getLevel() != null && parent.getLevel() == 1
+                ? parent.getKpCode() : parent.getModuleCode());
+        node.setSource("CUSTOM");
+        node.setUnitNo(parent.getUnitNo());
+        node.setDescription("");
+        node.setSortOrder(maxSort + 1);
+        node.setDeleted(0);
+        kpMapper.insert(node);
+        return graph(teacherId);
+    }
+
+    /** 删除知识点（级联软删除整个子树；一级模块节点不可删，防止破坏模块结构） */
+    @org.springframework.transaction.annotation.Transactional
+    public KnowledgeGraphResponse deleteNode(Long teacherId, String code) {
+        KnowledgePoint target = kpMapper.selectOne(new LambdaQueryWrapper<KnowledgePoint>()
+                .eq(KnowledgePoint::getKpCode, code)
+                .eq(KnowledgePoint::getDeleted, 0));
+        if (target == null) {
+            throw new BizException("知识点不存在或已被删除");
+        }
+        if (target.getLevel() != null && target.getLevel() == 1) {
+            throw new BizException("一级模块不可删除（如需调整请联系管理员）");
+        }
+        // 收集整个子树（含目标自身）统一软删除
+        List<KnowledgePoint> all = kpMapper.selectList(new LambdaQueryWrapper<KnowledgePoint>()
+                .in(KnowledgePoint::getSource, "XLSX", "CUSTOM"));
+        Map<Long, List<KnowledgePoint>> byParent = all.stream()
+                .collect(Collectors.groupingBy(k -> k.getParentId() == null ? -1L : k.getParentId()));
+        List<Long> subtree = new ArrayList<>();
+        Deque<Long> stack = new ArrayDeque<>();
+        stack.push(target.getId());
+        while (!stack.isEmpty()) {
+            Long cur = stack.pop();
+            if (subtree.contains(cur)) {
+                continue;
+            }
+            subtree.add(cur);
+            byParent.getOrDefault(cur, List.of()).forEach(c -> stack.push(c.getId()));
+        }
+        KnowledgePoint upd = new KnowledgePoint();
+        upd.setDeleted(1);
+        kpMapper.update(upd, new LambdaQueryWrapper<KnowledgePoint>()
+                .in(KnowledgePoint::getId, subtree));
+        return graph(teacherId);
+    }
+
+    /** 统计子树规模（前端删除确认弹窗展示），不含目标自身 */
+    public int subtreeSize(String code) {
+        KnowledgePoint target = kpMapper.selectOne(new LambdaQueryWrapper<KnowledgePoint>()
+                .eq(KnowledgePoint::getKpCode, code).eq(KnowledgePoint::getDeleted, 0));
+        if (target == null) {
+            return 0;
+        }
+        List<KnowledgePoint> all = kpMapper.selectList(new LambdaQueryWrapper<KnowledgePoint>()
+                .in(KnowledgePoint::getSource, "XLSX", "CUSTOM"));
+        Map<Long, List<KnowledgePoint>> byParent = all.stream()
+                .collect(Collectors.groupingBy(k -> k.getParentId() == null ? -1L : k.getParentId()));
+        int n = 0;
+        Deque<Long> stack = new ArrayDeque<>();
+        stack.push(target.getId());
+        Set<Long> seen = new HashSet<>();
+        while (!stack.isEmpty()) {
+            Long cur = stack.pop();
+            if (!seen.add(cur)) {
+                continue;
+            }
+            for (KnowledgePoint c : byParent.getOrDefault(cur, List.of())) {
+                n++;
+                stack.push(c.getId());
+            }
+        }
+        return n;
+    }
+
+    /** 重置图谱：恢复所有软删除的课程体系节点 + 物理清除自定义节点（还原默认状态） */
+    @org.springframework.transaction.annotation.Transactional
+    public KnowledgeGraphResponse reset(Long teacherId) {
+        KnowledgePoint upd = new KnowledgePoint();
+        upd.setDeleted(0);
+        kpMapper.update(upd, new LambdaQueryWrapper<KnowledgePoint>()
+                .eq(KnowledgePoint::getDeleted, 1));
+        kpMapper.delete(new LambdaQueryWrapper<KnowledgePoint>()
+                .eq(KnowledgePoint::getSource, "CUSTOM"));
+        return graph(teacherId);
     }
 
     /**

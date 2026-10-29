@@ -21,6 +21,7 @@
       student: null,
       exerciseRecords: [],
       assignments: [],
+      folders: [],
       submissions: [],
       classes: [],
       students: [],
@@ -157,6 +158,7 @@
     search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',
     refresh: '<path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+    folderPlus: '<path d="M2 9V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z"/><path d="M12 10v6"/><path d="M9 13h6"/>',
     x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
     chevronR: '<path d="m9 18 6-6-6-6"/>',
@@ -410,6 +412,9 @@
       const batchMode = sec === 'submissions' && State.filters.batchMode;
       const batchSel = State.filters.batchSel || [];
       head = '<div class="side-head"><div class="side-title">' + (sec === 'assignments' ? '作业管理' : '选择作业') + '</div>'
+        + (sec === 'assignments'
+          ? `<button class="btn sm ghost" data-act="asNewFolder" title="新增作业文件夹">${icon('folderPlus', 14)} 新增文件夹</button>`
+          : '')
         + (sec === 'submissions'
           ? `<button class="btn sm ${batchMode ? 'primary' : ''}" data-act="batchModeToggle" title="勾选多份作业一键 AI 初评">${icon('sparkles', 13)} 批量初评</button>`
           : '')
@@ -422,22 +427,7 @@
           ? '<button class="btn primary block" data-act="openCompose">' + icon('plus', 15) + ' 发布新作业</button>'
           : '';
       }
-      body = DB.assignments.map(a => {
-        const pend = DB.submissions.filter(s => s.asId === a.id && s.status === 'pending').length;
-        if (batchMode) {
-          const sel = batchSel.indexOf(a.id) >= 0;
-          return `<button class="list-item ${sel ? 'on' : ''}" data-act="batchToggle" data-val="${a.id}">
-            <div class="li-main"><div class="li-title">${h(a.title)}</div>
-            <div class="li-sub">已交 ${a.submitted}/${a.total}${pend ? ' · ' + pend + ' 待批' : ''}</div></div>
-            <div class="li-extra">${sel ? '<span class="badge brand">已选</span>' : (pend ? '<span class="badge warn">' + pend + ' 待批</span>' : '')}</div>
-          </button>`;
-        }
-        return `<button class="list-item ${State.filters.subAs === a.id && (sec === 'submissions' || sec === 'assignments') ? 'on' : ''}" data-act="subAsPick" data-val="${a.id}">
-          <div class="li-main"><div class="li-title">${h(a.title)}</div>
-          <div class="li-sub">${a.status === 'draft' ? '草稿' : '截止 ' + h(a.due)} · 已交 ${a.submitted}/${a.total}</div></div>
-          ${pend ? '<div class="li-extra"><span class="badge warn">' + pend + ' 待批</span></div>' : ''}
-        </button>`;
-      }).join('');
+      body = asFolderSidebarHtml(sec);
 
     } else if (sec === 'warnings') {
       head = '<div class="side-head"><div class="side-title">预警类型</div></div>';
@@ -475,6 +465,57 @@
 
     // 列表内容包进 .side-body（flex:1 + overflow-y:auto），使会话/学生等长列表可垂直滚动
     return head + '<div class="side-body">' + body + '</div>' + (foot ? '<div class="side-foot">' + foot + '</div>' : '');
+  }
+
+  /* ---------------- 作业文件夹侧栏分组（教师端作业管理/选择作业共用） ----------------
+   * 内置「其他」文件夹（folder_id=NULL，历史作业默认归属）+ 教师自建文件夹；
+   * 展开/收起偏好持久化到 localStorage，切换只做局部 DOM 更新（不整窗 render，
+   * 防侧栏滚动跳动）；批量初评模式的勾选行在文件夹分组内照常工作。 */
+  const AS_FOLDERS_KEY = 'la-as-folders';
+  function asFoldersOpenState() {
+    if (!State.asFoldersOpen) {
+      try { State.asFoldersOpen = JSON.parse(localStorage.getItem(AS_FOLDERS_KEY)) || { other: true }; }
+      catch (e) { State.asFoldersOpen = { other: true }; }
+    }
+    return State.asFoldersOpen;
+  }
+  function persistAsFolders(st) {
+    try { localStorage.setItem(AS_FOLDERS_KEY, JSON.stringify(st)); } catch (e) { /* 忽略 */ }
+  }
+  function asFolderSidebarHtml(sec) {
+    const batchMode = sec === 'submissions' && State.filters.batchMode;
+    const batchSel = State.filters.batchSel || [];
+    const st = asFoldersOpenState();
+    // 分组 = 内置「其他」 + 自建文件夹（空文件夹也展示，数量徽章实时统计）
+    const groups = [{ key: 'other', id: null, name: '其他' }]
+      .concat((DB.folders || []).map(f => ({ key: String(f.id), id: String(f.id), name: f.name })));
+    return groups.map(g => {
+      const list = (DB.assignments || []).filter(a =>
+        String(a.folderId == null ? '' : a.folderId) === (g.id == null ? '' : g.id));
+      const open = !!st[g.key];
+      const itemHtml = list.map(a => {
+        const pend = DB.submissions.filter(s => s.asId === a.id && s.status === 'pending').length;
+        if (batchMode) {
+          const sel = batchSel.indexOf(a.id) >= 0;
+          return `<button class="list-item ${sel ? 'on' : ''}" data-act="batchToggle" data-val="${a.id}">
+            <div class="li-main"><div class="li-title">${h(a.title)}</div>
+            <div class="li-sub">已交 ${a.submitted}/${a.total}${pend ? ' · ' + pend + ' 待批' : ''}</div></div>
+            <div class="li-extra">${sel ? '<span class="badge brand">已选</span>' : (pend ? '<span class="badge warn">' + pend + ' 待批</span>' : '')}</div>
+          </button>`;
+        }
+        return `<button class="list-item ${State.filters.subAs === a.id && (sec === 'submissions' || sec === 'assignments') ? 'on' : ''}" data-act="subAsPick" data-val="${a.id}">
+          <div class="li-main"><div class="li-title">${h(a.title)}</div>
+          <div class="li-sub">${a.status === 'draft' ? '草稿' : '截止 ' + h(a.due)} · 已交 ${a.submitted}/${a.total}</div></div>
+          ${pend ? '<div class="li-extra"><span class="badge warn">' + pend + ' 待批</span></div>' : ''}
+        </button>`;
+      }).join('') || '<div class="asf-empty">（暂无作业）</div>';
+      return `<div class="as-folder ${open ? '' : 'closed'}" id="asFolderRow-${g.key}" data-act="asFolderToggle" data-val="${g.key}" title="${open ? '收起' : '展开'}「${h(g.name)}」">
+        <span class="asf-chev">${icon('chevronD', 14)}</span>
+        <span class="asf-name">${h(g.name)}</span>
+        <span class="asf-count">${list.length}</span>
+      </div>
+      <div class="as-folder-items" id="asFolderItems-${g.key}" style="display:${open ? '' : 'none'}">${itemHtml}</div>`;
+    }).join('');
   }
 
   function sItem(s) {
@@ -1269,6 +1310,22 @@
     }));
   }
 
+  // 图谱维护操作（增/删/重置）后的统一刷新：重建前端图谱数据并保持视图/缩放/滚动位置；
+  // 选中节点若已被删除则回落到首个知识点，避免下方资源卡与操作菜单悬空
+  async function refreshKnowledgeGraph(graphData) {
+    applyKnowledgeGraph(graphData || await API.get('/knowledge/graph'));
+    if (!DB.knowledgePoints.some(k => k.id === State.activeKp) && DB.knowledgePoints.length) {
+      State.activeKp = DB.knowledgePoints[0].id;
+    }
+    const keepMain = document.querySelector('.main-body');
+    const keepTop = keepMain ? keepMain.scrollTop : 0;
+    render();
+    if (keepMain) {
+      const nb = document.querySelector('.main-body');
+      if (nb) nb.scrollTop = keepTop;
+    }
+  }
+
   // 掌握度配色（图谱节点描边/发光）
   function kgMasteryColor(k) {
     if (!k.hasData) return 'rgba(148,163,184,.9)';
@@ -1501,11 +1558,27 @@
       <button class="kg-nav-item" data-act="kgHome">${icon('grid', 14)}<span>全部显示</span></button>
       <div id="kgSearchList" class="kg-search-list"></div>`;
 
+    // 教师端节点操作菜单：选中任意知识点后出现（添加子知识点 / 删除知识点）；
+    // 一级模块节点为图谱结构根，不提供删除入口
+    const selKp = isTeacher ? kp(State.activeKp) : null;
+    const nodeMenu = !isTeacher || !selKp ? '' :
+      `<div class="kg-node-menu">
+        <span class="kg-nm-name" title="${h(selKp.name)}">${icon('target', 13)} ${h(selKp.name)}</span>
+        <button class="kg-nm-btn" data-act="kgAddNodeModal" data-val="${selKp.id}" title="在「${h(selKp.name)}」下添加子知识点">${icon('plus', 13)} 添加子知识点</button>
+        ${(selKp.level === 1)
+          ? '<span class="kg-nm-lock" title="一级模块为图谱结构根，不可删除">模块不可删</span>'
+          : `<button class="kg-nm-btn danger" data-act="kgDelNodeModal" data-val="${selKp.id}" title="删除「${h(selKp.name)}」及其全部子节点">${icon('trash', 13)} 删除知识点</button>`}
+      </div>`;
+
     const body = `
       <div class="kg-wrap">
         <aside class="kg-side">${side}</aside>
         <div class="kg-canvas">
-          <button class="kg-export" data-act="kgExport">${icon('download', 13)} 导出图片</button>
+          <div class="kg-toolbar">
+            <button class="kg-export" data-act="kgExport">${icon('download', 13)} 导出图片</button>
+            ${isTeacher ? `<button class="kg-export" data-act="kgResetModal" title="撤销所有自定义修改，恢复系统默认图谱">${icon('refresh', 13)} 重置</button>` : ''}
+          </div>
+          ${nodeMenu}
           <div class="kg-zoom-bar">
             <button class="kg-zoom-btn" data-act="kgZoomIn" title="放大">＋</button>
             <span id="kgZoomPct" class="kg-zoom-pct">${Math.round((State.kgZoom || 1) * 100)}%</span>
@@ -1936,8 +2009,17 @@
   }
 
   function viewAssignments() {
+    // 顶栏：选择文件夹（新作业默认存储位置）+ 发布新作业，样式与相邻控件一致
+    const folders = [{ id: '', name: '其他' }].concat((DB.folders || []).map(f => ({ id: String(f.id), name: f.name })));
+    const curFolder = State.composeFolder == null ? '' : String(State.composeFolder);
+    const folderSel = `<select class="input" style="width:auto;min-width:132px;padding:6px 10px" data-bind="composeFolder" title="发布新作业的默认存储文件夹">`
+      + folders.map(f => `<option value="${f.id}" ${f.id === curFolder ? 'selected' : ''}>${h(f.name)}</option>`).join('')
+      + `</select>`;
     const head = mainHead('作业管理', '结构化发布 + Rubric 驱动评分',
-      '<button class="btn sm" data-act="openCompose" title="发布新作业：支持单选/多选/填空/判断/简答/编程题组卷">' + icon('edit', 14) + ' 发布新作业</button>');
+      `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:12.5px;color:var(--text-2);white-space:nowrap">选择文件夹</span>${folderSel}
+        <button class="btn sm" data-act="openCompose" title="发布新作业：支持单选/多选/填空/判断/简答/编程题组卷">${icon('edit', 14)} 发布新作业</button>
+      </div>`);
     if (!DB.assignments.length) {
       return { head, body: emptyBox('还没有作业', '点击右上角「发布新作业」开始组卷，发布后学生侧会立即看到。') };
     }
@@ -2194,20 +2276,11 @@
       return { head, body: emptyBox('该类型暂无资源', '「' + resTypeLabel(ft) + '」分类下暂无资源，点击左侧其他分类查看。') };
     }
     const body = list.map(r => {
-      const p = r.myProgress;
-      const completed = p && p.completed;
-      const viewed = p && (p.viewCount || 0) > 0;
-      // 学习达标校验：完整浏览资源（预览容器内计时/视频进度达标）后按钮才解锁；
-      // 达标状态本地持久化（同一浏览器刷新不丢），服务端完成记录见 myProgress.completed
-      const learnOk = completed || resLearnOk(r.id);
-      const status = completed ? '<span class="badge ok">' + icon('checkcircle', 12) + ' 已学完</span>'
-        : viewed ? '<span class="badge warn">学习中（已看 ' + p.viewCount + ' 次）</span>'
-        : '<span class="badge">未学习</span>';
       return `<div class="card">
         <div class="card-head">
           <span class="badge brand">${resTypeLabel(r.fileType)}</span>
           <h3>${h(r.title)}</h3><div class="spacer"></div>
-          ${status}
+          <span id="resCardStat-${r.id}">${resCardStatHtml(r)}</span>
         </div>
         <div class="card-body">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
@@ -2217,17 +2290,57 @@
             ${(r.kpCodes || []).map(c => '<span class="badge brand" title="' + h(c) + '">' + h(kpName(c)) + '</span>').join('')}
           </div>
           ${r.aiSummary ? '<div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:12px">' + icon('sparkles', 13) + ' ' + h(r.aiSummary) + '</div>' : ''}
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <button class="btn sm primary" data-act="resView" data-id="${r.id}">${icon('eye', 14)} 查看</button>
-            <button class="btn sm" data-act="resDownload" data-id="${r.id}">${icon('download', 14)} 下载</button>
-            ${completed
-              ? '<span class="badge ok">' + icon('checkcircle', 12) + ' 已学完，进度已记录</span>'
-              : `<button class="btn sm" data-act="resComplete" data-id="${r.id}" ${learnOk ? '' : 'disabled title="在预览中从头到尾完整滚动阅读后，系统会自动记录学完"'}>${icon('check', 14)} 标记已学完</button>
-                ${learnOk ? '' : '<span style="font-size:12px;color:var(--text-3)">完整阅读后自动记录</span>'}`}
+          <div id="resCardActs-${r.id}" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            ${resCardActsHtml(r)}
           </div>
         </div></div>`;
     }).join('');
     return { head, body };
+  }
+
+  // 学生资源卡片可变区①：状态徽章（未学习/学习中/已学完）
+  function resCardStatHtml(r) {
+    const p = r.myProgress;
+    const completed = p && p.completed;
+    const viewed = p && (p.viewCount || 0) > 0;
+    return completed ? '<span class="badge ok">' + icon('checkcircle', 12) + ' 已学完</span>'
+      : viewed ? '<span class="badge warn">学习中（已看 ' + p.viewCount + ' 次）</span>'
+      : '<span class="badge">未学习</span>';
+  }
+  // 学生资源卡片可变区②：操作区（查看/下载 + 标记已学完或已学完徽章）
+  function resCardActsHtml(r) {
+    const p = r.myProgress;
+    const completed = p && p.completed;
+    // 学习达标校验：完整滚动阅读达标后按钮解锁；达标状态本地持久化
+    const learnOk = completed || resLearnOk(r.id);
+    return `<button class="btn sm primary" data-act="resView" data-id="${r.id}">${icon('eye', 14)} 查看</button>
+      <button class="btn sm" data-act="resDownload" data-id="${r.id}">${icon('download', 14)} 下载</button>
+      ${completed
+        ? '<span class="badge ok">' + icon('checkcircle', 12) + ' 已学完，进度已记录</span>'
+        : `<button class="btn sm" data-act="resComplete" data-id="${r.id}" ${learnOk ? '' : 'disabled title="在预览中从头到尾完整滚动阅读后，系统会自动记录学完"'}>${icon('check', 14)} 标记已学完</button>
+          ${learnOk ? '' : '<span style="font-size:12px;color:var(--text-3)">完整阅读后自动记录</span>'}`}`;
+  }
+  // 资源状态变化（查看计数/学完）后局部刷新卡片可变区与页头计数——
+  // 不做整窗 render()：整窗会重建 .main-body 与预览弹窗（renderOverlays），
+  // 导致主区滚动归零 + 弹窗内文本容器/视频回顶重载，表现为「浏览到底部时
+  // 页面自动刷新并跳回顶部」的交互异常。局部替换 DOM 不动滚动容器，位置保持不变。
+  function updateResCard(id) {
+    if (State.section !== 'resources' || State.role !== 'student') return;
+    const r = (DB.resources || []).find(x => String(x.id) === String(id));
+    if (!r) return;
+    const stat = document.getElementById('resCardStat-' + r.id);
+    if (stat) stat.innerHTML = resCardStatHtml(r);
+    const acts = document.getElementById('resCardActs-' + r.id);
+    if (acts) acts.innerHTML = resCardActsHtml(r);
+    // 页头计数同步（与 viewResourcesStudent 头部统计同口径：按左侧类型筛选）
+    const sub = document.querySelector('.main-head .mh-sub');
+    if (sub) {
+      const ft = State.filters.resType;
+      const src = DB.resources || [];
+      const cnt = ft ? src.filter(x => x.fileType === ft) : src;
+      const done = cnt.filter(x => x.myProgress && x.myProgress.completed).length;
+      sub.textContent = '老师发布的学习资料' + (ft ? ' · ' + resTypeLabel(ft) : '') + '（' + done + '/' + cnt.length + ' 已学完）';
+    }
   }
 
   /* ---------------- 学习资源：在线预览 + 学习达标校验（滚动位置判定版） ----------------
@@ -2344,7 +2457,7 @@
     resMarkLearned(d.id);
     const box = document.getElementById('resLearnBox');
     if (box) box.innerHTML = resLearnDoneHtml(d);
-    if (State.section === 'resources') render(); // 卡片状态同步
+    updateResCard(d.id); // 卡片状态局部同步（不整窗 render，保滚动位置）
     try {
       await API.post('/resources/' + d.id + '/complete');
       const r = (DB.resources || []).find(x => String(x.id) === String(d.id));
@@ -2353,7 +2466,7 @@
       const box2 = document.getElementById('resLearnBox');
       if (box2) box2.innerHTML = resLearnDoneHtml(d);
       toast('学习完成，进度已自动记录至学习档案', 'ok');
-      if (State.section === 'resources') render();
+      updateResCard(d.id);
     } catch (e) {
       d.syncFail = true;
       const box3 = document.getElementById('resLearnBox');
@@ -2383,7 +2496,8 @@
           if (i >= 0) DB.resources[i] = updated;
         }
       } catch (e) { /* 进度记录失败不阻断打开 */ }
-      if (State.section === 'resources') render();
+      // 查看计数变化（未学习→学习中）只做卡片局部更新，不整窗 render（保滚动位置）
+      updateResCard(id);
     }
     // 预览弹窗骨架先行（大文件取流期间即有反馈，无卡顿感）
     const kind = r.fileType === 'image' ? 'image' : r.fileType === 'video' ? 'video' : 'text';
@@ -3028,8 +3142,8 @@
         <div class="form-row"><label>关联知识点 <span id="resKpCount" style="font-weight:400;color:var(--text-3)">${n ? '已选 ' + n + ' 个' : '未选择（AI 会自动识别关联）'}</span></label>
           <div class="field" style="margin-bottom:8px">${icon('search', 15)}
             <input placeholder="搜索知识点…" value="${h(d.q || '')}" data-bind="reskpq"></div>
-          <div class="pick-list" id="resKpList" style="max-height:220px">${resKpListHtml()}</div>
-          <div class="hint">可多选；手动选择将与 AI 识别结果合并保存</div></div>
+          <div id="nsPickArea">${newSessionPickArea()}</div>
+          <div class="hint">支持模块/章节整选与逐个点选；手动选择将与 AI 识别结果合并保存</div></div>
         <div class="progress-wrap" style="display:${d.uploading ? '' : 'none'}">
           <div class="progress-track"><div class="progress-bar" id="resUploadBar" style="width:${d.progress || 0}%"></div></div>
           <div id="resUploadText" style="font-size:12px;color:var(--text-3)">${(d.progress || 0) >= 100 ? 'AI 识别内容中…（约需十几秒，请勿关闭）' : '上传中 ' + (d.progress || 0) + '%'}</div>
@@ -3054,6 +3168,38 @@
         </div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.uploading ? 'disabled' : ''}>取消</button>
         <button class="btn primary" data-act="doLabUpload" ${f && !d.uploading ? '' : 'disabled'}>${icon('send', 15)} ${d.uploading ? '上传中…' : '上传模板'}</button>`;
+
+    } else if (m.type === 'asFolder') {
+      title = '新增作业文件夹';
+      body = `<div class="note" style="margin-bottom:12px">文件夹将显示在左侧栏「作业管理」下方，用于分组收纳作业；历史作业与未选择文件夹的新作业统一归入内置的「其他」文件夹。</div>
+        <div class="form-row"><label>文件夹名称</label>
+          <input class="input" placeholder="如：第一章 随堂练习（必填，50 字以内）" value="${h(d.name || '')}" data-bind="modal" data-key="name" maxlength="50">
+          <div class="hint">不能为空；不能与「其他」或已有文件夹重名</div></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doAsFolderCreate" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 创建中…' : icon('folderPlus', 15) + ' 创建文件夹'}</button>`;
+
+    } else if (m.type === 'kgAddNode') {
+      title = '添加子知识点 · ' + (d.parentName || '');
+      body = `<div class="note" style="margin-bottom:12px">将在 <b>${h(d.parentName)}</b> 下新增子知识点，保存后立即同步至后端，学生端知识图谱刷新后可见。</div>
+        <div class="form-row"><label>知识点名称</label>
+          <input class="input" placeholder="如：可变参数（必填，50 字以内）" value="${h(d.name || '')}" data-bind="modal" data-key="name" maxlength="50">
+          <div class="hint">不能为空；同一父节点下不可与已有子知识点重名</div></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doKgAddNode" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 保存中…' : icon('plus', 15) + ' 添加'}</button>`;
+
+    } else if (m.type === 'kgDelNode') {
+      title = '删除知识点';
+      body = `<div class="note warn" style="margin-bottom:12px">确定要删除知识点 <b>${h(d.name)}</b> 吗？<b style="color:var(--danger)">操作将同时删除其全部 ${d.children} 个子节点</b>。</div>
+        <div class="hint">删除为可恢复操作：点击画布「重置」可将图谱还原为系统默认状态；学生练习记录与掌握度数据不受影响。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn danger" data-act="doKgDelNode" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 删除中…' : icon('trash', 15) + ' 确认删除'}</button>`;
+
+    } else if (m.type === 'kgReset') {
+      title = '重置知识图谱';
+      body = `<div class="note warn" style="margin-bottom:12px">重置将<b style="color:var(--danger)">撤销所有自定义修改</b>：已删除的知识点全部恢复、已添加的自定义知识点全部清除，图谱还原为系统默认状态。<b>该操作不可撤销</b>，请确认。</div>
+        <div class="hint">学生练习记录、掌握度、学习资源等业务数据不受影响。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn danger" data-act="doKgReset" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 重置中…' : icon('refresh', 15) + ' 确认重置'}</button>`;
 
     } else if (m.type === 'resKp') {
       title = '编辑关联知识点 · ' + (d.title || '');
@@ -3463,6 +3609,8 @@
           difficulty: q.difficulty != null ? q.difficulty : 0.5,
           kpCodes: (q.kpCode || '').split(',').filter(Boolean), score: q.score != null ? q.score : null
         })),
+        // 编辑回填：保留作业原有所在文件夹（未明确选择时不清回「其他」）
+        folderId: a.folderId != null ? a.folderId : null,
         busy: false, aiBusy: false, _dtp: null, _kpOpen: false, preview: false
       };
     } else {
@@ -3473,6 +3621,8 @@
         title: '新建作业' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()),
         scoreMode: 'AVERAGE',
         startAt: composeNowStr(), endAt: '', allowLate: false,
+        // 新建：取顶栏「选择文件夹」下拉的当前值（未选择 = 其他）
+        folderId: State.composeFolder != null ? State.composeFolder : null,
         kps: [], questions: [], busy: false, aiBusy: false, _dtp: null, _kpOpen: false, preview: false
       };
     }
@@ -3993,6 +4143,8 @@
         title: c.title, scoreMode: isLab ? 'LAB' : c.scoreMode,
         startAt: c.startAt || null, endAt: c.endAt, allowLate: !!c.allowLate,
         status: status,
+        // 所属文件夹：编辑预填原值，新建取顶栏「选择文件夹」下拉（未选 = 其他）
+        folderId: c.folderId != null ? Number(c.folderId) : null,
         // 实验报告型：模板资源 ID（模板上传时已入学习资源板块）
         labTemplateId: isLab ? Number(c.lab.templateId) : null,
         labTemplateTitle: isLab ? (c.lab.templateTitle || '') : null,
@@ -4631,7 +4783,7 @@
         t.classList.toggle('on', i < 0);
       }
       // 已选标签条与计数同步（局部刷新，不重建列表防滚动跳顶）
-      if (State.modal.type === 'newSession') {
+      if (State.modal.type === 'newSession' || State.modal.type === 'resUpload') {
         const pills = document.getElementById('nsPills');
         if (pills) {
           const wrap = document.createElement('div');
@@ -4639,8 +4791,12 @@
           pills.className = wrap.firstChild.className;
           pills.innerHTML = wrap.firstChild.innerHTML;
         }
-        const cnt = document.getElementById('nsCount');
-        if (cnt) cnt.textContent = d.kps.length ? '（已选 ' + d.kps.length + ' 个）' : '';
+        const cnt = document.getElementById(State.modal.type === 'newSession' ? 'nsCount' : 'resKpCount');
+        if (cnt) {
+          cnt.textContent = State.modal.type === 'newSession'
+            ? (d.kps.length ? '（已选 ' + d.kps.length + ' 个）' : '')
+            : (d.kps.length ? '已选 ' + d.kps.length + ' 个' : '未选择（AI 会自动识别关联）');
+        }
       }
       // 同步「创建」按钮文案（原先由整窗重渲染负责，局部更新后需手动刷新）
       const btn = document.querySelector('.modal [data-act="createSession"]');
@@ -4995,6 +5151,85 @@
       State.kgPan = { x: 0, y: 0 };
       Actions.kgApplyZoom();
     },
+    /* --- 教师端图谱维护：添加子知识点 / 删除（二次确认）/ 重置（提示+确认） --- */
+    kgAddNodeModal(v) {
+      const k = kp(v);
+      if (!k) { toast('知识点不存在'); return; }
+      State.modal = { type: 'kgAddNode', data: { parentCode: v, parentName: k.name, name: '', busy: false } };
+      renderOverlays();
+      setTimeout(() => {
+        const i = document.querySelector('.modal input[data-key="name"]');
+        if (i) i.focus();
+      }, 60);
+    },
+    async doKgAddNode() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      const name = (d.name || '').trim();
+      if (!name) { toast('请输入知识点名称'); return; }
+      d.busy = true; renderOverlays();
+      try {
+        const g = await API.post('/teacher/graph/nodes', { parentCode: d.parentCode, name: name });
+        // 选中态跟随切到刚创建的子节点（节点操作菜单同步显示新节点）
+        const created = (g.nodes || []).find(n => n.name === name
+          && n.parentCode === d.parentCode && String(n.code).indexOf('cst-') === 0);
+        if (created) State.activeKp = created.code;
+        State.modal = null; renderOverlays();
+        await refreshKnowledgeGraph(g);
+        toast('子知识点「' + name + '」已添加并同步', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('添加失败：' + e.message + '（可修改后重试）');
+      }
+    },
+    kgDelNodeModal(v) {
+      const k = kp(v);
+      if (!k) { toast('知识点不存在'); return; }
+      if (k.level === 1) { toast('一级模块不可删除'); return; }
+      State.modal = { type: 'kgDelNode', data: { code: v, name: k.name, children: 0, busy: false } };
+      renderOverlays();
+      // 子树规模异步补齐（弹窗先出，数字到位后重渲染弹窗）
+      API.get('/teacher/graph/nodes/' + encodeURIComponent(v) + '/subtree-size')
+        .then(r => {
+          if (State.modal && State.modal.type === 'kgDelNode' && State.modal.data.code === v) {
+            State.modal.data.children = (r && r.children) || 0;
+            renderOverlays();
+          }
+        }).catch(() => { /* 规模统计失败不阻断删除流程 */ });
+    },
+    async doKgDelNode() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        const g = await API.del('/teacher/graph/nodes/' + encodeURIComponent(d.code));
+        State.modal = null; renderOverlays();
+        await refreshKnowledgeGraph(g);
+        toast('知识点「' + d.name + '」及其子节点已删除（重置可恢复）', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('删除失败：' + e.message + '（可重试）');
+      }
+    },
+    kgResetModal() {
+      State.modal = { type: 'kgReset', data: { busy: false } };
+      renderOverlays();
+    },
+    async doKgReset() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        const g = await API.post('/teacher/graph/reset');
+        State.modal = null; renderOverlays();
+        State.kgView = { mode: 'home', module: null, focus: null };
+        await refreshKnowledgeGraph(g);
+        toast('图谱已重置为系统默认状态', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('重置失败：' + e.message + '（可重试）');
+      }
+    },
     kgExport() {
       const svg = document.getElementById('kgSvg');
       if (!svg) { toast('未找到图谱画布'); return; }
@@ -5191,7 +5426,8 @@
 
     /* --- 学习资源：教师上传 / 编辑知识点 / 删除 / 学生查看与学完 --- */
     resUploadModal() {
-      State.modal = { type: 'resUpload', data: { title: '', file: null, uploading: false, progress: 0, kps: [], q: '' } };
+      // nav/scrolls：分层知识点选择组件（与学生端新建会话同款）的导航层级与滚动记忆
+      State.modal = { type: 'resUpload', data: { title: '', file: null, uploading: false, progress: 0, kps: [], q: '', nav: [], scrolls: {} } };
       renderOverlays();
     },
     resPickFile() {
@@ -5411,7 +5647,8 @@
           if (box) box.innerHTML = resLearnDoneHtml(State.modal.data);
         }
         toast('学习进度已补记至学习档案', 'ok');
-        if (State.section === 'resources') render();
+        // 卡片状态局部同步（不整窗 render，保滚动位置）
+        updateResCard(id);
       } catch (e) { toast(e.message); }
     },
 
@@ -5645,6 +5882,50 @@
       toast('该作业为旧版编程作业，暂不支持在线修改；如需调整可通过「发布新作业」重新组卷');
     },
     openCompose() { openComposeEditor(null); },
+    // 新增作业文件夹：弹窗命名（非空/50字内/不与「其他」或已有文件夹重名）
+    asNewFolder() {
+      State.modal = { type: 'asFolder', data: { name: '', busy: false } };
+      renderOverlays();
+      setTimeout(() => {
+        const i = document.querySelector('.modal input[data-key="name"]');
+        if (i) { i.focus(); }
+      }, 60);
+    },
+    async doAsFolderCreate() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      const name = (d.name || '').trim();
+      if (!name) { toast('请输入文件夹名称'); return; }
+      if (name === '其他') { toast('「其他」为系统内置文件夹，请换一个名称'); return; }
+      if ((DB.folders || []).some(f => f.name === name)) { toast('已存在同名文件夹「' + name + '」'); return; }
+      d.busy = true; renderOverlays();
+      try {
+        const f = await API.post('/teacher/folders', { name: name });
+        DB.folders = await API.get('/teacher/folders');
+        State.modal = null; renderOverlays(); render();
+        toast('文件夹「' + (f && f.name ? f.name : name) + '」已创建', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast(e.message);
+      }
+    },
+    // 文件夹展开/收起：局部 DOM 切换（不整窗 render，防侧栏滚动跳动），偏好持久化
+    asFolderToggle(v) {
+      const key = (v === 'other' || v == null || v === '') ? 'other' : String(v);
+      const st = asFoldersOpenState();
+      st[key] = !st[key];
+      persistAsFolders(st);
+      const row = document.getElementById('asFolderRow-' + key);
+      const items = document.getElementById('asFolderItems-' + key);
+      if (row && items) {
+        const open = !!st[key];
+        row.classList.toggle('closed', !open);
+        items.style.display = open ? '' : 'none';
+        row.title = (open ? '收起' : '展开') + '「' + row.querySelector('.asf-name').textContent + '」';
+      } else {
+        render();
+      }
+    },
     closeCompose() { State.compose = null; renderOverlays(); },
     openAnswer(v) {
       const a = DB.assignments.find(x => String(x.id) === String(v));
@@ -6400,14 +6681,15 @@
 
     if (me.role === 'TEACHER') {
       State.role = 'teacher'; State.section = 'dashboard';
-      const [graph, classes, students, dash, warnings, assignments, notifications] = await Promise.all([
+      const [graph, classes, students, dash, warnings, assignments, notifications, folders] = await Promise.all([
         API.get('/knowledge/graph'),
         API.get('/teacher/classes'),
         API.get('/teacher/students'),
         API.get('/teacher/dashboard'),
         API.get('/teacher/warnings'),
         API.get('/teacher/assignments'),
-        API.get('/notifications')
+        API.get('/notifications'),
+        API.get('/teacher/folders').catch(() => [])
       ]);
       applyKnowledgeGraph(graph);
       DB.classes = classes; DB.students = students;
@@ -6416,6 +6698,7 @@
       DB.teacherDash = dash;
       DB.classStuckPoints = dash.stuckPoints || [];
       DB.warnings = warnings; DB.assignments = assignments;
+      DB.folders = folders || [];
       DB.notifications = notifications;
       if (assignments.length) {
         State.filters.subAs = assignments[0].id;
@@ -6648,6 +6931,10 @@
     const t = e.target, b = t.dataset.bind;
     if (!b) return;
     if (b === 'draft') { State.draft = t.value; autoGrow(t); }
+    else if (b === 'composeFolder') {
+      // 作业管理顶栏「选择文件夹」下拉：作为后续发布作业的默认存储位置（空 = 其他）
+      State.composeFolder = t.value === '' ? null : Number(t.value);
+    }
     else if (b === 'assistant') {
       // 教师端智能助手输入：仅更新 State 不重渲染（输入过程不丢焦点）
       const a = asaState(); a.input = t.value; autoGrow(t);
@@ -6675,11 +6962,16 @@
       }
     }
     else if (b === 'reskpq') {
-      // 学习资源弹窗知识点搜索：仅局部刷新选择列表，避免闪屏与输入丢焦点
+      // 学习资源弹窗知识点搜索：仅局部刷新选择区，避免闪屏与输入丢焦点。
+      // 上传弹窗（分层组件）刷新 nsPickArea；编辑知识点弹窗（旧平铺）刷新 resKpList
       if (State.modal) {
         State.modal.data.q = t.value;
-        const box = document.getElementById('resKpList');
-        if (box) box.innerHTML = resKpListHtml();
+        const area = document.getElementById('nsPickArea');
+        if (area) { area.innerHTML = newSessionPickArea(); }
+        else {
+          const box = document.getElementById('resKpList');
+          if (box) box.innerHTML = resKpListHtml();
+        }
       }
     }
     else if (b === 'modal') {

@@ -39,5 +39,8 @@ public class Assignment {
     /** 出题组卷：允许学生补交 0/1 */
     private Integer allowLate;
 
+    /** 作业文件夹：NULL = 内置「其他」文件夹（历史作业默认归属） */
+    private Long folderId;
+
     private LocalDateTime createdAt;
 }
