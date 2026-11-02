@@ -599,6 +599,36 @@ public class AssignmentService {
         assignmentMapper.deleteById(assignmentId);
     }
 
+    /**
+     * 移动作业到指定文件夹（folderId=null 移回内置「其他」）。
+     * 归属校验与删除作业同口径：作业所在班级须为当前教师授课班级。
+     */
+    public Map<String, Object> moveAssignment(Long teacherId, Long assignmentId, Long folderId) {
+        Assignment as = assignmentMapper.selectById(assignmentId);
+        if (as == null) {
+            throw new BizException("作业不存在");
+        }
+        List<Long> ownClassIds = classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
+                        .eq(ClassEntity::getTeacherId, teacherId))
+                .stream().map(ClassEntity::getId).toList();
+        if (!ownClassIds.isEmpty() && !ownClassIds.contains(as.getClassId())) {
+            throw new BizException("无权操作该作业");
+        }
+        if (folderId != null) {
+            AssignmentFolder folder = assignmentFolderMapper.selectById(folderId);
+            if (folder == null || !folder.getTeacherId().equals(teacherId)) {
+                throw new BizException("目标文件夹不存在或不可用");
+            }
+        }
+        // 注意：不可用 updateById —— folderId=null 时 MP 会忽略 null 字段导致 SET 子句为空的坏 SQL，
+        // 必须用 UpdateWrapper 显式 set 才能把归属改回 NULL（其他/根目录）
+        assignmentMapper.update(null, new LambdaUpdateWrapper<Assignment>()
+                .eq(Assignment::getId, assignmentId)
+                .set(Assignment::getFolderId, folderId));
+        as.setFolderId(folderId);
+        return toAssignmentDto(as, true);
+    }
+
     public Map<String, Object> toAssignmentDto(Assignment as) {
         return toAssignmentDto(as, false);
     }

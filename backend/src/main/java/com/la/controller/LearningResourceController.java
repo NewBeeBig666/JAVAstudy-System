@@ -79,6 +79,13 @@ public class LearningResourceController {
         return ApiResponse.ok();
     }
 
+    @Operation(summary = "编辑资源名称（1-50 字，不含特殊字符）")
+    @PutMapping("/api/teacher/resources/{id}/title")
+    public ApiResponse<Void> updateTitle(@PathVariable Long id, @RequestBody UpdateTitleRequest req) {
+        resourceService.updateTitle(CurrentUser.id(), id, req.getTitle());
+        return ApiResponse.ok();
+    }
+
     @Operation(summary = "查看某学生的学习资源进度（班级学生页档案卡）")
     @GetMapping("/api/teacher/resources/student-progress")
     public ApiResponse<Map<String, Object>> studentProgress(@RequestParam Long studentId) {
@@ -89,6 +96,12 @@ public class LearningResourceController {
     public static class UpdateKpRequest {
         /** 关联知识点编码（覆盖保存） */
         private List<String> kpCodes;
+    }
+
+    @Data
+    public static class UpdateTitleRequest {
+        /** 新资源名称 */
+        private String title;
     }
 
     /* ==================== 学生端 ==================== */

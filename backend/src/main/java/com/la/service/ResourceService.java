@@ -172,6 +172,32 @@ public class ResourceService {
         resourceMapper.updateById(upd);
     }
 
+    /** 教师重命名资源：1-50 字（去首尾空格后），不含控制字符与 < > / \ | : * ? " 等特殊字符 */
+    public void updateTitle(Long teacherId, Long resourceId, String title) {
+        LearningResource r = resourceMapper.selectById(resourceId);
+        if (r == null) {
+            throw new BizException("资源不存在或已被删除");
+        }
+        if (!r.getTeacherId().equals(teacherId)) {
+            throw new BizException("只能编辑自己上传的资源");
+        }
+        String t = title == null ? "" : title.trim();
+        if (t.isEmpty()) {
+            throw new BizException("资源名称不能为空");
+        }
+        if (t.length() > 50) {
+            throw new BizException("资源名称不能超过 50 个字符");
+        }
+        if (t.codePoints().anyMatch(cp -> cp < 0x20) || t.matches(".*[<>:\"/\\\\|?*`].*")) {
+            throw new BizException("资源名称不能包含特殊字符（如 < > / \\ | : * ? \" 等）");
+        }
+        LearningResource upd = new LearningResource();
+        upd.setId(resourceId);
+        upd.setTitle(t);
+        resourceMapper.updateById(upd);
+        log.info("[资源重命名] id={} title={} -> {}", resourceId, r.getTitle(), t);
+    }
+
     /** 教师查看某学生的学习资源进度（班级学生页档案卡） */
     public Map<String, Object> studentProgress(Long studentId) {
         User stu = userMapper.selectById(studentId);

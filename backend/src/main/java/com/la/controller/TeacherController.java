@@ -13,6 +13,7 @@ import com.la.mapper.UserMapper;
 import com.la.security.CurrentUser;
 import com.la.exception.BizException;
 import com.la.service.AssignmentService;
+import com.la.service.CoTeacherService;
 import com.la.service.ComposeAiService;
 import com.la.service.ComposeImportService;
 import com.la.service.GradingService;
@@ -36,8 +37,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Tag(name = "教师端")
 @RestController
@@ -46,6 +51,7 @@ import java.util.Map;
 public class TeacherController {
 
     private final TeacherService teacherService;
+    private final CoTeacherService coTeacherService;
     private final AssignmentService assignmentService;
     private final ComposeAiService composeAiService;
     private final ComposeImportService composeImportService;
@@ -75,10 +81,14 @@ public class TeacherController {
     @Operation(summary = "班级列表（含每班在读学生数）")
     @GetMapping("/classes")
     public ApiResponse<List<Map<String, Object>>> classes() {
-        // 优先返回当前教师授课的班级，无授课班级时回退到全部（兼容演示账号）
+        // 优先返回当前教师授课 + 共同管理的班级，两者皆无时回退到全部（兼容演示账号）
         List<ClassEntity> own = classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
                 .eq(ClassEntity::getTeacherId, CurrentUser.id()));
-        List<ClassEntity> list = own.isEmpty() ? classMapper.selectList(null) : own;
+        Set<Long> ids = own.stream().map(ClassEntity::getId).collect(Collectors.toCollection(LinkedHashSet::new));
+        coTeacherService.coManagedClassIds(CurrentUser.id()).forEach(ids::add);
+        List<ClassEntity> list = ids.isEmpty()
+                ? classMapper.selectList(null)
+                : ids.stream().map(classMapper::selectById).filter(Objects::nonNull).toList();
         // 附带每班在读学生数：教师端班级切换组件展示各自班级人数
         return ApiResponse.ok(list.stream().map(c -> {
             Map<String, Object> m = new LinkedHashMap<>();
@@ -129,6 +139,13 @@ public class TeacherController {
     public ApiResponse<Void> deleteAssignment(@PathVariable Long id) {
         assignmentService.deleteAssignment(CurrentUser.id(), id);
         return ApiResponse.ok();
+    }
+
+    @Operation(summary = "移动作业到文件夹（folderId 为空 = 移回内置「其他」）")
+    @PutMapping("/assignments/{id}/folder")
+    public ApiResponse<Map<String, Object>> moveAssignment(@PathVariable Long id,
+                                                           @RequestBody MoveFolderRequest req) {
+        return ApiResponse.ok(assignmentService.moveAssignment(CurrentUser.id(), id, req.getFolderId()));
     }
 
     @Operation(summary = "出题组卷：保存/发布题目型作业（单选/多选/填空/判断/简答/编程题）")
@@ -297,6 +314,12 @@ public class TeacherController {
     @Data
     public static class FolderRequest {
         private String name;
+    }
+
+    @Data
+    public static class MoveFolderRequest {
+        /** 目标文件夹 id（null = 移回内置「其他」） */
+        private Long folderId;
     }
 
     @Operation(summary = "教师评分发布（回流学生通知+会话卡片）")

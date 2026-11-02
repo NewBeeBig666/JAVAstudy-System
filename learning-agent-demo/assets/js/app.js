@@ -278,18 +278,23 @@
    * =========================================================== */
   function renderTopbar() {
     const st = State.role === 'student';
+    // 教师端：左上角小字动态显示学情看板当前选中班级（与侧栏班级选择器同名同源）；
+    // 切换成功落库 State.filters.classId 后随整窗 render 同步更新，无选中/未加载时回退「教师工作台」
+    const cls = !st && Array.isArray(DB.classes)
+      ? DB.classes.find(x => String(x.id) === String(State.filters.classId)) : null;
     return `
       ${State.section === 'knowledge' ? '' : `<button class="icon-btn mobile-only" data-act="toggleSide" title="功能面板">${icon('menu', 18)}</button>`}
       <div class="brand">
         <div class="brand-mark">${icon('sparkles', 17)}</div>
         <div>
           <div class="brand-name">Java 学习智能体</div>
-          <div class="brand-sub">${st ? h(DB.me.className || '软件工程') : '教师工作台'}</div>
+          <div class="brand-sub">${st ? h(DB.me.className || '软件工程') : (cls ? h(cls.name) : '教师工作台')}</div>
         </div>
       </div>
       <div class="role-switch">
         <span class="user-chip">${icon('user', 15)} ${h(DB.me.realName || '')} · ${st ? '学生' : '教师'}</span>
       </div>
+      ${st ? '' : `<button class="ot-chip" data-act="coTeacherModal" title="管理当前班级的共同管理教师">${icon('users', 13)} <span class="ot-txt">其他教师</span></button>`}
       <div class="topbar-spacer"></div>
       <div class="top-meta">
         <button class="fb-chip" data-act="${st ? 'openFeedback' : 'openFeedbackList'}" title="${st ? '提交你的建议或问题反馈' : '查看学生提交的建议反馈'}">${icon(st ? 'edit' : 'inbox', 13)} <span class="fb-txt">${st ? '建议反馈' : '查看反馈'}</span></button>
@@ -503,7 +508,7 @@
             <div class="li-extra">${sel ? '<span class="badge brand">已选</span>' : (pend ? '<span class="badge warn">' + pend + ' 待批</span>' : '')}</div>
           </button>`;
         }
-        return `<button class="list-item ${State.filters.subAs === a.id && (sec === 'submissions' || sec === 'assignments') ? 'on' : ''}" data-act="subAsPick" data-val="${a.id}">
+        return `<button class="list-item ${State.filters.subAs === a.id && (sec === 'submissions' || sec === 'assignments') ? 'on' : ''}" data-act="subAsPick" data-val="${a.id}" title="左键：选中作业 · 右键：移动到文件夹">
           <div class="li-main"><div class="li-title">${h(a.title)}</div>
           <div class="li-sub">${a.status === 'draft' ? '草稿' : '截止 ' + h(a.due)} · 已交 ${a.submitted}/${a.total}</div></div>
           ${pend ? '<div class="li-extra"><span class="badge warn">' + pend + ' 待批</span></div>' : ''}
@@ -2192,22 +2197,6 @@
     });
   }
 
-  // 上传/编辑弹窗共用的知识点多选列表（搜索 + 点选，局部刷新防闪屏丢焦点）
-  function resKpListHtml() {
-    const d = State.modal && State.modal.data;
-    if (!d) return '';
-    const q = (d.q || '').toLowerCase();
-    const kps = DB.knowledgePoints.filter(k =>
-      !q || (k.name || '').toLowerCase().indexOf(q) >= 0 || (k.id || '').toLowerCase().indexOf(q) >= 0);
-    return kps.map(k => {
-      const on = (d.kps || []).indexOf(k.id) >= 0;
-      return `<div class="pick ${on ? 'on' : ''}" data-act="resKpToggle" data-val="${h(k.id)}">
-        <div class="pm"><div class="pn">${h(k.name)}</div><div class="pd">${h(k.id)}</div></div>
-        <span class="badge ${on ? 'brand' : ''}">${on ? '已选' : '＋'}</span>
-      </div>`;
-    }).join('') || '<div class="empty"><div class="empty-title">没有匹配的知识点</div></div>';
-  }
-
   function viewResources() {
     ensureResources();
     if (State.role === 'teacher') return viewResourcesTeacher();
@@ -2239,7 +2228,7 @@
         <h3>${h(r.title)}</h3><div class="spacer"></div>
         <span class="badge ok">${icon('checkcircle', 12)} ${r.completedCount || 0} 人已学完</span>
         <button class="btn sm ghost" data-act="resFile" data-id="${r.id}" title="预览/下载">${icon('eye', 14)}</button>
-        <button class="btn sm ghost" data-act="resEditKp" data-id="${r.id}" title="编辑关联知识点">${icon('edit', 14)}</button>
+        <button class="btn sm ghost" data-act="resEditMenu" data-id="${r.id}" title="编辑资源">${icon('edit', 14)}</button>
         <button class="btn sm ghost" data-act="resDel" data-id="${r.id}" title="删除">${icon('trash', 14)}</button>
       </div>
       <div class="card-body">
@@ -3207,10 +3196,81 @@
       body = `<div class="form-row"><label>关联知识点 <span id="resKpCount" style="font-weight:400;color:var(--text-3)">${n ? '已选 ' + n + ' 个' : '未选择'}</span></label>
           <div class="field" style="margin-bottom:8px">${icon('search', 15)}
             <input placeholder="搜索知识点…" value="${h(d.q || '')}" data-bind="reskpq"></div>
-          <div class="pick-list" id="resKpList" style="max-height:260px">${resKpListHtml()}</div>
-          <div class="hint">保存后覆盖原有关联，AI 识别结果与手动选择均可保留</div></div>`;
+          <div id="nsPickArea">${newSessionPickArea()}</div>
+          <div class="hint">支持模块/章节整选与逐个点选；保存后覆盖原有关联，AI 识别结果与手动选择均可保留</div></div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn primary" data-act="doResKpSave" ${d.busy ? 'disabled' : ''}>${d.busy ? '保存中…' : icon('check', 15) + ' 保存'}</button>`;
+
+    } else if (m.type === 'asMove') {
+      title = '移动到文件夹 · ' + (d.title || '');
+      const cur = d.folderId == null ? '' : String(d.folderId);
+      const curName = cur === '' ? '其他' : (((DB.folders || []).find(f => String(f.id) === cur) || {}).name || '其他');
+      const opts = [{ id: '', name: '其他（根目录）' }]
+        .concat((DB.folders || []).map(f => ({ id: String(f.id), name: f.name })));
+      body = `<div class="form-row"><label>目标文件夹 <span style="font-weight:400;color:var(--text-3)">当前归属：${h(curName)}</span></label>
+          <div class="pick-list" id="asMoveList" style="max-height:280px">${opts.map(o => {
+            const on = d.target === o.id;
+            const isCur = cur === o.id;
+            return `<div class="pick ${on ? 'on' : ''}" data-act="asMovePick" data-val="${h(o.id)}">
+              <div class="pm"><div class="pn">${h(o.name)}</div>${isCur ? '<div class="pd">当前归属</div>' : ''}</div>
+              <span class="badge ${on ? 'brand' : ''}">${on ? '目标' : (isCur ? '当前' : '＋')}</span>
+            </div>`;
+          }).join('')}</div>
+          <div class="hint">「其他」为根目录；移动立即生效，左侧栏分组实时更新</div></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doAsMove" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 移动中…' : icon('folderPlus', 15) + ' 移动'}</button>`;
+
+    } else if (m.type === 'coTeacher') {
+      // 班级共同管理教师面板：每次打开重新拉取（loading→数据/错误三态）
+      if (d.loading) {
+        title = '其他教师';
+        body = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:13px">权限数据加载中…</div>';
+      } else if (d.err) {
+        title = '其他教师';
+        body = `<div class="empty"><div class="empty-title">权限数据加载失败</div><div class="empty-desc">${h(d.err)}</div>
+          <button class="btn sm" data-act="coTeacherModal">${icon('refresh', 13)} 重试</button></div>`;
+      } else {
+        title = '其他教师 · ' + (d.className || '');
+        const cands = d.candidates || [];
+        const list = d.coTeachers || [];
+        body = `<div class="note" style="margin-bottom:12px">当前班级 <b>${h(d.className || '')}</b>（所有者：${h(d.owner || '')}）。添加的教师仅获得<b>该班级</b>的共同管理权限，可查看本班学情与管理作业，不影响其他班级。</div>
+          ${d.manageable ? `<div class="form-row"><label>添加共同管理教师</label>
+            <div style="display:flex;gap:8px">
+              <select class="input" data-bind="coTeacherPick" style="flex:1">
+                <option value="">选择教师账号…</option>
+                ${cands.map(c => `<option value="${c.id}" ${String(d.pick) === String(c.id) ? 'selected' : ''}>${h(c.realName)}（${h(c.username)}）</option>`).join('')}
+              </select>
+              <button class="btn primary" data-act="doCoTeacherAdd" ${d.busy ? 'disabled' : ''}>${d.busy ? '添加中…' : '添加'}</button>
+            </div>
+            <div class="hint">${cands.length ? '仅列出系统内有效教师账号，已排除所有者与已添加教师' : '暂无可添加的教师账号（系统内无其他教师）'}</div></div>`
+          : '<div class="hint" style="margin-bottom:12px">你是该班级的共同管理教师；增删共同管理者仅限班级所有者操作。</div>'}
+          <div class="form-row"><label>已关联教师（${list.length}）</label>
+            ${list.length ? `<div class="pick-list" style="max-height:220px">${list.map(t => `<div class="pick">
+                <div class="pm"><div class="pn">${h(t.realName)} <span style="color:var(--text-3);font-weight:400">（${h(t.username)}）</span></div>
+                <div class="pd">添加于 ${h(t.addedAt || '-')} · 可查看与管理本班学情/作业</div></div>
+                ${d.manageable ? `<button class="btn sm ghost" data-act="coTeacherRemove" data-val="${t.id}" ${d.busy ? 'disabled' : ''}>移除</button>` : ''}
+              </div>`).join('')}</div>`
+            : '<div class="empty"><div class="empty-title">暂无其他共同管理教师</div><div class="empty-desc">添加后，对方教师将在班级列表中看到本班级。</div></div>'}
+          </div>`;
+      }
+      foot = `<button class="btn" data-act="closeModal">关闭</button>`;
+
+    } else if (m.type === 'resEditMenu') {
+      title = '编辑资源 · ' + (d.title || '');
+      body = `<div class="res-edit-menu">
+          <button class="btn block" data-act="resRenameModal" data-id="${d.id}">${icon('edit', 15)} 编辑资源名称</button>
+          <button class="btn block" data-act="resEditKp" data-id="${d.id}">${icon('layers', 15)} 编辑关联知识点</button>
+        </div>
+        <div class="hint" style="margin-top:10px">选择要执行的操作，点击选项直接进入对应编辑界面</div>`;
+      foot = `<button class="btn" data-act="closeModal">取消</button>`;
+
+    } else if (m.type === 'resRename') {
+      title = '编辑资源名称 · ' + (d.title || '');
+      body = `<div class="form-row"><label>资源名称</label>
+          <input class="input" placeholder="如：第3章 数组与循环 课堂课件" value="${h(d.name || '')}" data-bind="modal" data-key="name" maxlength="50">
+          <div class="hint">1-50 个字符；不能为空，不能包含 &lt; &gt; / \\ | : * ? " 等特殊字符</div></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doResRename" ${d.busy ? 'disabled' : ''}>${d.busy ? '保存中…' : icon('check', 15) + ' 保存'}</button>`;
 
     } else if (m.type === 'resDel') {
       title = '删除学习资源';
@@ -4783,7 +4843,7 @@
         t.classList.toggle('on', i < 0);
       }
       // 已选标签条与计数同步（局部刷新，不重建列表防滚动跳顶）
-      if (State.modal.type === 'newSession' || State.modal.type === 'resUpload') {
+      if (State.modal.type === 'newSession' || State.modal.type === 'resUpload' || State.modal.type === 'resKp') {
         const pills = document.getElementById('nsPills');
         if (pills) {
           const wrap = document.createElement('div');
@@ -4795,7 +4855,8 @@
         if (cnt) {
           cnt.textContent = State.modal.type === 'newSession'
             ? (d.kps.length ? '（已选 ' + d.kps.length + ' 个）' : '')
-            : (d.kps.length ? '已选 ' + d.kps.length + ' 个' : '未选择（AI 会自动识别关联）');
+            : (d.kps.length ? '已选 ' + d.kps.length + ' 个'
+              : (State.modal.type === 'resKp' ? '未选择' : '未选择（AI 会自动识别关联）'));
         }
       }
       // 同步「创建」按钮文案（原先由整窗重渲染负责，局部更新后需手动刷新）
@@ -5475,22 +5536,6 @@
         toast(e.message);
       }
     },
-    resKpToggle(v, id, t) {
-      const d = State.modal && State.modal.data;
-      if (!d) return;
-      d.kps = d.kps || [];
-      const i = d.kps.indexOf(v);
-      const on = i < 0;
-      if (i >= 0) d.kps.splice(i, 1); else d.kps.push(v);
-      // 局部切换选中态：整窗重渲染会重放弹窗动画（闪屏）并丢失搜索焦点
-      if (t && t.classList) {
-        t.classList.toggle('on', on);
-        const b = t.querySelector('.badge');
-        if (b) { b.className = 'badge' + (on ? ' brand' : ''); b.textContent = on ? '已选' : '＋'; }
-      }
-      const cnt = document.getElementById('resKpCount');
-      if (cnt) cnt.textContent = d.kps.length ? '已选 ' + d.kps.length + ' 个' : '未选择';
-    },
     async doResUpload() {
       const d = State.modal && State.modal.data;
       if (!d || d.uploading) return;
@@ -5566,10 +5611,45 @@
       fd.append('kpCodes', (d.kps || []).join(','));
       xhr.send(fd);
     },
+    resEditMenu(v, id) {
+      const r = (DB.resources || []).find(x => String(x.id) === String(id));
+      if (!r) return;
+      State.modal = { type: 'resEditMenu', data: { id: r.id, title: r.title } };
+      renderOverlays();
+    },
+    resRenameModal(v, id) {
+      const r = (DB.resources || []).find(x => String(x.id) === String(id));
+      if (!r) return;
+      State.modal = { type: 'resRename', data: { id: r.id, title: r.title, name: r.title, busy: false } };
+      renderOverlays();
+    },
+    async doResRename() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      const t = (d.name || '').trim();
+      // 前端预校验（与后端规则一致）：非空 / 1-50 字 / 不含控制字符与 < > / \ | : * ? " 等特殊字符
+      if (!t) { toast('资源名称不能为空'); return; }
+      if (t.length > 50) { toast('资源名称不能超过 50 个字符'); return; }
+      if (/[\x00-\x1f<>:"\/\\|?*`]/.test(t)) { toast('资源名称不能包含特殊字符（如 < > / \\ | : * ? "）'); return; }
+      if (t === d.title) { State.modal = null; renderOverlays(); return; }
+      d.busy = true; renderOverlays();
+      try {
+        await API.put('/teacher/resources/' + d.id + '/title', { title: t });
+        State.modal = null; renderOverlays();
+        toast('资源名称已更新', 'ok');
+        // 本地更新列表标题并重渲染当前区，无需整表重拉
+        const r = (DB.resources || []).find(x => String(x.id) === String(d.id));
+        if (r) { r.title = t; if (State.section === 'resources') render(); }
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('保存失败：' + e.message);
+      }
+    },
     resEditKp(v, id) {
       const r = (DB.resources || []).find(x => String(x.id) === String(id));
       if (!r) return;
-      State.modal = { type: 'resKp', data: { id: r.id, title: r.title, kps: (r.kpCodes || []).slice(), q: '', busy: false } };
+      // nav/scrolls 供分层导航（下钻/返回/面包屑）与各层滚动位置记忆使用，与上传弹窗同构
+      State.modal = { type: 'resKp', data: { id: r.id, title: r.title, kps: (r.kpCodes || []).slice(), q: '', nav: [], scrolls: {}, busy: false } };
       renderOverlays();
     },
     async doResKpSave() {
@@ -5907,6 +5987,104 @@
       } catch (e) {
         d.busy = false; renderOverlays();
         toast(e.message);
+      }
+    },
+    /* --- 班级共同管理教师（顶栏「其他教师」面板，绑定当前选中班级） --- */
+    async coTeacherModal() {
+      const cid = State.filters.classId;
+      if (cid == null) { toast('请先在学情看板选择班级'); return; }
+      // 每次打开都重新拉取最新权限数据（loading → 数据/错误三态）
+      State.modal = { type: 'coTeacher', data: { classId: cid, loading: true, err: null } };
+      renderOverlays();
+      try {
+        const p = await API.get('/teacher/co-teachers?classId=' + encodeURIComponent(cid));
+        // 竞态守卫：响应返回时弹窗可能已被关闭/重开（loading 态）
+        if (!State.modal || State.modal.type !== 'coTeacher'
+          || String(State.modal.data.classId) !== String(cid)) return;
+        const d = State.modal.data;
+        Object.assign(d, p, { loading: false, err: null, pick: '' });
+        renderOverlays();
+      } catch (e) {
+        const d = State.modal && State.modal.data;
+        if (d && d.loading) { d.loading = false; d.err = e.message; renderOverlays(); }
+      }
+    },
+    async doCoTeacherAdd() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      if (!d.pick) { toast('请选择要添加的教师账号'); return; }
+      d.busy = true; renderOverlays();
+      try {
+        const p = await API.post('/teacher/co-teachers', { classId: d.classId, teacherId: Number(d.pick) });
+        Object.assign(d, p, { busy: false, pick: '' });
+        renderOverlays();
+        toast('已添加为班级共同管理教师', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('添加失败：' + e.message);
+      }
+    },
+    async coTeacherRemove(v) {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        const p = await API.del('/teacher/co-teachers/' + v + '?classId=' + encodeURIComponent(d.classId));
+        Object.assign(d, p, { busy: false });
+        renderOverlays();
+        toast('已移除该教师的班级管理权限', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('移除失败：' + e.message);
+      }
+    },
+
+    /* 作业移动到文件夹：右键菜单入口 → 选择目标 → PUT 持久化 → 侧栏局部重渲染 */
+    asMoveModal(v) {
+      const a = (DB.assignments || []).find(x => String(x.id) === String(v));
+      if (!a) { toast('作业不存在或已删除'); return; }
+      State.modal = { type: 'asMove', data: { id: a.id, title: a.title, folderId: a.folderId, target: a.folderId == null ? '' : String(a.folderId), busy: false } };
+      renderOverlays();
+    },
+    asMovePick(v) {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.target = v;
+      // 局部切换选中态（不整窗重渲染，防闪屏）
+      const box = document.getElementById('asMoveList');
+      if (box) {
+        box.querySelectorAll('.pick').forEach(p => {
+          const on = p.dataset.val === v;
+          p.classList.toggle('on', on);
+          const b = p.querySelector('.badge');
+          if (b) { b.className = 'badge' + (on ? ' brand' : ''); b.textContent = on ? '目标' : (p.querySelector('.pd') ? '当前' : '＋'); }
+        });
+      }
+    },
+    async doAsMove() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      const cur = d.folderId == null ? '' : String(d.folderId);
+      if (d.target === cur) { toast('作业已在目标文件夹中，无需移动'); return; }
+      d.busy = true; renderOverlays();
+      try {
+        const a = await API.put('/teacher/assignments/' + d.id + '/folder',
+          { folderId: d.target === '' ? null : Number(d.target) });
+        // 本地同步目录归属（接口返回最新作业 DTO，直接合并进列表）
+        const i = (DB.assignments || []).findIndex(x => String(x.id) === String(d.id));
+        if (i >= 0) DB.assignments[i] = Object.assign({}, DB.assignments[i], a);
+        State.modal = null; renderOverlays();
+        // 侧栏分组局部重渲染（不动主区，防滚动跳动）
+        const side = document.querySelector('#side .side-body');
+        if (side && (State.section === 'assignments' || State.section === 'submissions')) {
+          side.innerHTML = asFolderSidebarHtml(State.section);
+        }
+        const fname = d.target === '' ? '其他' : (((DB.folders || []).find(f => String(f.id) === d.target) || {}).name || '文件夹');
+        toast('已将「' + d.title + '」移动到「' + fname + '」', 'ok');
+      } catch (e) {
+        // 失败保持弹窗打开（busy 复位），可直接重试
+        d.busy = false; renderOverlays();
+        toast('移动失败：' + e.message + '（请重试）');
       }
     },
     // 文件夹展开/收起：局部 DOM 切换（不整窗 render，防侧栏滚动跳动），偏好持久化
@@ -6927,6 +7105,28 @@
     }
   });
 
+  /* 侧栏作业条目右键菜单：唤起「移动到文件夹」入口（仅非批量初评模式）。
+   * 复用 as-menu 浮层（绝对定位在鼠标处，点击外部/滚动自动收起）；
+   * 不触发整页重渲染，原 subAsPick 左键点击选择作业的行为不受影响 */
+  document.addEventListener('contextmenu', e => {
+    const item = e.target.closest ? e.target.closest('.as-folder-items .list-item[data-act="subAsPick"]') : null;
+    if (!item) return;
+    e.preventDefault();
+    closeAsMenu();
+    const menu = document.createElement('div');
+    menu.className = 'as-menu';
+    menu.innerHTML = `<button class="as-menu-item" data-act="asMoveModal" data-val="${h(item.dataset.val)}">${icon('folderPlus', 14)} 移动到文件夹</button>`;
+    // 靠右/靠下边缘时回退，避免菜单溢出视口
+    menu.style.left = Math.min(e.pageX, document.documentElement.clientWidth - 176) + 'px';
+    menu.style.top = Math.min(e.pageY, window.scrollY + document.documentElement.clientHeight - 56) + 'px';
+    document.body.appendChild(menu);
+    asMenuEl = menu;
+    setTimeout(() => {
+      document.addEventListener('click', asMenuOutside, true);
+      window.addEventListener('scroll', closeAsMenu, true);
+    }, 0);
+  });
+
   document.addEventListener('input', e => {
     const t = e.target, b = t.dataset.bind;
     if (!b) return;
@@ -6934,6 +7134,10 @@
     else if (b === 'composeFolder') {
       // 作业管理顶栏「选择文件夹」下拉：作为后续发布作业的默认存储位置（空 = 其他）
       State.composeFolder = t.value === '' ? null : Number(t.value);
+    }
+    else if (b === 'coTeacherPick') {
+      // 「其他教师」面板：下拉选择待添加教师（仅存 State，不重渲染防闪屏）
+      if (State.modal) State.modal.data.pick = t.value;
     }
     else if (b === 'assistant') {
       // 教师端智能助手输入：仅更新 State 不重渲染（输入过程不丢焦点）
@@ -6962,16 +7166,12 @@
       }
     }
     else if (b === 'reskpq') {
-      // 学习资源弹窗知识点搜索：仅局部刷新选择区，避免闪屏与输入丢焦点。
-      // 上传弹窗（分层组件）刷新 nsPickArea；编辑知识点弹窗（旧平铺）刷新 resKpList
+      // 学习资源弹窗知识点搜索（上传/编辑共用分层组件）：仅局部刷新选择区，
+      // 避免闪屏与输入丢焦点
       if (State.modal) {
         State.modal.data.q = t.value;
         const area = document.getElementById('nsPickArea');
         if (area) { area.innerHTML = newSessionPickArea(); }
-        else {
-          const box = document.getElementById('resKpList');
-          if (box) box.innerHTML = resKpListHtml();
-        }
       }
     }
     else if (b === 'modal') {
