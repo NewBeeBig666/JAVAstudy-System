@@ -125,6 +125,145 @@ public class ComposeAiService {
         return result;
     }
 
+    /* ==================== 导入题目 AI 匹配知识点 ====================
+     * 为导入的每道题从课程知识点库（不含一级模块）中挑 1-3 个最匹配的编码；
+     * DeepSeek 不可用 / 输出异常时降级为本地关键词包含匹配，保证功能始终可用。 */
+
+    public List<List<String>> matchKps(List<Map<String, Object>> questions) {
+        if (questions == null || questions.isEmpty()) {
+            throw new BizException("没有待识别的题目");
+        }
+        // 题目级知识点：具体节点（level ≥ 2），排除一级模块；含祖先路径辅助模型理解语义
+        List<KnowledgePoint> all = knowledgePointMapper.selectList(new LambdaQueryWrapper<KnowledgePoint>()
+                .in(KnowledgePoint::getSource, "XLSX", "CUSTOM")
+                .eq(KnowledgePoint::getDeleted, 0)
+                .orderByAsc(KnowledgePoint::getSortOrder));
+        Map<Long, KnowledgePoint> byId = new LinkedHashMap<>();
+        for (KnowledgePoint k : all) {
+            byId.put(k.getId(), k);
+        }
+        List<KnowledgePoint> targets = all.stream().filter(k -> k.getLevel() != null && k.getLevel() >= 2).toList();
+        if (targets.isEmpty()) {
+            throw new BizException("知识点库为空，无法匹配");
+        }
+        List<List<String>> result = new ArrayList<>();
+        if (!llmClient.isMock()) {
+            try {
+                result = llmMatchKps(targets, byId, questions);
+            } catch (Exception e) {
+                log.warn("[AI匹配知识点] LLM 失败，降级本地关键词匹配：{}", e.getMessage());
+            }
+        }
+        if (result.size() != questions.size()) {
+            result = new ArrayList<>();
+        }
+        if (result.isEmpty()) {
+            result = localMatchKps(targets, questions);
+        }
+        return result;
+    }
+
+    /** LLM 匹配：整批一次调用，输出 [{index, kpCodes:[...]}]；解析异常由调用方统一捕获降级 */
+    private List<List<String>> llmMatchKps(List<KnowledgePoint> targets, Map<Long, KnowledgePoint> byId,
+                                           List<Map<String, Object>> questions) throws Exception {
+        StringBuilder catalog = new StringBuilder();
+        for (KnowledgePoint k : targets) {
+            catalog.append(k.getKpCode()).append("｜").append(k.getName()).append("｜").append(kpPath(k, byId)).append('\n');
+        }
+        StringBuilder qs = new StringBuilder();
+        for (int i = 0; i < questions.size(); i++) {
+            Map<String, Object> q = questions.get(i);
+            String title = String.valueOf(q.getOrDefault("title", ""));
+            if (title.length() > 200) {
+                title = title.substring(0, 200);
+            }
+            qs.append(i).append(". [").append(q.getOrDefault("type", "")).append("] ")
+                    .append(title.replace('\n', ' ')).append('\n');
+        }
+        String system = "你是 Java 课程的知识点标注专家。给定课程知识点编码表（编码｜名称｜所属路径）和题目列表，"
+                + "为每道题选出它实际考查的知识点。\n"
+                + "要求：\n"
+                + "1. 每题选 1-3 个知识点，按考查侧重程度排序，编码必须严格来自编码表，禁止编造；\n"
+                + "2. 依据题干与选项描述判断考查内容，选择语义最贴合的知识点，宁缺毋滥；\n"
+                + "3. 严格只输出一个 JSON 数组，不要输出任何其他文字或代码块标记，每个元素形如："
+                + "{\"index\":题目序号, \"kpCodes\":[\"编码1\",\"编码2\"]}，数组长度必须等于题目数量。";
+        String user = "知识点编码表：\n" + catalog + "\n题目列表：\n" + qs;
+        String content = llmClient.chat(List.of(ChatMessage.system(system), ChatMessage.user(user)), 0.3);
+        List<List<String>> out = new ArrayList<>();
+        if (content == null || content.isBlank()) {
+            return out;
+        }
+        int s = content.indexOf('[');
+        int e = content.lastIndexOf(']');
+        if (s < 0 || e <= s) {
+            return out;
+        }
+        JsonNode arr = objectMapper.readTree(content.substring(s, e + 1));
+        Set<String> valid = new HashSet<>();
+        for (KnowledgePoint k : targets) {
+            valid.add(k.getKpCode());
+        }
+        List<List<String>> slots = new ArrayList<>();
+        for (int i = 0; i < questions.size(); i++) {
+            slots.add(new ArrayList<>());
+        }
+        for (JsonNode n : arr) {
+            int idx = n.path("index").asInt(-1);
+            if (idx < 0 || idx >= slots.size() || !n.path("kpCodes").isArray()) {
+                continue;
+            }
+            List<String> codes = new ArrayList<>();
+            for (JsonNode c : n.path("kpCodes")) {
+                String code = c.asText("");
+                if (valid.contains(code) && !codes.contains(code) && codes.size() < 3) {
+                    codes.add(code);
+                }
+            }
+            slots.set(idx, codes);
+        }
+        out.addAll(slots);
+        return out;
+    }
+
+    /** 本地降级匹配：知识点名称与题干的包含关系（双向），取名称最长的前 3 个 */
+    private List<List<String>> localMatchKps(List<KnowledgePoint> targets, List<Map<String, Object>> questions) {
+        List<List<String>> out = new ArrayList<>();
+        for (Map<String, Object> q : questions) {
+            String title = String.valueOf(q.getOrDefault("title", "")).toLowerCase(Locale.ROOT);
+            List<KnowledgePoint> hits = new ArrayList<>();
+            for (KnowledgePoint k : targets) {
+                String name = k.getName() == null ? "" : k.getName().trim();
+                if (name.length() >= 2
+                        && (title.contains(name.toLowerCase(Locale.ROOT))
+                        || name.toLowerCase(Locale.ROOT).contains(title) && title.length() >= 2)) {
+                    hits.add(k);
+                }
+            }
+            hits.sort((a, b) -> b.getName().length() - a.getName().length());
+            List<String> codes = new ArrayList<>();
+            for (KnowledgePoint k : hits) {
+                if (codes.size() >= 3) {
+                    break;
+                }
+                codes.add(k.getKpCode());
+            }
+            out.add(codes);
+        }
+        return out;
+    }
+
+    /** 知识点祖先路径：模块 › 章节 › …（最多四级） */
+    private String kpPath(KnowledgePoint k, Map<Long, KnowledgePoint> byId) {
+        List<String> parts = new ArrayList<>();
+        KnowledgePoint cur = byId.get(k.getParentId());
+        int guard = 0;
+        while (cur != null && guard++ < 4) {
+            parts.add(0, cur.getName());
+            cur = byId.get(cur.getParentId());
+        }
+        return String.join(" › ", parts);
+    }
+
     /** 展开待生成槽位为题型序列 */
     private List<String> expandPending(LinkedHashMap<String, Integer> pending) {
         List<String> seq = new ArrayList<>();

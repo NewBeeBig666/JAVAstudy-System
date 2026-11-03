@@ -1191,13 +1191,14 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 
 /* ---------- 题卡「添加知识点」搜索下拉（组卷编辑器内使用，z-index 需高于 compose-mask 的 80） ---------- */
 .qkp-menu {
-  position: absolute; z-index: 90; width: 300px; padding: 8px;
+  position: absolute; z-index: 90; width: 360px; padding: 8px;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: var(--r);
   box-shadow: 0 2px 6px rgba(29, 31, 39, .06), 0 12px 32px rgba(29, 31, 39, .12);
 }
 .qkp-menu .qkp-search { height: 32px; font-size: 12.5px; margin-bottom: 6px; }
-.qkp-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.qkp-list { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.qkp-list .ns-crumbs .ns-crumb { padding: 3px 5px; font-size: 12px; }
 .qkp-item {
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 7px 9px; border: 0; background: none; border-radius: var(--r-sm);

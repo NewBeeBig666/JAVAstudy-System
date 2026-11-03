@@ -19,6 +19,7 @@ import com.la.service.ComposeImportService;
 import com.la.service.GradingService;
 import com.la.service.TeacherService;
 import com.la.service.TeacherAssistantService;
+import com.la.service.WarningScanService;
 import com.la.service.ClassImportService;
 import com.la.service.ScoreExportService;
 import com.la.service.SubmissionExportService;
@@ -36,6 +37,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -51,6 +53,7 @@ import java.util.stream.Collectors;
 public class TeacherController {
 
     private final TeacherService teacherService;
+    private final WarningScanService warningScanService;
     private final CoTeacherService coTeacherService;
     private final AssignmentService assignmentService;
     private final ComposeAiService composeAiService;
@@ -179,6 +182,18 @@ public class TeacherController {
         data.put("text", text);
         data.put("questions", composeImportService.parseQuestions(text));
         return ApiResponse.ok(data);
+    }
+
+    @Operation(summary = "导入题目 AI 匹配知识点（每题 1-3 个；DeepSeek 不可用时降级关键词匹配）")
+    @PostMapping("/compose/ai-match-kps")
+    public ApiResponse<List<List<String>>> aiMatchKps(@RequestBody AiMatchRequest req) {
+        return ApiResponse.ok(composeAiService.matchKps(req.getQuestions()));
+    }
+
+    @Data
+    public static class AiMatchRequest {
+        /** 待识别题目 [{type, title}] */
+        private List<Map<String, Object>> questions;
     }
 
     @Data
@@ -329,26 +344,42 @@ public class TeacherController {
         return ApiResponse.ok();
     }
 
-    @Operation(summary = "预警列表（跟随班级切换）")
+    @Operation(summary = "预警列表（跟随班级切换；班级归属校验：授课或共同管理）")
     @GetMapping("/warnings")
     public ApiResponse<List<Map<String, Object>>> warnings(@RequestParam(required = false) Long classId,
                                                            @RequestParam(required = false) String level,
                                                            @RequestParam(required = false) Boolean handled) {
-        return ApiResponse.ok(teacherService.warnings(classId != null ? classId : defaultClassId(), level, handled));
+        return ApiResponse.ok(teacherService.warnings(CurrentUser.id(),
+                classId != null ? classId : defaultClassId(), level, handled));
     }
 
-    @Operation(summary = "标记预警已处理")
+    @Operation(summary = "标记预警已处理（班级归属校验）")
     @PutMapping("/warnings/{id}/handle")
     public ApiResponse<Void> handleWarning(@PathVariable Long id) {
-        teacherService.handleWarning(id);
+        teacherService.handleWarning(CurrentUser.id(), id);
         return ApiResponse.ok();
     }
 
-    @Operation(summary = "预警推送提醒给学生")
+    @Operation(summary = "预警推送提醒给学生（班级归属校验）")
     @PostMapping("/warnings/{id}/notify")
     public ApiResponse<Void> notifyStudent(@PathVariable Long id) {
-        teacherService.notifyStudent(id);
+        teacherService.notifyStudent(CurrentUser.id(), id);
         return ApiResponse.ok();
+    }
+
+    @Operation(summary = "立即扫描预警（当前教师可见班级：授课 + 共同管理；六类规则，3 天内同类型去重）")
+    @PostMapping("/warnings/scan")
+    public ApiResponse<Map<String, Object>> scanWarnings() {
+        Long tid = CurrentUser.id();
+        // 可见班级口径与 classes() 一致：授课 ∪ 共同管理；均无时回退全部（演示模式）
+        Set<Long> ids = classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
+                        .eq(ClassEntity::getTeacherId, tid))
+                .stream().map(ClassEntity::getId).collect(Collectors.toCollection(LinkedHashSet::new));
+        coTeacherService.coManagedClassIds(tid).forEach(ids::add);
+        List<Long> target = ids.isEmpty()
+                ? classMapper.selectList(null).stream().map(ClassEntity::getId).toList()
+                : new ArrayList<>(ids);
+        return ApiResponse.ok(warningScanService.scan(target));
     }
 
     @Operation(summary = "班级薄弱点报告（学情 Agent 生成）")

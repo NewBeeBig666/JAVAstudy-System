@@ -49,6 +49,9 @@ public class ComposeRequest {
 
     @Data
     public static class QuestionReq {
+        /** 编辑场景携带原题目 id：未变化的题目按 id 原位更新保持稳定
+         *  （学生已提交作答按 questionId 关联，全删重建会使历史作答全部失配） */
+        private Long id;
         /** SINGLE / MULTI / FILL / JUDGE / SHORT / CODE */
         private String type;
         private String title;

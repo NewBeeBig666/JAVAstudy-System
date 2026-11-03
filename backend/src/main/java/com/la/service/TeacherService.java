@@ -36,10 +36,38 @@ public class TeacherService {
     private final ExerciseRecordMapper exerciseRecordMapper;
     private final DailyActivityMapper dailyActivityMapper;
     private final WarningMapper warningMapper;
+    private final ClassCoTeacherMapper classCoTeacherMapper;
     private final PasswordEncoder passwordEncoder;
     private final LlmClient llmClient;
     private final AgentPrompts agentPrompts;
     private final NotificationService notificationService;
+
+    /**
+     * 预警相关接口的班级归属校验：班级须为当前教师授课或共同管理的班级。
+     * 兼容演示回退：教师名下无任何可见班级时（classes() 回退返回全部班级）不限制，
+     * 避免演示账号在回退班级上预警页 403。
+     */
+    private void checkClassVisible(Long teacherId, Long classId) {
+        List<Long> own = classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
+                        .eq(ClassEntity::getTeacherId, teacherId))
+                .stream().map(ClassEntity::getId).toList();
+        Long coManaged = classCoTeacherMapper.selectCount(new LambdaQueryWrapper<ClassCoTeacher>()
+                .eq(ClassCoTeacher::getTeacherId, teacherId));
+        // 无任何可见班级：演示回退模式，放行
+        if (own.isEmpty() && (coManaged == null || coManaged == 0)) {
+            return;
+        }
+        if (own.contains(classId)) {
+            return;
+        }
+        Long co = classCoTeacherMapper.selectCount(new LambdaQueryWrapper<ClassCoTeacher>()
+                .eq(ClassCoTeacher::getClassId, classId)
+                .eq(ClassCoTeacher::getTeacherId, teacherId));
+        if (co != null && co > 0) {
+            return;
+        }
+        throw new BizException("无权访问该班级的预警数据");
+    }
 
     /**
      * 学情看板：4 KPI + 卡点知识点 TOP6 + 重点关注学生
@@ -197,9 +225,10 @@ public class TeacherService {
     }
 
     /**
-     * 预警列表
+     * 预警列表（班级归属校验：授课或共同管理）
      */
-    public List<Map<String, Object>> warnings(Long classId, String level, Boolean handled) {
+    public List<Map<String, Object>> warnings(Long teacherId, Long classId, String level, Boolean handled) {
+        checkClassVisible(teacherId, classId);
         LambdaQueryWrapper<Warning> qw = new LambdaQueryWrapper<Warning>()
                 .eq(classId != null, Warning::getClassId, classId)
                 .eq(level != null && !level.isBlank(), Warning::getLevel, level != null ? level.toUpperCase() : null)
@@ -227,21 +256,23 @@ public class TeacherService {
     }
 
     @Transactional
-    public void handleWarning(Long warningId) {
+    public void handleWarning(Long teacherId, Long warningId) {
         Warning w = warningMapper.selectById(warningId);
         if (w == null) {
             throw new BizException("预警不存在");
         }
+        checkClassVisible(teacherId, w.getClassId());
         w.setHandled(true);
         w.setHandledAt(LocalDateTime.now());
         warningMapper.updateById(w);
     }
 
-    public void notifyStudent(Long warningId) {
+    public void notifyStudent(Long teacherId, Long warningId) {
         Warning w = warningMapper.selectById(warningId);
         if (w == null || w.getStudentId() == null) {
             throw new BizException("预警不存在或不支持推送");
         }
+        checkClassVisible(teacherId, w.getClassId());
         notificationService.push(w.getStudentId(),
                 "教师提醒：" + w.getDescription() + " 如有困难请及时联系老师或使用智能体辅导。", "REMIND");
         w.setHandled(true);

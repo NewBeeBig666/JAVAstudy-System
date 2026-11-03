@@ -496,6 +496,11 @@ public class AssignmentService {
                 throw new BizException("作业不存在");
             }
             oldStatus = as.getStatus();
+            // 状态守卫：已发布（ONGOING）的作业编辑保存草稿不降级为 DRAFT——
+            // 学生端列表按非 DRAFT 过滤，降级会导致该作业从学生列表消失、无法查看
+            if ("ONGOING".equals(oldStatus) && "DRAFT".equals(status)) {
+                status = "ONGOING";
+            }
         } else {
             as = new Assignment();
             as.setTeacherId(teacherId);
@@ -542,13 +547,24 @@ public class AssignmentService {
             assignmentMapper.updateById(as);
         }
 
-        // 全删重建题目
-        questionMapper.delete(new LambdaQueryWrapper<Question>()
-                .eq(Question::getAssignmentId, as.getId()));
+        // 题目差量更新（保持 id 稳定）：携带原 id 且仍属本作业的题目原位 UPDATE；
+        // 无 id 的新题 INSERT；本次未提交的旧题 DELETE。
+        // 修复：原「全删重建」会使全部 question id 变化，学生已提交作答（按 questionId
+        // 关联）全部失配 → 详情页「未作答」、教师端批改无答题记录、旧页面提交报「作答内容无效」
+        Map<Long, Question> oldQs = questionMapper.selectList(new LambdaQueryWrapper<Question>()
+                        .eq(Question::getAssignmentId, as.getId()))
+                .stream().collect(Collectors.toMap(Question::getId, q -> q));
+        Set<Long> keptIds = new HashSet<>();
         for (int i = 0; i < questions.size(); i++) {
             ComposeRequest.QuestionReq q = questions.get(i);
-            Question en = new Question();
-            en.setAssignmentId(as.getId());
+            Question en = null;
+            if (q.getId() != null && oldQs.containsKey(q.getId())) {
+                en = oldQs.get(q.getId());
+                keptIds.add(q.getId());
+            } else {
+                en = new Question();
+                en.setAssignmentId(as.getId());
+            }
             en.setType(q.getType());
             en.setTitle(q.getTitle());
             en.setOptions(q.getOptions() != null ? toJson(q.getOptions()) : null);
@@ -559,7 +575,27 @@ public class AssignmentService {
             en.setScore("CUSTOM".equals(scoreMode) && q.getScore() != null
                     ? BigDecimal.valueOf(q.getScore()).setScale(1, RoundingMode.HALF_UP) : null);
             en.setSortOrder(i + 1);
-            questionMapper.insert(en);
+            if (en.getId() == null) {
+                questionMapper.insert(en);
+            } else {
+                // updateById 忽略 null 字段（清空解析等编辑会残留旧值），显式 set 全列
+                questionMapper.update(null, new LambdaUpdateWrapper<Question>()
+                        .eq(Question::getId, en.getId())
+                        .set(Question::getType, en.getType())
+                        .set(Question::getTitle, en.getTitle())
+                        .set(Question::getOptions, en.getOptions())
+                        .set(Question::getAnswer, en.getAnswer())
+                        .set(Question::getAnalysis, en.getAnalysis())
+                        .set(Question::getDifficulty, en.getDifficulty())
+                        .set(Question::getKpCode, en.getKpCode())
+                        .set(Question::getScore, en.getScore())
+                        .set(Question::getSortOrder, en.getSortOrder()));
+            }
+        }
+        for (Long oldId : oldQs.keySet()) {
+            if (!keptIds.contains(oldId)) {
+                questionMapper.deleteById(oldId);
+            }
         }
 
         // 题目型作业不带 Rubric：清理可能遗留的旧 Rubric（Rubric 型转题目型场景）

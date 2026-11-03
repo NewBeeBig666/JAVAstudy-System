@@ -2137,6 +2137,7 @@
     else list = DB.warnings.slice();   // 全部：含已处理，便于回看处理结果
 
     const head = mainHead('预警中心', '学情Agent 自动生成 · 每日 08:00 刷新',
+      '<button class="btn sm ghost" data-act="warnScan" title="立即对可见班级执行六类预警规则检测">' + icon('refresh', 14) + ' 立即检测</button>' +
       '<button class="btn sm" data-act="pushAll">' + icon('bell', 14) + ' 一键推送提醒</button>');
 
     if (!list.length) {
@@ -3662,6 +3663,9 @@
         lab: a.lab && a.lab.templateId ? { templateId: a.lab.templateId, templateTitle: a.lab.templateTitle || '' } : null,
         kps,
         questions: (a.questions || []).map(q => ({
+          // 保留题目 id：编辑保存时后端按 id 原位差量更新，保持 id 稳定
+          // （学生已提交作答按 questionId 关联，id 变化会导致作答失配显示「未作答」）
+          id: q.id != null ? q.id : null,
           type: q.type, title: q.title || '',
           options: (q.options || []).map(o => ({ key: o.key, text: o.text || '' })),
           answer: Array.isArray(q.answer) ? q.answer : [],
@@ -3874,6 +3878,7 @@
         <span class="badge brand">${icon('file', 13)} 导入作业</span>
         <span class="badge" id="ciStat">${im.busy ? 'AI 识别中…' : '已识别 ' + im.questions.length + ' 道题目'}</span>
         ${im.err ? '<span class="badge warn">' + h(im.err) + '</span>' : ''}
+        <button class="btn sm" id="ciAiKp" data-act="importAiKp" ${im.questions.length && !im.busy && !im.aiBusy ? '' : 'disabled'}>${im.aiBusy ? '<span class="spinner"></span> AI 匹配中…' : icon('sparkles', 14) + ' AI 识别知识点'}</button>
         <div class="spacer"></div>
         <button class="btn primary sm" id="ciJoin" data-act="importJoin" ${im.questions.length && !im.busy ? '' : 'disabled'}>加入作业${im.questions.length ? '（' + im.questions.length + ' 题）' : ''}</button>
       </div>
@@ -3915,15 +3920,24 @@
       ${['FILL', 'SHORT', 'CODE'].indexOf(q.type) >= 0 && q.answer && q.answer[0]
         ? '<div class="hw-q-opt" style="color:var(--text-3)">参考答案：' + h(String(q.answer[0]).slice(0, 160)) + '</div>' : ''}
       ${q.analysis ? '<div class="hw-q-opt" style="color:var(--text-3)">解析：' + h(String(q.analysis).slice(0, 200)) + '</div>' : ''}
+      ${(q.kpCodes && q.kpCodes.length)
+        ? '<div class="hw-q-opt" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span style="color:var(--text-3);font-size:12px">知识点：</span>'
+          + q.kpCodes.map(c => '<span class="badge brand" title="' + h(c) + '">' + h(kpName(c)) + '</span>').join('') + '</div>'
+        : ''}
     </div>`).join('');
   }
 
-  // 局部刷新右侧预览 / 顶部统计 / 加入按钮（左侧编辑区不动，保焦点）
+  // 局部刷新右侧预览 / 顶部统计 / 加入与 AI 识别按钮（左侧编辑区不动，保焦点）
   function refreshImportPanels() {
     const im = State.compose.import; if (!im) return;
     const pv = $('#ciPreview'); if (pv) pv.innerHTML = importPreviewHtml();
     const st = $('#ciStat'); if (st) st.textContent = im.busy ? 'AI 识别中…' : '已识别 ' + im.questions.length + ' 道题目';
     const rb = $('#ciRightBadge'); if (rb) rb.textContent = im.busy ? 'AI 识别中…' : im.questions.length + ' 道题目';
+    const ai = $('#ciAiKp');
+    if (ai) {
+      ai.disabled = !(im.questions.length && !im.busy && !im.aiBusy);
+      ai.innerHTML = im.aiBusy ? '<span class="spinner"></span> AI 匹配中…' : icon('sparkles', 14) + ' AI 识别知识点';
+    }
     const join = $('#ciJoin');
     if (join) {
       join.disabled = !(im.questions.length && !im.busy);
@@ -3939,7 +3953,7 @@
     const im = State.compose && State.compose.import;
     if (!im || im.busy) return;
     if (!im.text || !im.text.trim()) {
-      im.questions = []; im.err = '';
+      im.questions = []; im.err = ''; im._kpSig = '';
       refreshImportPanels();
       return;
     }
@@ -3953,6 +3967,13 @@
     }
     im.busy = false;
     refreshImportPanels();
+    // 文本/文件导入统一自动识别：题目集发生变化（指纹比对）即自动触发 AI 知识点匹配。
+    // 指纹去重防止连续编辑文本时对同一批题目反复调用 LLM；aiBusy/busy 锁防并发。
+    const sig = im.questions.map(q => q.title).join('§');
+    if (im.questions.length && sig !== im._kpSig && !im.aiBusy) {
+      im._kpSig = sig;
+      Actions.importAiKp();
+    }
   }
 
   function composeNavHtml() {
@@ -4040,27 +4061,129 @@
     return pills + addSel;
   }
 
-  // 题卡「添加知识点」搜索下拉的列表区：过滤掉本题已关联的知识点；
-  // 搜索词按名称包含匹配（大小写不敏感），供输入时局部刷新（不整窗重渲染防闪屏丢焦点）
+  // 题卡「添加知识点」下拉·分层列表（与新建学习会话同构）：
+  // 根层 = 一级模块卡（行点击下钻，「＋」关联整模块）；下钻层 = 章节/知识点（后代 ≤19 整树平铺）；
+  // 搜索态 = 全库平铺分组（带层级路径）；面包屑 + 返回上一级；已关联节点从列表中排除
   function qKpMenuListHtml() {
     const c = State.compose;
     const m = c && c._qkp;
     if (!m) return '';
     const q0 = c.questions[m.qi];
     const sel = (q0 && q0.kpCodes) || [];
-    const kw = (m.q || '').trim().toLowerCase();
-    const all = DB.knowledgePoints.filter(k => sel.indexOf(k.id) < 0);
-    const modName = mid => { const mm = DB.modules.find(x => x.id === mid); return mm ? mm.name : ''; };
-    const list = kw ? all.filter(k => k.name.toLowerCase().indexOf(kw) >= 0) : all;
-    if (!list.length) {
-      return `<div class="qkp-empty">${icon('search', 16)}
-        <span>${kw ? '没有找到与「' + h(m.q.trim()) + '」匹配的知识点' : '该题已关联全部知识点'}</span>
-        ${kw ? '<button class="btn sm ghost" data-act="qKpSearchClear">清除搜索</button>' : ''}</div>`;
+    const { byId, kids, desc } = nsKpIndex();
+    const nav = m.nav || [];
+    let bar = '';
+    if (!m.q && nav.length) {
+      const parent = nav.length >= 2 ? byId[nav[nav.length - 2]] : null;
+      bar = `<div class="ns-topbar" style="margin-bottom:6px;gap:6px">
+        <button type="button" class="ns-back" data-act="qKpBack" style="padding:4px 10px;font-size:12px" title="返回上一级">${icon('chevronL', 13)} ${h(parent ? parent.name : '全部')}</button>
+        <div class="ns-crumbs">
+          <button type="button" class="ns-crumb" data-act="qKpNav" data-val="-1">全部</button>
+          ${nav.map((code, i) => `<span class="ns-crumb-sep">›</span><button type="button" class="ns-crumb ${i === nav.length - 1 ? 'cur' : ''}" data-act="qKpNav" data-val="${i}">${h(byId[code] ? byId[code].name : code)}</button>`).join('')}
+        </div></div>`;
     }
-    return list.map(k => `<button class="qkp-item" data-act="qKpPick" data-val="${k.id}" title="${h(k.name)}">
-        <span class="qkp-name">${h(k.name)}</span>
-        <span class="qkp-mod">${h(modName(k.module))}</span>
-      </button>`).join('');
+    let list = '';
+    if (m.q) {
+      list = qkpSearchRows(m.q, sel, byId);
+    } else if (!nav.length) {
+      list = qkpModuleCards(sel, kids, desc);
+    } else {
+      const cur = byId[nav[nav.length - 1]];
+      if (!cur) { m.nav = []; list = qkpModuleCards(sel, kids, desc); }
+      else if ((desc[cur.id] || 0) <= 19) list = qkpFlatSubtree(cur, sel, kids);
+      else list = qkpChildRows(cur, sel, kids, desc);
+    }
+    return bar + (list || `<div class="qkp-empty">${icon('search', 16)}
+      <span>${m.q ? '没有找到与「' + h(m.q.trim()) + '」匹配的知识点' : '该层级下没有可关联的知识点'}</span>
+      ${m.q ? '<button class="btn sm ghost" data-act="qKpSearchClear">清除搜索</button>' : ''}</div>`);
+  }
+
+  // 根层：一级模块卡（与 nsModuleCards 同构，去掉掌握度列，适配下拉窄容器）
+  function qkpModuleCards(sel, kids, desc) {
+    return DB.modules.map(m => {
+      const root = DB.knowledgePoints.find(k => k.module === m.id && k.level === 1);
+      if (!root) return '';
+      const total = 1 + (desc[root.id] || 0);
+      const on = sel.indexOf(root.id) >= 0;
+      return `<div class="pick ns-mod" data-act="qKpDrill" data-val="${h(root.id)}" style="padding:8px 10px">
+        <div class="ns-mod-bar" style="background:${m.color}"></div>
+        <div class="pm"><div class="pn" style="font-size:13px">${h(root.name)}</div>
+          <div class="pd" style="font-size:11px">${total} 个知识点 · ${(kids[root.id] || []).length} 个章节</div></div>
+        <button type="button" class="ns-sel ${on ? 'on' : ''}" data-act="qKpPick" data-val="${h(root.id)}" title="关联整个模块">${on ? '✓' : '＋'}</button>
+        ${icon('chevronR', 14)}
+      </div>`;
+    }).join('');
+  }
+
+  // 章节层（后代 >19）：当前层级自身可整级关联 + 直接子节点列表（有下级的行下钻，叶行点击关联）
+  function qkpChildRows(cur, sel, kids, desc) {
+    const rows = (kids[cur.id] || []).filter(ch => sel.indexOf(ch.id) < 0).map(ch => {
+      const dc = desc[ch.id] || 0;
+      if (!dc) return qkpLeafRow(ch);
+      return `<div class="pick ns-row" data-act="qKpDrill" data-val="${h(ch.id)}" style="padding:7px 10px">
+        <div class="pm"><div class="pn" style="font-size:12.5px">${h(ch.name)}</div>
+          <div class="pd" style="font-size:11px"><span class="ns-lv">L${ch.level}</span> ${dc} 个下级知识点</div></div>
+        <button type="button" class="ns-sel" data-act="qKpPick" data-val="${h(ch.id)}" title="关联「${h(ch.name)}」">＋</button>
+        ${icon('chevronR', 13)}
+      </div>`;
+    }).join('');
+    return qkpSelfRow(cur, sel) + rows;
+  }
+
+  // 当前层级头行：整级关联
+  function qkpSelfRow(cur, sel) {
+    const on = sel.indexOf(cur.id) >= 0;
+    return `<div class="pick ${on ? 'on' : ''}" data-act="qKpPick" data-val="${h(cur.id)}" style="padding:7px 10px">
+      <div class="pm"><div class="pn" style="font-size:12.5px">${h(cur.name)}</div>
+        <div class="pd" style="font-size:11px">当前层级 · ${on ? '已关联' : '点击整级关联'}</div></div>
+      <span class="badge ${on ? 'ok' : 'brand'}">${on ? '✓ 已关联' : '＋ 关联'}</span>
+    </div>`;
+  }
+
+  // 叶行（含平铺子树的缩进行）
+  function qkpLeafRow(k, indent) {
+    const st = indent ? `margin-left:${indent}px;` : '';
+    return `<div class="pick" data-act="qKpPick" data-val="${h(k.id)}" style="${st}padding:7px 10px">
+      <div class="pm"><div class="pn" style="font-size:12.5px">${h(k.name)}</div>
+        <div class="pd" style="font-size:11px">L${k.level} · 点击关联</div></div>
+      <span class="badge">＋</span>
+    </div>`;
+  }
+
+  // 平铺子树（后代 ≤19）：当前层级 + 全部后代按层级缩进展示
+  function qkpFlatSubtree(node, sel, kids) {
+    const rows = [];
+    const walk = (k, rel) => {
+      rows.push(rel === 0 ? qkpSelfRow(k, sel) : (sel.indexOf(k.id) < 0 ? qkpLeafRow(k, rel * 12) : null));
+      (kids[k.id] || []).forEach(ch => walk(ch, rel + 1));
+    };
+    walk(node, 0);
+    return rows.filter(Boolean).join('');
+  }
+
+  // 搜索态：全库平铺按模块分组（副行展示层级路径），排除已关联
+  function qkpSearchRows(q, sel, byId) {
+    const kw = (q || '').trim().toLowerCase();
+    const list = DB.knowledgePoints.filter(k =>
+      k.level >= 2 && sel.indexOf(k.id) < 0 &&
+      ((k.name || '').toLowerCase().indexOf(kw) >= 0 || (k.id || '').toLowerCase().indexOf(kw) >= 0));
+    const groups = DB.modules.map(m => {
+      const ks = list.filter(k => k.module === m.id);
+      if (!ks.length) return '';
+      return `<div class="ns-group">
+        <div class="ns-group-title" style="border-left:3px solid ${m.color}">${h(m.name)}<span>${ks.length}</span></div>
+        ${ks.slice(0, 20).map(k => {
+          const path = [];
+          let p = byId[k.parent];
+          while (p && path.length < 3) { path.unshift(p.name); p = byId[p.parent]; }
+          return `<button class="qkp-item" data-act="qKpPick" data-val="${k.id}" title="${h(k.name)}">
+            <span class="qkp-name">${h(k.name)}</span>
+            <span class="qkp-mod">${h(path.join(' / ') || '直接节点')}</span>
+          </button>`;
+        }).join('')}
+      </div>`;
+    }).join('');
+    return groups;
   }
 
   /* ---------- 日期时间选择器（弹层日历 + 时:分，开始/结束共用） ---------- */
@@ -4211,6 +4334,8 @@
         // 作业级知识点：教师在「关联知识点」面板的选择（作业卡与学生端展示以此为准）
         kps: c.kps || [],
         questions: c.questions.map(q => ({
+          // 编辑场景携带原题目 id（后端按 id 差量更新保持稳定）；新题无 id
+          id: q.id != null ? Number(q.id) : null,
           type: q.type, title: q.title,
           options: (q.options || []).filter(o => o.text.trim()).map(o => ({ key: o.key, text: o.text })),
           answer: q.answer || [],
@@ -4445,6 +4570,18 @@
     } catch (e) {
       c.busy = false;
       renderOverlays();
+      if (e && e.message && e.message.indexOf('作答内容无效') >= 0) {
+        // 教师编辑/重发了作业（题目集已变化），本地缓存的题目 id 全部失效：
+        // 自动刷新作业列表并引导学生重新进入作答，避免反复提交失败
+        try {
+          DB.assignments = await API.get('/assignments/my');
+          render();
+          toast('作业题目已被教师更新，列表已刷新，请重新进入该作业作答');
+        } catch (e2) {
+          toast('提交失败：' + e.message);
+        }
+        return;
+      }
       toast('提交失败：' + e.message);
     }
   }
@@ -4666,23 +4803,52 @@
     if (asMenuEl && !asMenuEl.contains(e.target)) closeAsMenu();
   }
 
-  /* --- 题卡「添加知识点」搜索下拉浮层（同 asMenu 模式，全局仅一个实例）：
+  /* --- 题卡「添加知识点」分层下拉浮层（同 asMenu 模式，全局仅一个实例）：
      点击浮层外 / 浮层外的滚动时收起（浮层内列表自身滚动不收起）；
      组卷整层重渲染时由 renderCompose 主动收起（增删题会使题号索引变化） --- */
   let qkpMenuEl = null;
+  // 各导航层级滚动位置记忆：下钻/返回/面包屑跳转前保存，渲染后恢复目标层位置
+  function qkpSaveScroll(m) {
+    const lst = document.getElementById('qkpList');
+    if (lst) { m.scrolls = m.scrolls || {}; m.scrolls[(m.nav || []).length] = lst.scrollTop; }
+  }
+  function qkpRerenderList(m) {
+    const lst = document.getElementById('qkpList');
+    if (!lst) return;
+    lst.innerHTML = qKpMenuListHtml();
+    lst.scrollTop = ((m.scrolls || {})[(m.nav || []).length]) || 0;
+  }
   function closeQkpMenu() {
     if (qkpMenuEl) {
       qkpMenuEl.remove();
       qkpMenuEl = null;
       document.removeEventListener('click', qkpMenuOutside, true);
       window.removeEventListener('scroll', qkpMenuScroll, true);
+      window.removeEventListener('wheel', qkpMenuWheel, true);
     }
   }
   function qkpMenuOutside(e) {
     if (qkpMenuEl && !qkpMenuEl.contains(e.target)) closeQkpMenu();
   }
   function qkpMenuScroll(e) {
+    // 忽略 document 级滚动：组卷为 fixed 全屏布局，document scroll 多为内容增长引起的
+    // 布局调整（如关联 pill 后题卡长高）而非用户主动滚动；用户主动滚动由 wheel 事件兜底
+    if (e.target === document) return;
     if (qkpMenuEl && !qkpMenuEl.contains(e.target)) closeQkpMenu();
+  }
+  function qkpMenuWheel(e) {
+    if (qkpMenuEl && !qkpMenuEl.contains(e.target)) closeQkpMenu();
+  }
+  // 浮层重新贴合锚点按钮（pill 增长等布局变化后调用，防错位）
+  function qkpRelocate() {
+    const c = State.compose;
+    if (!qkpMenuEl || !c || !c._qkp) return;
+    const anchor = document.querySelector('#cpq-kp-' + c._qkp.qi + ' .cp-kp-add');
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    qkpMenuEl.style.top = (r.bottom + window.scrollY + 6) + 'px';
+    qkpMenuEl.style.left = Math.max(8, Math.min(r.left + window.scrollX,
+      document.documentElement.clientWidth - 368)) + 'px';
   }
 
   // 学习路径「继续当前步骤」推进成功后的引导高亮：
@@ -6215,13 +6381,19 @@
       const c = State.compose, im = c.import;
       if (!im || !im.questions.length || im.busy) return;
       im.questions.forEach(q => {
+        // 容错：过滤当前知识点库中已不存在的编码（如 AI 匹配后知识点被删除/图谱重置），
+        // 避免 pill 显示原始编码或关联失效节点
+        const validCode = c => c && DB.knowledgePoints.some(k => k.id === c);
         c.questions.push({
           type: q.type, title: q.title || '',
           options: (q.options || []).map(o => ({ key: o.key, text: o.text || '' })),
           answer: Array.isArray(q.answer) ? q.answer : [],
           analysis: q.analysis || '',
           difficulty: q.difficulty != null ? Number(q.difficulty) : 0.5,
-          kpCodes: (q.kpCode || '').split(',').filter(Boolean),
+          // AI 识别结果（kpCodes 数组）优先；兼容旧版单值 kpCode 逗号串
+          kpCodes: (Array.isArray(q.kpCodes) && q.kpCodes.length
+            ? q.kpCodes
+            : (q.kpCode || '').split(',').filter(Boolean)).filter(validCode),
           score: c.scoreMode === 'CUSTOM' ? 0 : null
         });
       });
@@ -6229,6 +6401,34 @@
       c.import = null;
       renderOverlays();
       toast('已将 ' + n + ' 道题目加入当前作业', 'ok');
+    },
+    // AI 识别知识点：为导入的每道题自动匹配 1-3 个最贴合的课程知识点
+    async importAiKp() {
+      const im = State.compose && State.compose.import;
+      if (!im || im.aiBusy || im.busy || !im.questions.length) return;
+      im.aiBusy = true;
+      refreshImportPanels();
+      try {
+        const lists = await API.post('/teacher/compose/ai-match-kps', {
+          questions: im.questions.map(q => ({ type: q.type, title: q.title }))
+        });
+        let matched = 0;
+        (lists || []).forEach((codes, i) => {
+          if (im.questions[i] && Array.isArray(codes) && codes.length) {
+            im.questions[i].kpCodes = codes.slice(0, 3);
+            matched++;
+          }
+        });
+        im.aiBusy = false;
+        refreshImportPanels();
+        toast(matched
+          ? 'AI 已为 ' + matched + '/' + im.questions.length + ' 道题目关联知识点，可在预览区核对'
+          : 'AI 未能识别出匹配的知识点，请手动关联', matched ? 'ok' : undefined);
+      } catch (e) {
+        im.aiBusy = false;
+        refreshImportPanels();
+        toast('AI 识别失败：' + e.message);
+      }
     },
     importPickFile() {
       const input = $('#ciFileInput');
@@ -6258,10 +6458,13 @@
             im.text = r.data.text || '';
             im.questions = r.data.questions || [];
             im.busy = false; im.err = '';
+            im._kpSig = im.questions.map(q => q.title).join('§');
             const ta = $('#ciTextArea');
             if (ta) ta.value = im.text;
             refreshImportPanels();
             toast('文件已解析，识别出 ' + im.questions.length + ' 道题目', 'ok');
+            // 文件导入为一次性动作：解析成功后自动触发 AI 知识点识别
+            Actions.importAiKp();
           } else {
             im.busy = false; im.err = r.msg || '解析失败';
             refreshImportPanels();
@@ -6314,33 +6517,64 @@
       if (kb) kb.innerHTML = icon('target', 14) + ' 关联知识点' + (c.kps.length ? ' (' + c.kps.length + ')' : '');
       updateAiBtn();
     },
-    // 题卡「添加知识点」：打开搜索下拉浮层（再次点击同一按钮收起；点其他题的按钮则切换目标）
+    // 题卡「添加知识点」：打开分层下拉浮层（再次点击同一按钮收起；点其他题的按钮则切换目标）
     qKpMenu(v, id, t) {
       const c = State.compose;
       if (!c || !t) return;
       if (qkpMenuEl && qkpMenuEl._qi === Number(id)) { closeQkpMenu(); return; }
       closeQkpMenu();
-      c._qkp = { qi: Number(id), q: '' };
+      c._qkp = { qi: Number(id), q: '', nav: [], scrolls: {} };
       const menu = document.createElement('div');
       menu.className = 'qkp-menu';
       menu._qi = Number(id);
-      menu.innerHTML = `<input class="input qkp-search" placeholder="输入关键词过滤知识点…" data-bind="qkpsearch">
+      menu.innerHTML = `<input class="input qkp-search" placeholder="搜索知识点…" data-bind="qkpsearch">
         <div class="qkp-list" id="qkpList">${qKpMenuListHtml()}</div>`;
       const r = t.getBoundingClientRect();
       menu.style.top = (r.bottom + window.scrollY + 6) + 'px';
       menu.style.left = Math.max(8, Math.min(r.left + window.scrollX,
-        document.documentElement.clientWidth - 308)) + 'px';
+        document.documentElement.clientWidth - 368)) + 'px';
       document.body.appendChild(menu);
       qkpMenuEl = menu;
       const inp = menu.querySelector('.qkp-search');
       if (inp) inp.focus();
-      // 注册全局收起（点击浮层外 / 浮层外滚动）；延迟注册避免本次点击立即触发
+      // 注册全局收起（点击浮层外 / 浮层外滚动或滚轮）；延迟注册避免本次点击立即触发
       setTimeout(() => {
         document.addEventListener('click', qkpMenuOutside, true);
         window.addEventListener('scroll', qkpMenuScroll, true);
+        window.addEventListener('wheel', qkpMenuWheel, true);
       }, 0);
     },
-    // 选中知识点：写入该题 kpCodes，局部刷新题卡 pill 区与下拉列表（浮层保留可连续添加多个）
+    // 分层导航：下钻一级（模块/章节行点击触发，局部刷新列表）
+    qKpDrill(v) {
+      const c = State.compose;
+      const m = c && c._qkp;
+      if (!m) return;
+      qkpSaveScroll(m);
+      m.nav = m.nav || [];
+      m.nav.push(v);
+      qkpRerenderList(m);
+    },
+    // 分层导航：返回上一级
+    qKpBack() {
+      const c = State.compose;
+      const m = c && c._qkp;
+      if (!m || !(m.nav || []).length) return;
+      qkpSaveScroll(m);
+      m.nav = m.nav.slice(0, -1);
+      qkpRerenderList(m);
+    },
+    // 分层导航：面包屑回跳（-1 = 全部）
+    qKpNav(v) {
+      const c = State.compose;
+      const m = c && c._qkp;
+      if (!m) return;
+      const idx = Number(v);
+      qkpSaveScroll(m);
+      m.nav = idx < 0 ? [] : (m.nav || []).slice(0, idx + 1);
+      qkpRerenderList(m);
+    },
+    // 选中知识点：写入该题 kpCodes，局部刷新题卡 pill 区与下拉列表（浮层保留可连续添加多个；
+    // 分层状态下保留当前导航层级，已关联节点即时从列表消失）
     qKpPick(v) {
       const c = State.compose;
       if (!c || !c._qkp || !v) return;
@@ -6350,20 +6584,19 @@
       if (q0.kpCodes.indexOf(v) < 0) q0.kpCodes.push(v);
       const box = document.getElementById('cpq-kp-' + c._qkp.qi);
       if (box) box.innerHTML = composeQKpHtml(q0, c._qkp.qi);
-      const lst = document.getElementById('qkpList');
-      if (lst) lst.innerHTML = qKpMenuListHtml();
+      qkpRerenderList(c._qkp);
+      qkpRelocate(); // pill 增长引起布局变化后浮层贴合锚点
       const inp = qkpMenuEl && qkpMenuEl.querySelector('.qkp-search');
       if (inp) inp.focus();
     },
-    // 清除题卡知识点下拉的搜索词，恢复完整列表
+    // 清除题卡知识点下拉的搜索词，恢复当前导航层级列表
     qKpSearchClear() {
       const c = State.compose;
       if (!c || !c._qkp) return;
       c._qkp.q = '';
       const inp = qkpMenuEl && qkpMenuEl.querySelector('.qkp-search');
       if (inp) { inp.value = ''; inp.focus(); }
-      const lst = document.getElementById('qkpList');
-      if (lst) lst.innerHTML = qKpMenuListHtml();
+      qkpRerenderList(c._qkp);
     },
     async aiGen() {
       const c = State.compose;
@@ -6758,6 +6991,27 @@
       DB.warnings = await API.get('/teacher/warnings');
       render();
       toast('已向 ' + list.length + ' 位学生推送提醒', 'ok');
+    },
+    // 立即检测：对当前教师可见班级执行六类预警规则扫描（后端另有每日 08:00 定时任务）
+    async warnScan() {
+      if (State._warnScanning) return;
+      State._warnScanning = true;
+      const btn = document.querySelector('[data-act="warnScan"]');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 检测中…'; }
+      try {
+        const r = await API.post('/teacher/warnings/scan');
+        const n = (r && r.generated) || 0;
+        DB.warnings = await API.get('/teacher/warnings'
+          + (State.filters.classId != null ? '?classId=' + encodeURIComponent(State.filters.classId) : ''));
+        if (State.section === 'warnings') render();
+        else if (btn) { btn.disabled = false; btn.innerHTML = icon('refresh', 14) + ' 立即检测'; }
+        toast(n ? '检测完成：新增 ' + n + ' 条预警' : '检测完成：暂未发现新的异常', 'ok');
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.innerHTML = icon('refresh', 14) + ' 立即检测'; }
+        toast('检测失败：' + e.message);
+      } finally {
+        State._warnScanning = false;
+      }
     },
     async runInsight() {
       State.insight = { stage: 0, done: false };
@@ -7158,11 +7412,18 @@
       }
     }
     else if (b === 'qkpsearch') {
-      // 题卡「添加知识点」下拉搜索：仅局部刷新列表（不整窗重渲染，避免闪屏与输入丢焦点）
+      // 题卡「添加知识点」分层下拉搜索：仅局部刷新列表（不整窗重渲染，避免闪屏与输入丢焦点）；
+      // 清空搜索后恢复当前导航层级此前的滚动位置
       if (State.compose && State.compose._qkp) {
-        State.compose._qkp.q = t.value;
+        const m = State.compose._qkp;
+        const lst0 = document.getElementById('qkpList');
+        if (lst0 && m) { m.scrolls = m.scrolls || {}; m.scrolls[(m.nav || []).length] = lst0.scrollTop; }
+        m.q = t.value;
         const lst = document.getElementById('qkpList');
         if (lst) lst.innerHTML = qKpMenuListHtml();
+        if (m && !m.q) {
+          if (lst) lst.scrollTop = m.scrolls[(m.nav || []).length] || 0;
+        }
       }
     }
     else if (b === 'reskpq') {
