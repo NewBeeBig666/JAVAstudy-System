@@ -38,5 +38,11 @@ outputs/
 *.tmp
 ~$*
 
+# ==================== 运行时上传文件（教师/学生上传的资源，本地运行产生） ====================
+uploads/
+
+# IDE 会话共享产物
+.trae-html-share-packages/
+
 # 旧 demo 仓库本地备份（仅供本机回溯，不上传）
 .git-old-demo-backup/

@@ -16,7 +16,7 @@ import java.util.stream.Collectors;
 
 /**
  * 班级共同管理教师（co-teacher）：
- * - 仅班级所有者可添加/移除共同管理者；共同管理者打开面板为只读列表；
+ * - 仅班级所有者可添加共同管理者；共同管理教师列表为纯展示，不提供移除入口；
  * - 权限仅作用于指定班级（class_co_teacher 按 class_id 隔离），不影响其他班级；
  * - 班级维度的学情/学生/预警/作业查询本身按 classId 直查，教师出现在
  *   /teacher/classes 返回的共同管理班级中即可查看对应数据。
@@ -74,20 +74,6 @@ public class CoTeacherService {
         row.setClassId(classId);
         row.setTeacherId(teacherId);
         coTeacherMapper.insert(row);
-        return panel(classId, currentTeacherId);
-    }
-
-    /** 移除共同管理教师：仅所有者可操作；记录须属于当前班级 */
-    public Map<String, Object> remove(Long classId, Long currentTeacherId, Long rowId) {
-        ClassEntity cls = requireClass(classId);
-        if (!cls.getTeacherId().equals(currentTeacherId)) {
-            throw new BizException("仅班级所有者可以移除共同管理教师");
-        }
-        ClassCoTeacher row = coTeacherMapper.selectById(rowId);
-        if (row == null || !row.getClassId().equals(classId)) {
-            throw new BizException("该共同管理记录不存在或已移除");
-        }
-        coTeacherMapper.deleteById(rowId);
         return panel(classId, currentTeacherId);
     }
 

@@ -173,6 +173,7 @@
     menu: '<path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>',
     edit: '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
     bell: '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
     inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
@@ -3032,6 +3033,18 @@
     return body;
   }
 
+  /* 「其他教师」面板：输入的教师账号与候选列表精确匹配时渲染教师信息卡片；
+   * 输入不完整、为空或不存在的账号一律返回空串（无任何匹配信息展示） */
+  function coTeacherMatchCardHtml(d) {
+    if (!d || !d.matchId) return '';
+    const c = (d.candidates || []).find(x => String(x.id) === String(d.matchId));
+    if (!c) return '';
+    return `<div class="pick on">
+        <div class="pm"><div class="pn">${h(c.realName)}老师 <span style="color:var(--text-3);font-weight:400">（账号：${h(c.username)}）</span></div>
+        <div class="pd">账号校验通过；确认无误后点击「添加」，将授予其本班级共同管理权限</div></div>
+      </div>`;
+  }
+
   function renderModal() {
     const m = State.modal, d = m.data || {};
     let title = '', body = '', foot = '';
@@ -3237,19 +3250,16 @@
         body = `<div class="note" style="margin-bottom:12px">当前班级 <b>${h(d.className || '')}</b>（所有者：${h(d.owner || '')}）。添加的教师仅获得<b>该班级</b>的共同管理权限，可查看本班学情与管理作业，不影响其他班级。</div>
           ${d.manageable ? `<div class="form-row"><label>添加共同管理教师</label>
             <div style="display:flex;gap:8px">
-              <select class="input" data-bind="coTeacherPick" style="flex:1">
-                <option value="">选择教师账号…</option>
-                ${cands.map(c => `<option value="${c.id}" ${String(d.pick) === String(c.id) ? 'selected' : ''}>${h(c.realName)}（${h(c.username)}）</option>`).join('')}
-              </select>
-              <button class="btn primary" data-act="doCoTeacherAdd" ${d.busy ? 'disabled' : ''}>${d.busy ? '添加中…' : '添加'}</button>
+              <input class="input" placeholder="输入完整教师账号…" value="${h(d.account || '')}" data-bind="coTeacherAccount" style="flex:1" autocomplete="off" ${d.busy ? 'disabled' : ''}>
+              <button class="btn primary" data-act="doCoTeacherAdd" ${d.busy || !d.matchId ? 'disabled' : ''}>${d.busy ? '添加中…' : '添加'}</button>
             </div>
-            <div class="hint">${cands.length ? '仅列出系统内有效教师账号，已排除所有者与已添加教师' : '暂无可添加的教师账号（系统内无其他教师）'}</div></div>`
-          : '<div class="hint" style="margin-bottom:12px">你是该班级的共同管理教师；增删共同管理者仅限班级所有者操作。</div>'}
+            <div id="coTeacherMatchCard" style="margin-top:8px">${coTeacherMatchCardHtml(d)}</div>
+            <div class="hint">${cands.length ? '输入完整且有效的教师账号后，系统将实时校验并显示对应教师信息，确认无误后即可添加；已排除班级所有者与已添加教师' : '暂无可添加的教师账号（系统内无其他教师）'}</div></div>`
+          : '<div class="hint" style="margin-bottom:12px">你是该班级的共同管理教师；添加共同管理教师仅限班级所有者操作。</div>'}
           <div class="form-row"><label>已关联教师（${list.length}）</label>
             ${list.length ? `<div class="pick-list" style="max-height:220px">${list.map(t => `<div class="pick">
                 <div class="pm"><div class="pn">${h(t.realName)} <span style="color:var(--text-3);font-weight:400">（${h(t.username)}）</span></div>
                 <div class="pd">添加于 ${h(t.addedAt || '-')} · 可查看与管理本班学情/作业</div></div>
-                ${d.manageable ? `<button class="btn sm ghost" data-act="coTeacherRemove" data-val="${t.id}" ${d.busy ? 'disabled' : ''}>移除</button>` : ''}
               </div>`).join('')}</div>`
             : '<div class="empty"><div class="empty-title">暂无其他共同管理教师</div><div class="empty-desc">添加后，对方教师将在班级列表中看到本班级。</div></div>'}
           </div>`;
@@ -3279,6 +3289,23 @@
         <div class="hint">${d.count ? '已有 <b>' + d.count + '</b> 名学生标记学完，删除后其学习进度记录将一并移除。' : '暂无学生学习进度记录。'}</div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn danger" data-act="doResDel" ${d.busy ? 'disabled' : ''}>${icon('trash', 15)} ${d.busy ? '删除中…' : '确认删除'}</button>`;
+
+    } else if (m.type === 'classDel') {
+      // 删除班级二次确认：明确告知将清空该班级的全部关联管理权限与数据关联关系
+      title = '删除班级';
+      body = `<div class="note warn" style="margin-bottom:12px">确定要删除班级 <b>${h(d.name)}</b> 吗？<b style="color:var(--danger)">删除后将清空该班级的全部关联管理权限与数据关联关系</b>：共同管理教师权限、作业与提交记录、预警、学习资源等将一并移除，学生账号将被移出该班级。</div>
+        <div class="hint">操作不可恢复；原共同管理该班级的其他教师将不再看到本班级。请谨慎操作。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn danger" data-act="doClassDel" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 删除中…' : icon('trash', 15) + ' 确认删除'}</button>`;
+
+    } else if (m.type === 'asFolderDel') {
+      // 删除文件夹二次确认：其内作业移回「其他」，不删除作业本身
+      title = '删除文件夹';
+      const n = (DB.assignments || []).filter(a => String(a.folderId) === String(d.id)).length;
+      body = `<div class="note warn" style="margin-bottom:12px">确定要删除文件夹 <b>${h(d.name)}</b> 吗？${n ? '该文件夹内有 <b>' + n + '</b> 份作业，删除后这些作业将<b>移回「其他」</b>，作业本身与其提交记录不受影响。' : '该文件夹当前为空，删除后不可恢复。'}</div>
+        <div class="hint">删除仅作用于当前班级的文件夹分组，不影响其他班级。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn danger" data-act="doAsFolderDel" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 删除中…' : icon('trash', 15) + ' 确认删除'}</button>`;
 
     } else if (m.type === 'recDetail') {
       // 历史练习详情：题干（复用深色代码块渲染）+ 关联知识点 + 当时作答 + 正确答案 + 解析
@@ -6029,19 +6056,24 @@
       render();
       try {
         const qs = '?classId=' + encodeURIComponent(v);
-        const [dash, students, warnings, assignments] = await Promise.all([
+        const [dash, students, warnings, assignments, folders] = await Promise.all([
           API.get('/teacher/dashboard' + qs),
           API.get('/teacher/students' + qs),
           API.get('/teacher/warnings' + qs),
-          API.get('/teacher/assignments' + qs)
+          API.get('/teacher/assignments' + qs),
+          API.get('/teacher/folders' + qs)
         ]);
-        // 统一落库：看板 KPI/卡点/重点关注 + 学生列表 + 预警中心 + 作业列表
+        // 统一落库：看板 KPI/卡点/重点关注 + 学生列表 + 预警中心 + 作业列表 + 文件夹
         State.filters.classId = v;
         DB.teacherDash = dash;
         DB.classStuckPoints = dash.stuckPoints || [];
         DB.students = students;
         DB.warnings = warnings;
         DB.assignments = assignments;
+        // 文件夹绑定班级维度：严格跟随切换后的班级（无文件夹则侧栏仅显示「其他」）
+        DB.folders = folders;
+        // 跨班切换时复位「发布新作业默认文件夹」（文件夹 id 已按班级隔离）
+        State.composeFolder = null;
         // 班级维度状态复位：学情报告/选中学生不残留旧班数据；批阅目标重置为新班首个作业
         State.insight = null;
         State.activeStudent = null;
@@ -6057,6 +6089,45 @@
         State._classPending = null;
         State.loading = false;
         render();
+      }
+    },
+    /* 删除班级：右键菜单 → 二次确认弹窗 → DELETE（后端仅所有者可删，前端 owned 预校验） */
+    classDelModal(v) {
+      const c = DB.classes.find(x => String(x.id) === String(v));
+      if (!c) { toast('班级不存在或已删除'); return; }
+      if (c.owned === false) { toast('仅班级所有者可以删除班级'); return; }
+      State.modal = { type: 'classDel', data: { id: c.id, name: c.name, busy: false } };
+      renderOverlays();
+    },
+    async doClassDel() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        await API.del('/teacher/classes/' + d.id);
+        State.modal = null;
+        // 删除成功：本地列表即时移除该班级项，左侧栏同步更新
+        DB.classes = DB.classes.filter(c => String(c.id) !== String(d.id));
+        if (String(State.filters.classId) === String(d.id)) {
+          // 删除的是当前选中班级：自动切换到剩余首个班级（复用 classPick 的四接口联动加载）
+          if (DB.classes.length) {
+            render();
+            await Actions.classPick(DB.classes[0].id);
+          } else {
+            // 教师已无任何班级：清空班级维度数据，避免残留旧班状态
+            State.filters.classId = null;
+            DB.students = []; DB.assignments = []; DB.warnings = [];
+            DB.submissions = []; DB.teacherDash = null; DB.classStuckPoints = [];
+            render();
+          }
+        } else {
+          render();
+        }
+        toast('班级「' + d.name + '」已删除', 'ok');
+      } catch (e) {
+        // 失败：给出明确错误提示并保留原班级数据（列表不变化）
+        d.busy = false; renderOverlays();
+        toast('删除失败：' + e.message);
       }
     },
     studentPick(v) {
@@ -6143,16 +6214,46 @@
       const name = (d.name || '').trim();
       if (!name) { toast('请输入文件夹名称'); return; }
       if (name === '其他') { toast('「其他」为系统内置文件夹，请换一个名称'); return; }
-      if ((DB.folders || []).some(f => f.name === name)) { toast('已存在同名文件夹「' + name + '」'); return; }
+      if ((DB.folders || []).some(f => f.name === name)) { toast('当前班级下已存在同名文件夹「' + name + '」'); return; }
       d.busy = true; renderOverlays();
       try {
-        const f = await API.post('/teacher/folders', { name: name });
-        DB.folders = await API.get('/teacher/folders');
+        // 文件夹绑定当前选中班级（DB.folders 已按班级过滤，同名校验即同班级口径）
+        const f = await API.post('/teacher/folders', { name: name, classId: State.filters.classId });
+        DB.folders = await API.get('/teacher/folders?classId=' + encodeURIComponent(State.filters.classId));
         State.modal = null; renderOverlays(); render();
         toast('文件夹「' + (f && f.name ? f.name : name) + '」已创建', 'ok');
       } catch (e) {
         d.busy = false; renderOverlays();
         toast(e.message);
+      }
+    },
+    /* 删除文件夹：右键菜单 → 二次确认弹窗 → DELETE（其内作业移回「其他」）→ 刷新侧栏 */
+    asFolderDelModal(v) {
+      const f = (DB.folders || []).find(x => String(x.id) === String(v));
+      if (!f) { toast('文件夹不存在或已删除'); return; }
+      State.modal = { type: 'asFolderDel', data: { id: f.id, name: f.name, busy: false } };
+      renderOverlays();
+    },
+    async doAsFolderDel() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        await API.del('/teacher/folders/' + d.id);
+        // 刷新当前班级的文件夹与作业列表（原文件夹内作业移回「其他」），侧栏即时同步
+        const qs = '?classId=' + encodeURIComponent(State.filters.classId);
+        const [folders, assignments] = await Promise.all([
+          API.get('/teacher/folders' + qs),
+          API.get('/teacher/assignments' + qs)
+        ]);
+        DB.folders = folders;
+        DB.assignments = assignments;
+        State.modal = null;
+        render();
+        toast('文件夹「' + d.name + '」已删除，其中作业已移回「其他」', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('删除失败：' + e.message);
       }
     },
     /* --- 班级共同管理教师（顶栏「其他教师」面板，绑定当前选中班级） --- */
@@ -6168,7 +6269,7 @@
         if (!State.modal || State.modal.type !== 'coTeacher'
           || String(State.modal.data.classId) !== String(cid)) return;
         const d = State.modal.data;
-        Object.assign(d, p, { loading: false, err: null, pick: '' });
+        Object.assign(d, p, { loading: false, err: null, account: '', matchId: null });
         renderOverlays();
       } catch (e) {
         const d = State.modal && State.modal.data;
@@ -6178,30 +6279,18 @@
     async doCoTeacherAdd() {
       const d = State.modal && State.modal.data;
       if (!d || d.busy) return;
-      if (!d.pick) { toast('请选择要添加的教师账号'); return; }
+      // 输入的账号须与候选教师账号完全一致（实时校验已锁定 matchId），否则不允许添加
+      const matched = (d.candidates || []).find(c => c.username === (d.account || '').trim());
+      if (!matched) { toast('请输入完整且有效的教师账号'); return; }
       d.busy = true; renderOverlays();
       try {
-        const p = await API.post('/teacher/co-teachers', { classId: d.classId, teacherId: Number(d.pick) });
-        Object.assign(d, p, { busy: false, pick: '' });
+        const p = await API.post('/teacher/co-teachers', { classId: d.classId, teacherId: Number(matched.id) });
+        Object.assign(d, p, { busy: false, account: '', matchId: null });
         renderOverlays();
         toast('已添加为班级共同管理教师', 'ok');
       } catch (e) {
         d.busy = false; renderOverlays();
         toast('添加失败：' + e.message);
-      }
-    },
-    async coTeacherRemove(v) {
-      const d = State.modal && State.modal.data;
-      if (!d || d.busy) return;
-      d.busy = true; renderOverlays();
-      try {
-        const p = await API.del('/teacher/co-teachers/' + v + '?classId=' + encodeURIComponent(d.classId));
-        Object.assign(d, p, { busy: false });
-        renderOverlays();
-        toast('已移除该教师的班级管理权限', 'ok');
-      } catch (e) {
-        d.busy = false; renderOverlays();
-        toast('移除失败：' + e.message);
       }
     },
 
@@ -7113,24 +7202,26 @@
 
     if (me.role === 'TEACHER') {
       State.role = 'teacher'; State.section = 'dashboard';
-      const [graph, classes, students, dash, warnings, assignments, notifications, folders] = await Promise.all([
+      const [graph, classes, students, dash, warnings, assignments, notifications] = await Promise.all([
         API.get('/knowledge/graph'),
         API.get('/teacher/classes'),
         API.get('/teacher/students'),
         API.get('/teacher/dashboard'),
         API.get('/teacher/warnings'),
         API.get('/teacher/assignments'),
-        API.get('/notifications'),
-        API.get('/teacher/folders').catch(() => [])
+        API.get('/notifications')
       ]);
       applyKnowledgeGraph(graph);
       DB.classes = classes; DB.students = students;
       // 初始选中班级 = 第一个授课班级（后续 classPick 切换均以 String 比较保持高亮一致）
       State.filters.classId = classes.length ? classes[0].id : State.filters.classId;
+      // 文件夹绑定班级维度：按初始选中班级拉取（失败降级为空，不影响主流程）
+      DB.folders = State.filters.classId != null
+        ? await API.get('/teacher/folders?classId=' + encodeURIComponent(State.filters.classId)).catch(() => [])
+        : [];
       DB.teacherDash = dash;
       DB.classStuckPoints = dash.stuckPoints || [];
       DB.warnings = warnings; DB.assignments = assignments;
-      DB.folders = folders || [];
       DB.notifications = notifications;
       if (assignments.length) {
         State.filters.subAs = assignments[0].id;
@@ -7381,6 +7472,60 @@
     }, 0);
   });
 
+  /* 教师端学情看板侧栏「授课班级」列表项右键菜单：唤起「删除班级」入口。
+   * 仅班级所有者（classes 接口的 owned 标记，前端权限校验）显示可点的删除项，
+   * 共同管理班级只读提示不可删（后端 DELETE 接口再做二次权限校验）；
+   * 复用 as-menu 浮层（点击外部/滚动自动收起），不影响 classPick 左键切换班级 */
+  document.addEventListener('contextmenu', e => {
+    const item = e.target.closest ? e.target.closest('#side .list-item[data-act="classPick"]') : null;
+    if (!item) return;
+    e.preventDefault();
+    closeAsMenu();
+    const c = DB.classes.find(x => String(x.id) === String(item.dataset.val));
+    if (!c) return;
+    const menu = document.createElement('div');
+    menu.className = 'as-menu';
+    menu.innerHTML = c.owned
+      ? `<button class="as-menu-item danger" data-act="classDelModal" data-val="${h(String(c.id))}">${icon('trash', 14)} 删除班级</button>`
+      : `<div class="as-menu-item" style="cursor:default;opacity:.55">${icon('lock', 14)} 删除班级（仅班级所有者）</div>`;
+    // 靠右/靠下边缘时回退，避免菜单溢出视口
+    menu.style.left = Math.min(e.pageX, document.documentElement.clientWidth - 200) + 'px';
+    menu.style.top = Math.min(e.pageY, window.scrollY + document.documentElement.clientHeight - 56) + 'px';
+    document.body.appendChild(menu);
+    asMenuEl = menu;
+    setTimeout(() => {
+      document.addEventListener('click', asMenuOutside, true);
+      window.addEventListener('scroll', closeAsMenu, true);
+    }, 0);
+  });
+
+  /* 作业管理侧栏「文件夹」条目右键菜单：唤起「删除文件夹」入口。
+   * 内置「其他」分组不可删除（只读提示）；自建文件夹走二次确认后删除；
+   * 复用 as-menu 浮层（点击外部/滚动自动收起），不影响左键展开/收起交互 */
+  document.addEventListener('contextmenu', e => {
+    const row = e.target.closest ? e.target.closest('.as-folder[data-act="asFolderToggle"]') : null;
+    if (!row) return;
+    e.preventDefault();
+    closeAsMenu();
+    const key = row.dataset.val;
+    const menu = document.createElement('div');
+    menu.className = 'as-menu';
+    if (key === 'other') {
+      menu.innerHTML = `<div class="as-menu-item" style="cursor:default;opacity:.55">${icon('lock', 14)} 删除文件夹（内置分组，不可删除）</div>`;
+    } else {
+      menu.innerHTML = `<button class="as-menu-item danger" data-act="asFolderDelModal" data-val="${h(key)}">${icon('trash', 14)} 删除文件夹</button>`;
+    }
+    // 靠右/靠下边缘时回退，避免菜单溢出视口
+    menu.style.left = Math.min(e.pageX, document.documentElement.clientWidth - 230) + 'px';
+    menu.style.top = Math.min(e.pageY, window.scrollY + document.documentElement.clientHeight - 56) + 'px';
+    document.body.appendChild(menu);
+    asMenuEl = menu;
+    setTimeout(() => {
+      document.addEventListener('click', asMenuOutside, true);
+      window.addEventListener('scroll', closeAsMenu, true);
+    }, 0);
+  });
+
   document.addEventListener('input', e => {
     const t = e.target, b = t.dataset.bind;
     if (!b) return;
@@ -7389,9 +7534,19 @@
       // 作业管理顶栏「选择文件夹」下拉：作为后续发布作业的默认存储位置（空 = 其他）
       State.composeFolder = t.value === '' ? null : Number(t.value);
     }
-    else if (b === 'coTeacherPick') {
-      // 「其他教师」面板：下拉选择待添加教师（仅存 State，不重渲染防闪屏）
-      if (State.modal) State.modal.data.pick = t.value;
+    else if (b === 'coTeacherAccount') {
+      // 「其他教师」面板：手动输入教师账号，实时精确匹配候选教师；
+      // 仅局部刷新匹配卡片与添加按钮状态（不整窗重渲染，防闪屏与输入丢焦点）
+      if (State.modal && State.modal.type === 'coTeacher') {
+        const d = State.modal.data;
+        d.account = t.value;
+        const m = (d.candidates || []).find(c => c.username === t.value.trim());
+        d.matchId = m ? m.id : null;
+        const card = document.getElementById('coTeacherMatchCard');
+        if (card) card.innerHTML = coTeacherMatchCardHtml(d);
+        const btn = document.querySelector('.modal [data-act="doCoTeacherAdd"]');
+        if (btn) btn.disabled = !!d.busy || !m;
+      }
     }
     else if (b === 'assistant') {
       // 教师端智能助手输入：仅更新 State 不重渲染（输入过程不丢焦点）

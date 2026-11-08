@@ -1,6 +1,7 @@
 package com.la.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.la.dto.ApiResponse;
 import com.la.dto.ComposeRequest;
 import com.la.entity.Assignment;
@@ -13,6 +14,7 @@ import com.la.mapper.UserMapper;
 import com.la.security.CurrentUser;
 import com.la.exception.BizException;
 import com.la.service.AssignmentService;
+import com.la.service.ClassService;
 import com.la.service.CoTeacherService;
 import com.la.service.ComposeAiService;
 import com.la.service.ComposeImportService;
@@ -55,6 +57,7 @@ public class TeacherController {
     private final TeacherService teacherService;
     private final WarningScanService warningScanService;
     private final CoTeacherService coTeacherService;
+    private final ClassService classService;
     private final AssignmentService assignmentService;
     private final ComposeAiService composeAiService;
     private final ComposeImportService composeImportService;
@@ -92,18 +95,27 @@ public class TeacherController {
         List<ClassEntity> list = ids.isEmpty()
                 ? classMapper.selectList(null)
                 : ids.stream().map(classMapper::selectById).filter(Objects::nonNull).toList();
-        // 附带每班在读学生数：教师端班级切换组件展示各自班级人数
+        // 附带每班在读学生数：教师端班级切换组件展示各自班级人数；
+        // owned 标记当前教师是否为班级所有者（前端据此控制「删除班级」右键入口的权限校验）
         return ApiResponse.ok(list.stream().map(c -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", c.getId());
             m.put("name", c.getName());
             m.put("grade", c.getGrade());
+            m.put("owned", CurrentUser.id() != null && CurrentUser.id().equals(c.getTeacherId()));
             m.put("studentCount", userMapper.selectCount(
                     new LambdaQueryWrapper<com.la.entity.User>()
                             .eq(com.la.entity.User::getClassId, c.getId())
                             .eq(com.la.entity.User::getRole, "STUDENT")));
             return m;
         }).toList());
+    }
+
+    @Operation(summary = "删除班级（仅班级所有者；级联清空共同管理权限与关联数据；幂等）")
+    @DeleteMapping("/classes/{id}")
+    public ApiResponse<Void> deleteClass(@PathVariable Long id) {
+        classService.deleteClass(CurrentUser.id(), id);
+        return ApiResponse.ok();
     }
 
     @Operation(summary = "学生列表（掌握度/提交率/风险/趋势）")
@@ -282,22 +294,25 @@ public class TeacherController {
 
     /* ==================== 作业文件夹（左侧栏分组收纳） ==================== */
 
-    @Operation(summary = "文件夹列表（作业数量由前端按当前班级作业统计；NULL folder_id = 内置「其他」）")
+    @Operation(summary = "文件夹列表（绑定班级维度：classId 必传时严格过滤，选中班级无文件夹返回空；"
+            + "作业数量由前端按当前班级作业统计；NULL folder_id = 内置「其他」）")
     @GetMapping("/folders")
-    public ApiResponse<List<Map<String, Object>>> folders() {
+    public ApiResponse<List<Map<String, Object>>> folders(@RequestParam(required = false) Long classId) {
         List<AssignmentFolder> list = assignmentFolderMapper.selectList(
                 new LambdaQueryWrapper<AssignmentFolder>()
                         .eq(AssignmentFolder::getTeacherId, CurrentUser.id())
+                        .eq(classId != null, AssignmentFolder::getClassId, classId)
                         .orderByAsc(AssignmentFolder::getCreatedAt));
         return ApiResponse.ok(list.stream().map(f -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", String.valueOf(f.getId()));
             m.put("name", f.getName());
+            m.put("classId", f.getClassId());
             return m;
         }).toList());
     }
 
-    @Operation(summary = "新建作业文件夹（名称必填、50 字以内、同一教师下不可重名）")
+    @Operation(summary = "新建作业文件夹（名称必填、50 字以内；绑定指定班级，同班级下不可重名；缺省 classId 回退默认班级）")
     @PostMapping("/folders")
     public ApiResponse<Map<String, Object>> createFolder(@RequestBody FolderRequest req) {
         String name = req.getName() == null ? "" : req.getName().trim();
@@ -310,25 +325,50 @@ public class TeacherController {
         if ("其他".equals(name)) {
             throw new BizException("「其他」为系统内置文件夹，请换一个名称");
         }
+        Long classId = req.getClassId() != null ? req.getClassId() : defaultClassId();
         Long cnt = assignmentFolderMapper.selectCount(new LambdaQueryWrapper<AssignmentFolder>()
                 .eq(AssignmentFolder::getTeacherId, CurrentUser.id())
+                .eq(AssignmentFolder::getClassId, classId)
                 .eq(AssignmentFolder::getName, name));
         if (cnt > 0) {
-            throw new BizException("已存在同名文件夹「" + name + "」");
+            throw new BizException("该班级下已存在同名文件夹「" + name + "」");
         }
         AssignmentFolder f = new AssignmentFolder();
         f.setTeacherId(CurrentUser.id());
+        f.setClassId(classId);
         f.setName(name);
         assignmentFolderMapper.insert(f);
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", String.valueOf(f.getId()));
         m.put("name", f.getName());
+        m.put("classId", f.getClassId());
         return ApiResponse.ok(m);
+    }
+
+    @Operation(summary = "删除作业文件夹（仅所有者；其内作业移回内置「其他」不删除；幂等）")
+    @DeleteMapping("/folders/{id}")
+    public ApiResponse<Void> deleteFolder(@PathVariable Long id) {
+        AssignmentFolder f = assignmentFolderMapper.selectById(id);
+        if (f == null) {
+            // 幂等：文件夹不存在（含已被删除）时直接视为成功
+            return ApiResponse.ok();
+        }
+        if (!CurrentUser.id().equals(f.getTeacherId())) {
+            throw new BizException("无权操作该文件夹");
+        }
+        // 其内作业移回「其他」（folder_id 置空），作业本身与提交记录不受影响
+        assignmentMapper.update(null, new LambdaUpdateWrapper<Assignment>()
+                .set(Assignment::getFolderId, null)
+                .eq(Assignment::getFolderId, id));
+        assignmentFolderMapper.deleteById(id);
+        return ApiResponse.ok();
     }
 
     @Data
     public static class FolderRequest {
         private String name;
+        /** 所属班级 id（缺省回退当前教师默认班级） */
+        private Long classId;
     }
 
     @Data
