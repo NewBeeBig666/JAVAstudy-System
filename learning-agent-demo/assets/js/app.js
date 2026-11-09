@@ -451,7 +451,7 @@
     } else if (sec === 'students') {
       head = '<div class="side-head"><div class="side-title">班级学生</div></div>';
       body = DB.students.map(s => `<button class="list-item ${String(State.activeStudent) === String(s.id) ? 'on' : ''}" data-act="studentPick" data-val="${s.id}">
-        <div class="li-main"><div class="li-title">${s.name}${s.id === 's01' ? ' · 我' : ''}</div>
+        <div class="li-main"><div class="li-title">${h(s.name)}${s.id === 's01' ? ' · 我' : ''}</div>
         <div class="li-sub">掌握度 ${s.mastery} · 提交率 ${s.submitRate}%</div></div>
         <div class="li-extra"><span class="badge ${s.risk === 'high' ? 'danger' : s.risk === 'mid' ? 'warn' : 'ok'}">${s.risk === 'high' ? '高危' : s.risk === 'mid' ? '关注' : '正常'}</span></div>
       </button>`).join('');
@@ -1732,7 +1732,7 @@
       conclusionCls = 'ok';
     }
     return `
-      <div class="card"><div class="card-head">${icon('route', 15)}<h3 title="依赖链溯源 · ${h(cur.name)}">依赖链溯源 · ${cur.name}</h3><div class="spacer"></div>
+      <div class="card"><div class="card-head">${icon('route', 15)}<h3 title="依赖链溯源 · ${h(cur.name)}">依赖链溯源 · ${h(cur.name)}</h3><div class="spacer"></div>
           <span class="badge ${cur.hasData ? (cur.mastery >= 80 ? 'ok' : cur.mastery >= 60 ? '' : 'danger') : ''}" style="flex:none">${cur.hasData ? cur.mastery + ' 分 · ' + mtext(cur.mastery) : '暂无掌握数据'}</span></div>
         <div class="card-body">
           <div style="font-size:13px;color:var(--text-2);line-height:1.7;margin-bottom:10px">${h(cur.desc)}</div>
@@ -1750,7 +1750,7 @@
       <div class="card"><div class="card-head">${icon('flame', 15)}<h3>最薄弱 TOP 3</h3></div>
         <div class="card-body"><div class="mini-list">
           ${weak.map(k => `<div class="mini-row" data-act="kpCell" data-val="${k.id}" style="cursor:pointer">
-            <span class="nm">${k.name}</span>
+            <span class="nm">${h(k.name)}</span>
             <div class="bar ${bcls(k.mastery)}"><i style="width:${k.mastery}%"></i></div>
             <span class="vl">${k.mastery}</span></div>`).join('')}
         </div>
@@ -1910,7 +1910,7 @@
       body = `<div class="card"><div class="card-head">${icon('target', 15)}<h3>知识点掌握度明细</h3></div>
         <div class="card-body"><div class="mini-list">
           ${DB.knowledgePoints.slice().sort((a, b) => a.mastery - b.mastery).map(k => `<div class="mini-row">
-            <span class="nm">${k.name}</span>
+            <span class="nm">${h(k.name)}</span>
             <div class="bar ${bcls(k.mastery)}"><i style="width:${k.mastery}%"></i></div>
             <span class="vl">${k.mastery}</span></div>`).join('')}
         </div></div></div>`;
@@ -2114,7 +2114,7 @@
             : s.status === 'ai_reviewed' ? '<span class="badge brand">AI初评完成 · 待复核</span>'
             : s.status === 'pending' ? '<span class="badge warn">待批改</span>' : '<span class="badge danger">未提交</span>';
           return `<tr data-act="openSub" data-val="${s.id}">
-            <td><b>${s.name}</b>${s.sid === String(DB.me.id) ? ' <span class="badge brand">示例学生</span>' : ''}</td>
+            <td><b>${h(s.name)}</b>${s.sid === String(DB.me.id) ? ' <span class="badge brand">示例学生</span>' : ''}</td>
             <td style="color:var(--text-3)">${s.submittedAt || '—'}</td>
             <td class="num">${s.attempts}</td>
             <td class="num" style="color:${s.similarity > 60 ? 'var(--danger)' : s.similarity > 30 ? 'var(--warn)' : 'var(--text-2)'};font-weight:${s.similarity > 60 ? 700 : 400}">${s.similarity}%</td>
@@ -2636,7 +2636,7 @@
       <div style="overflow-x:auto"><table class="table">
         <thead><tr><th>学生</th><th>掌握度</th><th class="num">提交率</th><th class="num">连续未登录</th><th>近 7 日活跃</th><th>薄弱知识点</th><th>风险</th></tr></thead>
         <tbody>${DB.students.map(s => `<tr data-act="studentPick" data-val="${s.id}" class="${String(State.activeStudent) === String(s.id) ? 'on' : ''}">
-          <td><b>${s.name}</b>${s.id === 's01' ? ' <span class="badge brand">我</span>' : ''}</td>
+          <td><b>${h(s.name)}</b>${s.id === 's01' ? ' <span class="badge brand">我</span>' : ''}</td>
           <td style="width:150px"><div style="display:flex;align-items:center;gap:8px">
             <div class="bar ${bcls(s.mastery)}" style="flex:1"><i style="width:${s.mastery}%"></i></div><span style="font-weight:600">${s.mastery}</span></div></td>
           <td class="num">${s.submitRate}%</td>
@@ -2661,7 +2661,7 @@
             ${DB.knowledgePoints.slice(0, 8).map(k => {
               const base = sel.mastery + ((k.id.length * 7 + sel.name.charCodeAt(0)) % 13) - 6;
               const v = Math.max(5, Math.min(98, base));
-              return `<div class="mini-row"><span class="nm">${k.name}</span>
+              return `<div class="mini-row"><span class="nm">${h(k.name)}</span>
                 <div class="bar ${bcls(v)}"><i style="width:${v}%"></i></div><span class="vl">${v}</span></div>`;
             }).join('')}
           </div>
@@ -2794,7 +2794,7 @@
     const id = s ? s.kp : State.activeKp;
     const k = kp(id);
     return `<div class="ctx-card"><h4>当前知识点</h4>
-      <div style="font-size:14px;font-weight:650;margin-bottom:4px">${k.name}</div>
+      <div style="font-size:14px;font-weight:650;margin-bottom:4px">${h(k.name)}</div>
       <div style="display:flex;align-items:center;gap:8px;margin:8px 0">
         <div class="bar ${bcls(k.mastery)}" style="flex:1"><i style="width:${k.mastery}%"></i></div>
         <span style="font-weight:700">${k.mastery}</span></div>

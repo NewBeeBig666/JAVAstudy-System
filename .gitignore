@@ -46,3 +46,6 @@ uploads/
 
 # 旧 demo 仓库本地备份（仅供本机回溯，不上传）
 .git-old-demo-backup/
+
+# 服务器巡检结果文件（可能含敏感环境信息，严禁上传）
+backend/server-check-result.txt

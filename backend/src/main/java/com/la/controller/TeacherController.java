@@ -95,18 +95,23 @@ public class TeacherController {
         List<ClassEntity> list = ids.isEmpty()
                 ? classMapper.selectList(null)
                 : ids.stream().map(classMapper::selectById).filter(Objects::nonNull).toList();
-        // 附带每班在读学生数：教师端班级切换组件展示各自班级人数；
+        // 附带每班在读学生数：教师端班级切换组件展示各自班级人数（单次批量查询，替代逐班 selectCount）；
         // owned 标记当前教师是否为班级所有者（前端据此控制「删除班级」右键入口的权限校验）
+        Set<Long> classIdSet = list.stream().map(ClassEntity::getId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<Long, Long> stuCount = classIdSet.isEmpty() ? Map.of()
+                : userMapper.selectList(new LambdaQueryWrapper<com.la.entity.User>()
+                                .in(com.la.entity.User::getClassId, classIdSet)
+                                .eq(com.la.entity.User::getRole, "STUDENT"))
+                        .stream().collect(Collectors.groupingBy(
+                                com.la.entity.User::getClassId, Collectors.counting()));
         return ApiResponse.ok(list.stream().map(c -> {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("id", c.getId());
             m.put("name", c.getName());
             m.put("grade", c.getGrade());
             m.put("owned", CurrentUser.id() != null && CurrentUser.id().equals(c.getTeacherId()));
-            m.put("studentCount", userMapper.selectCount(
-                    new LambdaQueryWrapper<com.la.entity.User>()
-                            .eq(com.la.entity.User::getClassId, c.getId())
-                            .eq(com.la.entity.User::getRole, "STUDENT")));
+            m.put("studentCount", stuCount.getOrDefault(c.getId(), 0L));
             return m;
         }).toList());
     }
@@ -253,17 +258,21 @@ public class TeacherController {
 
     @Operation(summary = "下载学生上传的实验报告（实验报告型作业）")
     @GetMapping("/submissions/{id}/report-file")
-    public ResponseEntity<byte[]> reportFile(@PathVariable Long id) {
+    public ResponseEntity<org.springframework.core.io.InputStreamResource> reportFile(@PathVariable Long id) {
         Map<String, Object> r = assignmentService.studentReport(id);
         File f = (File) r.get("file");
         String fileName = (String) r.get("fileName");
+        // 流式下发（最大 50MB）：避免 readAllBytes 把整文件读入堆内存造成并发下载内存尖峰；
+        // Spring 资源转换器负责流复制与关闭
         try {
+            org.springframework.core.io.InputStreamResource body =
+                    new org.springframework.core.io.InputStreamResource(new java.io.FileInputStream(f));
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_OCTET_STREAM_VALUE)
                     .header(HttpHeaders.CONTENT_DISPOSITION,
                             "attachment; filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, java.nio.charset.StandardCharsets.UTF_8))
                     .contentLength(f.length())
-                    .body(Files.readAllBytes(f.toPath()));
+                    .body(body);
         } catch (IOException e) {
             throw new BizException("报告文件读取失败");
         }

@@ -86,11 +86,12 @@ public class TeacherService {
                 .mapToInt(Mastery::getMasteryValue).average().orElse(0);
         List<Assignment> assignments = assignmentMapper.selectList(new LambdaQueryWrapper<Assignment>()
                 .eq(Assignment::getClassId, classId).ne(Assignment::getStatus, "DRAFT"));
-        long totalSubs = 0;
-        for (Assignment as : assignments) {
-            totalSubs += submissionMapper.selectCount(new LambdaQueryWrapper<Submission>()
-                    .eq(Submission::getAssignmentId, as.getId()).ne(Submission::getStatus, "MISSING"));
-        }
+        // 提交总量：单次 GROUP 维度合并查询（替代逐作业 selectCount 的 N+1）
+        long totalSubs = assignments.isEmpty() ? 0 : submissionMapper.selectCount(
+                new LambdaQueryWrapper<Submission>()
+                        .in(Submission::getAssignmentId,
+                                assignments.stream().map(Assignment::getId).toList())
+                        .ne(Submission::getStatus, "MISSING"));
         long capacity = (long) assignments.size() * students.size();
         int submitRate = capacity > 0 ? (int) Math.round(totalSubs * 100.0 / capacity) : 0;
         long unhandledWarnings = warningMapper.selectCount(new LambdaQueryWrapper<Warning>()
@@ -129,9 +130,8 @@ public class TeacherService {
             stuckPoints = stuckPoints.subList(0, 6);
         }
 
-        // 重点关注学生
-        List<StudentSummary> watchList = students.stream()
-                .map(this::studentSummary)
+        // 重点关注学生（批量摘要，无逐生 N+1 查询）
+        List<StudentSummary> watchList = studentSummaries(students).stream()
                 .filter(s -> !"low".equals(s.getRisk()))
                 .collect(Collectors.toList());
 
@@ -143,64 +143,95 @@ public class TeacherService {
     }
 
     /**
-     * 学生列表摘要（对齐 MOCK.students）
+     * 学生列表摘要（对齐 MOCK.students）——批量化：整班一次返回，全程仅 6 次查询，
+     * 替代旧逐生实现（每生 10+ 次查询，50 人班一次 500+ SQL）。
      */
     public List<StudentSummary> studentList(Long classId) {
-        return classStudents(classId).stream().map(this::studentSummary).collect(Collectors.toList());
+        return studentSummaries(classStudents(classId));
     }
 
+    /** 单生摘要（供单点场景使用，内部走批量实现） */
     public StudentSummary studentSummary(User stu) {
-        List<Mastery> masteries = masteryMapper.selectList(new LambdaQueryWrapper<Mastery>()
-                .eq(Mastery::getUserId, stu.getId()));
-        int mastery = (int) Math.round(masteries.stream()
-                .mapToInt(Mastery::getMasteryValue).average().orElse(0));
-        List<Long> weakKps = masteries.stream().filter(m -> m.getMasteryValue() < 50)
-                .sorted(Comparator.comparingInt(Mastery::getMasteryValue))
-                .map(Mastery::getKpId).limit(3).toList();
+        return studentSummaries(List.of(stu)).get(0);
+    }
+
+    /**
+     * 批量学生摘要：掌握度/知识点编码/作业提交率/近 7 日活跃/练习次数 各一次性载入后内存组装。
+     * ① 掌握度（user_id in）② kpCode 映射（全表一次）③ 班级作业（class_id in）
+     * ④ 提交记录（assignment_id in + student_id in）⑤ 近 7 日活跃（between）⑥ 练习次数分组计数
+     */
+    public List<StudentSummary> studentSummaries(List<User> students) {
+        if (students == null || students.isEmpty()) {
+            return List.of();
+        }
+        List<Long> ids = students.stream().map(User::getId).toList();
+        Map<Long, List<Mastery>> masteryByUser = masteryMapper.selectList(new LambdaQueryWrapper<Mastery>()
+                        .in(Mastery::getUserId, ids))
+                .stream().collect(Collectors.groupingBy(Mastery::getUserId));
         Map<Long, String> kpNames = kpMapper.selectList(null).stream()
-                .collect(Collectors.toMap(KnowledgePoint::getId, KnowledgePoint::getKpCode));
+                .collect(Collectors.toMap(KnowledgePoint::getId, KnowledgePoint::getKpCode, (a, b) -> a));
 
-        // 提交率（相对全部非草稿作业）
-        User self = stu;
-        List<Assignment> assignments = List.of();
-        if (self.getClassId() != null) {
-            assignments = assignmentMapper.selectList(new LambdaQueryWrapper<Assignment>()
-                    .eq(Assignment::getClassId, self.getClassId()).ne(Assignment::getStatus, "DRAFT"));
+        Set<Long> classIds = students.stream().map(User::getClassId)
+                .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, List<Assignment>> assignsByClass = classIds.isEmpty() ? Map.of()
+                : assignmentMapper.selectList(new LambdaQueryWrapper<Assignment>()
+                                .in(Assignment::getClassId, classIds).ne(Assignment::getStatus, "DRAFT"))
+                        .stream().collect(Collectors.groupingBy(Assignment::getClassId));
+        List<Long> aIds = assignsByClass.values().stream()
+                .flatMap(List::stream).map(Assignment::getId).distinct().toList();
+        Set<String> submittedKeys = aIds.isEmpty() ? Set.of()
+                : submissionMapper.selectList(new LambdaQueryWrapper<Submission>()
+                                .in(Submission::getAssignmentId, aIds)
+                                .in(Submission::getStudentId, ids)
+                                .ne(Submission::getStatus, "MISSING"))
+                        .stream().map(s -> s.getAssignmentId() + ":" + s.getStudentId())
+                        .collect(Collectors.toSet());
+
+        LocalDate today = LocalDate.now();
+        Map<String, Integer> actMap = dailyActivityMapper.selectList(new LambdaQueryWrapper<DailyActivity>()
+                        .in(DailyActivity::getUserId, ids)
+                        .between(DailyActivity::getStatDate, today.minusDays(6), today))
+                .stream().collect(Collectors.toMap(
+                        d -> d.getUserId() + ":" + d.getStatDate(),
+                        DailyActivity::getMinutes, (a, b) -> a));
+        Map<Long, Long> attemptCounts = exerciseRecordMapper.selectList(new LambdaQueryWrapper<ExerciseRecord>()
+                        .in(ExerciseRecord::getUserId, ids))
+                .stream().collect(Collectors.groupingBy(ExerciseRecord::getUserId, Collectors.counting()));
+
+        List<StudentSummary> result = new ArrayList<>(students.size());
+        for (User stu : students) {
+            List<Mastery> masteries = masteryByUser.getOrDefault(stu.getId(), List.of());
+            int mastery = (int) Math.round(masteries.stream()
+                    .mapToInt(Mastery::getMasteryValue).average().orElse(0));
+            List<Long> weakKps = masteries.stream().filter(m -> m.getMasteryValue() < 50)
+                    .sorted(Comparator.comparingInt(Mastery::getMasteryValue))
+                    .map(Mastery::getKpId).limit(3).toList();
+
+            List<Assignment> assignments = stu.getClassId() != null
+                    ? assignsByClass.getOrDefault(stu.getClassId(), List.of()) : List.of();
+            long submitted = assignments.stream()
+                    .filter(as -> submittedKeys.contains(as.getId() + ":" + stu.getId())).count();
+            int submitRate = assignments.isEmpty() ? 0
+                    : (int) Math.round(submitted * 100.0 / assignments.size());
+
+            int absDays = stu.getLastLoginAt() != null
+                    ? (int) ChronoUnit.DAYS.between(stu.getLastLoginAt().toLocalDate(), LocalDate.now()) : 0;
+
+            List<Integer> trend = new ArrayList<>();
+            for (int i = 6; i >= 0; i--) {
+                LocalDate day = today.minusDays(i);
+                Integer minutes = actMap.getOrDefault(stu.getId() + ":" + day, 0);
+                trend.add(Math.min(4, minutes / 45));
+            }
+
+            long attempts = attemptCounts.getOrDefault(stu.getId(), 0L);
+            String risk = mastery < 45 || absDays >= 4 ? "high"
+                    : (mastery < 52 || submitRate < 60 ? "mid" : "low");
+
+            result.add(new StudentSummary(String.valueOf(stu.getId()), stu.getRealName(), mastery, submitRate,
+                    absDays, risk, weakKps.stream().map(kpNames::get).toList(), trend, attempts));
         }
-        long submitted = 0;
-        for (Assignment as : assignments) {
-            submitted += submissionMapper.selectCount(new LambdaQueryWrapper<Submission>()
-                    .eq(Submission::getAssignmentId, as.getId())
-                    .eq(Submission::getStudentId, stu.getId())
-                    .ne(Submission::getStatus, "MISSING"));
-        }
-        int submitRate = assignments.isEmpty() ? 0
-                : (int) Math.round(submitted * 100.0 / assignments.size());
-
-        // 连续未登录天数
-        int absDays = stu.getLastLoginAt() != null
-                ? (int) ChronoUnit.DAYS.between(stu.getLastLoginAt().toLocalDate(), LocalDate.now()) : 0;
-
-        // 近 7 日活跃趋势（小时数，0-4 桶）
-        List<Integer> trend = new ArrayList<>();
-        for (int i = 6; i >= 0; i--) {
-            LocalDate day = LocalDate.now().minusDays(i);
-            Integer minutes = dailyActivityMapper.selectOne(new LambdaQueryWrapper<DailyActivity>()
-                            .eq(DailyActivity::getUserId, stu.getId()).eq(DailyActivity::getStatDate, day))
-                    != null ? dailyActivityMapper.selectOne(new LambdaQueryWrapper<DailyActivity>()
-                            .eq(DailyActivity::getUserId, stu.getId()).eq(DailyActivity::getStatDate, day))
-                    .getMinutes() : 0;
-            trend.add(Math.min(4, minutes / 45));
-        }
-
-        long attempts = exerciseRecordMapper.selectCount(new LambdaQueryWrapper<ExerciseRecord>()
-                .eq(ExerciseRecord::getUserId, stu.getId()));
-
-        String risk = mastery < 45 || absDays >= 4 ? "high"
-                : (mastery < 52 || submitRate < 60 ? "mid" : "low");
-
-        return new StudentSummary(String.valueOf(stu.getId()), stu.getRealName(), mastery, submitRate,
-                absDays, risk, weakKps.stream().map(kpNames::get).toList(), trend, attempts);
+        return result;
     }
 
     /**

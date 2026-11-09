@@ -1,0 +1,444 @@
+{
+  "time": "2026-11-09T05:15:14.122Z",
+  "base": "http://47.119.150.2",
+  "pass": 58,
+  "fail": 0,
+  "bySec": {
+    "AVAIL": {
+      "p": 5,
+      "f": 0
+    },
+    "AUTH": {
+      "p": 7,
+      "f": 0
+    },
+    "TEACHER": {
+      "p": 16,
+      "f": 0
+    },
+    "STUDENT": {
+      "p": 11,
+      "f": 0
+    },
+    "EDGE": {
+      "p": 7,
+      "f": 0
+    },
+    "SEC": {
+      "p": 4,
+      "f": 0
+    },
+    "PERF": {
+      "p": 8,
+      "f": 0
+    }
+  },
+  "records": [
+    {
+      "sec": "AVAIL",
+      "name": "登录页可用",
+      "pass": true,
+      "detail": "HTTP 200 · gzip",
+      "ms": 69
+    },
+    {
+      "sec": "AVAIL",
+      "name": "主应用页可用",
+      "pass": true,
+      "detail": "HTTP 200 · gzip",
+      "ms": 45
+    },
+    {
+      "sec": "AVAIL",
+      "name": "前端主脚本",
+      "pass": true,
+      "detail": "HTTP 200 · gzip",
+      "ms": 30
+    },
+    {
+      "sec": "AVAIL",
+      "name": "样式表可用",
+      "pass": true,
+      "detail": "HTTP 200 · gzip",
+      "ms": 32
+    },
+    {
+      "sec": "AVAIL",
+      "name": "前端为新版本（含 v1.17 四项功能标记）",
+      "pass": true,
+      "detail": "+coTeacherAccount +classDelModal +asFolderDelModal +lock:",
+      "ms": 90
+    },
+    {
+      "sec": "AUTH",
+      "name": "教师登录",
+      "pass": true,
+      "detail": "ok",
+      "ms": 117
+    },
+    {
+      "sec": "AUTH",
+      "name": "学生登录",
+      "pass": true,
+      "detail": "ok",
+      "ms": 125
+    },
+    {
+      "sec": "AUTH",
+      "name": "错误密码被拒",
+      "pass": true,
+      "detail": "用户名或密码错误",
+      "ms": ""
+    },
+    {
+      "sec": "AUTH",
+      "name": "无 Token 访问被拒（401）",
+      "pass": true,
+      "detail": "HTTP 401",
+      "ms": ""
+    },
+    {
+      "sec": "AUTH",
+      "name": "伪造 Token 被拒（401）",
+      "pass": true,
+      "detail": "HTTP 401",
+      "ms": ""
+    },
+    {
+      "sec": "AUTH",
+      "name": "学生访问教师接口被拒（403）",
+      "pass": true,
+      "detail": "HTTP 403",
+      "ms": ""
+    },
+    {
+      "sec": "AUTH",
+      "name": "/auth/me 返回当前用户",
+      "pass": true,
+      "detail": "TEACHER",
+      "ms": ""
+    },
+    {
+      "sec": "TEACHER",
+      "name": "班级列表（含 owned/studentCount 字段）",
+      "pass": true,
+      "detail": "2 个班级",
+      "ms": 30
+    },
+    {
+      "sec": "TEACHER",
+      "name": "学情看板（KPI/卡点/重点关注）",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 80
+    },
+    {
+      "sec": "TEACHER",
+      "name": "学生列表（掌握度/提交率）",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 63
+    },
+    {
+      "sec": "TEACHER",
+      "name": "作业列表",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 268
+    },
+    {
+      "sec": "TEACHER",
+      "name": "文件夹列表（V16 班级维度）",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 23
+    },
+    {
+      "sec": "TEACHER",
+      "name": "预警中心",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 43
+    },
+    {
+      "sec": "TEACHER",
+      "name": "学习资源（教师端）",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 36
+    },
+    {
+      "sec": "TEACHER",
+      "name": "共同管理教师面板（manageable/候选）",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 28
+    },
+    {
+      "sec": "TEACHER",
+      "name": "学生反馈列表",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 28
+    },
+    {
+      "sec": "TEACHER",
+      "name": "通知列表",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 27
+    },
+    {
+      "sec": "TEACHER",
+      "name": "知识点树（对象结构）",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 43
+    },
+    {
+      "sec": "TEACHER",
+      "name": "知识图谱",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 45
+    },
+    {
+      "sec": "STUDENT",
+      "name": "练习题库正常路径（kpId=kp-intro）",
+      "pass": true,
+      "detail": "HTTP 200",
+      "ms": 40
+    },
+    {
+      "sec": "TEACHER",
+      "name": "知识点详情（按编码，二级）",
+      "pass": true,
+      "detail": "code=kp-intro",
+      "ms": 29
+    },
+    {
+      "sec": "TEACHER",
+      "name": "知识点前驱链",
+      "pass": true,
+      "detail": "",
+      "ms": 28
+    },
+    {
+      "sec": "TEACHER",
+      "name": "作业提交列表",
+      "pass": true,
+      "detail": "作业「新建作业20261103200012」",
+      "ms": 41
+    },
+    {
+      "sec": "TEACHER",
+      "name": "成绩导出 Excel（二进制流）",
+      "pass": true,
+      "detail": "HTTP 200 · 6KB · application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8",
+      "ms": 295
+    },
+    {
+      "sec": "STUDENT",
+      "name": "学习会话列表",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 93
+    },
+    {
+      "sec": "STUDENT",
+      "name": "我的作业",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 249
+    },
+    {
+      "sec": "STUDENT",
+      "name": "学习概览报告",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 181
+    },
+    {
+      "sec": "STUDENT",
+      "name": "掌握度报告",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 33
+    },
+    {
+      "sec": "STUDENT",
+      "name": "错题本",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 152
+    },
+    {
+      "sec": "STUDENT",
+      "name": "练习记录",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 225
+    },
+    {
+      "sec": "EDGE",
+      "name": "缺少必填参数返回 400 明确提示",
+      "pass": true,
+      "detail": "缺少必填参数: kpId · HTTP 400",
+      "ms": ""
+    },
+    {
+      "sec": "STUDENT",
+      "name": "复习队列·今日",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 79
+    },
+    {
+      "sec": "STUDENT",
+      "name": "复习队列·全部",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 64
+    },
+    {
+      "sec": "STUDENT",
+      "name": "学习资源（学生端）",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 30
+    },
+    {
+      "sec": "STUDENT",
+      "name": "学生通知",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": 23
+    },
+    {
+      "sec": "EDGE",
+      "name": "不存在班级的共同管理面板被拒",
+      "pass": true,
+      "detail": "班级不存在",
+      "ms": ""
+    },
+    {
+      "sec": "EDGE",
+      "name": "删除不存在文件夹幂等返回成功",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": ""
+    },
+    {
+      "sec": "EDGE",
+      "name": "删除不存在班级幂等返回成功",
+      "pass": true,
+      "detail": "HTTP 200 · code 0",
+      "ms": ""
+    },
+    {
+      "sec": "EDGE",
+      "name": "已下线移除接口返回 404",
+      "pass": true,
+      "detail": "HTTP 404",
+      "ms": ""
+    },
+    {
+      "sec": "EDGE",
+      "name": "不存在知识点编码被拒",
+      "pass": true,
+      "detail": "知识点不存在: __not_exist__",
+      "ms": ""
+    },
+    {
+      "sec": "EDGE",
+      "name": "畸形 JSON 请求返回 400（非 500）",
+      "pass": true,
+      "detail": "HTTP 400",
+      "ms": 16
+    },
+    {
+      "sec": "SEC",
+      "name": "机密配置文件不可访问",
+      "pass": true,
+      "detail": "HTTP 404",
+      "ms": 36
+    },
+    {
+      "sec": "SEC",
+      "name": "上传目录路径穿越不可达",
+      "pass": true,
+      "detail": "HTTP 404",
+      "ms": 36
+    },
+    {
+      "sec": "SEC",
+      "name": "Swagger API 文档未对外暴露",
+      "pass": true,
+      "detail": "swagger=404 api-docs=404",
+      "ms": 44
+    },
+    {
+      "sec": "SEC",
+      "name": "旧默认密钥伪造 Token 被拒（401）",
+      "pass": true,
+      "detail": "HTTP 401",
+      "ms": 17
+    },
+    {
+      "sec": "PERF",
+      "name": "学情看板 响应",
+      "pass": true,
+      "detail": "均值 88ms · 最大 90ms · 良好",
+      "ms": ""
+    },
+    {
+      "sec": "PERF",
+      "name": "学生列表 响应",
+      "pass": true,
+      "detail": "均值 65ms · 最大 72ms · 良好",
+      "ms": ""
+    },
+    {
+      "sec": "PERF",
+      "name": "作业列表 响应",
+      "pass": true,
+      "detail": "均值 267ms · 最大 275ms · 良好",
+      "ms": ""
+    },
+    {
+      "sec": "PERF",
+      "name": "知识图谱 响应",
+      "pass": true,
+      "detail": "均值 41ms · 最大 45ms · 良好",
+      "ms": ""
+    },
+    {
+      "sec": "PERF",
+      "name": "班级列表 响应",
+      "pass": true,
+      "detail": "均值 33ms · 最大 34ms · 良好",
+      "ms": ""
+    },
+    {
+      "sec": "PERF",
+      "name": "预警中心 响应",
+      "pass": true,
+      "detail": "均值 34ms · 最大 35ms · 良好",
+      "ms": ""
+    },
+    {
+      "sec": "PERF",
+      "name": "我的作业（学生） 响应",
+      "pass": true,
+      "detail": "均值 176ms · 最大 187ms · 良好",
+      "ms": ""
+    },
+    {
+      "sec": "PERF",
+      "name": "学习概览（学生） 响应",
+      "pass": true,
+      "detail": "均值 246ms · 最大 274ms · 良好",
+      "ms": ""
+    }
+  ]
+}

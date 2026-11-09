@@ -15,6 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -30,6 +31,8 @@ import java.util.stream.Collectors;
 public class GradingService {
 
     private final LlmClient llmClient;
+    /** AI 初评：LLM 调用不占事务，仅 DB 写库段用短事务（避免长事务占满 HikariCP 连接池） */
+    private final TransactionTemplate transactionTemplate;
     private final DeepSeekProperties props;
     private final ObjectMapper objectMapper;
     private final SubmissionMapper submissionMapper;
@@ -50,9 +53,10 @@ public class GradingService {
     private final ResourceAiService resourceAiService;
 
     /**
-     * 单份 AI 初评（同步）。题目型作业（scoreMode 非空）走逐题判分，Rubric 型作业走评分维度流程
+     * 单份 AI 初评（同步）。题目型作业（scoreMode 非空）走逐题判分，Rubric 型作业走评分维度流程。
+     * 注意：方法级 @Transactional 已移除——LLM 调用（最长 90s）不再持有 DB 连接，
+     * 各路径的写库段改用 TransactionTemplate 短事务，防虚拟线程并发下连接池耗尽。
      */
-    @Transactional
     public Map<String, Object> aiGrade(Long submissionId) {
         Submission sub = submissionMapper.selectById(submissionId);
         if (sub == null) {
@@ -79,21 +83,24 @@ public class GradingService {
         String raw = chatWithRetry(messages, "submission=" + submissionId);
         AiGradeResult result = parseGradeResult(raw, rubrics);
 
-        sub.setAiScore(result.aiScore);
-        sub.setAiComment(result.comment);
-        sub.setStatus("AI_REVIEWED");
-        submissionMapper.updateById(sub);
+        // 写库段短事务：LLM 已调用完毕，此处才占用 DB 连接
+        transactionTemplate.executeWithoutResult(tx -> {
+            sub.setAiScore(result.aiScore);
+            sub.setAiComment(result.comment);
+            sub.setStatus("AI_REVIEWED");
+            submissionMapper.updateById(sub);
 
-        // 保存 AI 逐项评分
-        rubricScoreMapper.delete(new LambdaQueryWrapper<RubricScore>()
-                .eq(RubricScore::getSubmissionId, sub.getId()));
-        for (Map.Entry<Long, Integer> e : result.rubricScores.entrySet()) {
-            RubricScore rs = new RubricScore();
-            rs.setSubmissionId(sub.getId());
-            rs.setRubricId(e.getKey());
-            rs.setScore(e.getValue());
-            rubricScoreMapper.insert(rs);
-        }
+            // 保存 AI 逐项评分
+            rubricScoreMapper.delete(new LambdaQueryWrapper<RubricScore>()
+                    .eq(RubricScore::getSubmissionId, sub.getId()));
+            for (Map.Entry<Long, Integer> e : result.rubricScores.entrySet()) {
+                RubricScore rs = new RubricScore();
+                rs.setSubmissionId(sub.getId());
+                rs.setRubricId(e.getKey());
+                rs.setScore(e.getValue());
+                rubricScoreMapper.insert(rs);
+            }
+        });
 
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("aiScore", result.aiScore);
@@ -178,10 +185,14 @@ public class GradingService {
         if (score == null) {
             throw new BizException("AI 返回结果无法解析，请重试");
         }
-        sub.setAiScore(score);
-        sub.setAiComment(comment);
-        sub.setStatus("AI_REVIEWED");
-        submissionMapper.updateById(sub);
+        final Integer scoreF = score;
+        final String commentF = comment;
+        transactionTemplate.executeWithoutResult(tx -> {
+            sub.setAiScore(scoreF);
+            sub.setAiComment(commentF);
+            sub.setStatus("AI_REVIEWED");
+            submissionMapper.updateById(sub);
+        });
 
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("aiScore", score);
@@ -270,10 +281,12 @@ public class GradingService {
                     .append(rationale.getOrDefault(i + 1, "待人工评分"));
         }
 
-        sub.setAiScore((int) Math.round(total));
-        sub.setAiComment(comment.toString());
-        sub.setStatus("AI_REVIEWED");
-        submissionMapper.updateById(sub);
+        transactionTemplate.executeWithoutResult(tx -> {
+            sub.setAiScore((int) Math.round(total));
+            sub.setAiComment(comment.toString());
+            sub.setStatus("AI_REVIEWED");
+            submissionMapper.updateById(sub);
+        });
 
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("aiScore", (int) Math.round(total));

@@ -18,6 +18,7 @@ import com.la.mapper.WrongBookMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -39,6 +40,8 @@ public class ExerciseService {
     private final ReviewService reviewService;
     private final ObjectMapper objectMapper;
     private final LlmClient llmClient;
+    /** 文本作答判分：LLM 调用不占事务，仅写库段用短事务（防长事务占满连接池） */
+    private final TransactionTemplate transactionTemplate;
 
     /**
      * 知识点下的题目（不泄露 answer / analysis / hints）
@@ -147,8 +150,9 @@ public class ExerciseService {
     /**
      * 非选择题型的文本作答（编程/填空/简答/判断）：判分 → 掌握度回写 → 记录 → 错题本 → SM-2。
      * 判断/填空按预设答案精确比对；编程/简答交由 AI 按题干点评，AI 不可用时兜底为完成度判定。
+     * 注意：方法级 @Transactional 已移除——AI 点评（最长数十秒）不持有 DB 连接，
+     * 写库段（记录/掌握度/错题本/复习队列）改用 TransactionTemplate 短事务。
      */
-    @Transactional
     public AttemptResponse attemptText(Long userId, Long exerciseId, String answer, Integer hintUsed) {
         Exercise ex = exerciseMapper.selectById(exerciseId);
         if (ex == null) {
@@ -181,46 +185,55 @@ public class ExerciseService {
         // 做错不扣分（鼓励大胆试错）：掌握度记 +0；做照常加分
         int applied = correct ? ex.getMasteryDelta() : 0;
 
-        // 练习记录（selected 记 -1 标记文本作答，answer 存原文）
-        ExerciseRecord record = new ExerciseRecord();
-        record.setUserId(userId);
-        record.setExerciseId(exerciseId);
-        record.setKpId(ex.getKpId());
-        record.setSelected(-1);
-        record.setAnswer(answer);
-        record.setIsCorrect(correct);
-        record.setDelta(applied);
-        record.setHintUsed(hintUsed != null ? hintUsed : 0);
-        record.setCreatedAt(LocalDateTime.now());
-        recordMapper.insert(record);
+        // 写库段短事务（AI 调用已完成，此处才占用 DB 连接）
+        boolean wrongBookAdded;
+        Integer newMastery;
+        LocalDate reviewNext;
+        {
+            ExerciseRecord record = new ExerciseRecord();
+            record.setUserId(userId);
+            record.setExerciseId(exerciseId);
+            record.setKpId(ex.getKpId());
+            record.setSelected(-1);
+            record.setAnswer(answer);
+            record.setIsCorrect(correct);
+            record.setDelta(applied);
+            record.setHintUsed(hintUsed != null ? hintUsed : 0);
+            record.setCreatedAt(LocalDateTime.now());
 
-        // 掌握度回写：做对加分；做错不回写（保持原值，无记录不创建）
-        Integer newMastery = correct
-                ? masteryService.adjust(userId, ex.getKpId(), applied)
-                : masteryService.currentValue(userId, ex.getKpId());
-
-        boolean wrongBookAdded = false;
-        LocalDate reviewNext = null;
-        if (!correct) {
-            WrongBook wb = wrongBookMapper.selectOne(new LambdaQueryWrapper<WrongBook>()
-                    .eq(WrongBook::getUserId, userId).eq(WrongBook::getExerciseId, exerciseId));
-            if (wb == null) {
-                wb = new WrongBook();
-                wb.setUserId(userId);
-                wb.setExerciseId(exerciseId);
-                wb.setKpId(ex.getKpId());
-                wb.setWrongCount(1);
-                wb.setLastWrongAt(LocalDateTime.now());
-                wrongBookMapper.insert(wb);
-                wrongBookAdded = true;
-            } else {
-                wb.setWrongCount(wb.getWrongCount() + 1);
-                wb.setLastWrongAt(LocalDateTime.now());
-                wrongBookMapper.updateById(wb);
-            }
-            reviewNext = reviewService.enqueueForWrong(userId, ex);
+            boolean[] added = { false };
+            LocalDate[] next = { null };
+            newMastery = transactionTemplate.execute(tx -> {
+                recordMapper.insert(record);
+                // 掌握度回写：做对加分；做错不回写（保持原值，无记录不创建）
+                Integer m = correct
+                        ? masteryService.adjust(userId, ex.getKpId(), applied)
+                        : masteryService.currentValue(userId, ex.getKpId());
+                if (!correct) {
+                    WrongBook wb = wrongBookMapper.selectOne(new LambdaQueryWrapper<WrongBook>()
+                            .eq(WrongBook::getUserId, userId).eq(WrongBook::getExerciseId, exerciseId));
+                    if (wb == null) {
+                        WrongBook w = new WrongBook();
+                        w.setUserId(userId);
+                        w.setExerciseId(exerciseId);
+                        w.setKpId(ex.getKpId());
+                        w.setWrongCount(1);
+                        w.setLastWrongAt(LocalDateTime.now());
+                        wrongBookMapper.insert(w);
+                        added[0] = true;
+                    } else {
+                        wb.setWrongCount(wb.getWrongCount() + 1);
+                        wb.setLastWrongAt(LocalDateTime.now());
+                        wrongBookMapper.updateById(wb);
+                    }
+                    next[0] = reviewService.enqueueForWrong(userId, ex);
+                }
+                masteryService.addMinutes(userId, 3);
+                return m;
+            });
+            wrongBookAdded = added[0];
+            reviewNext = next[0];
         }
-        masteryService.addMinutes(userId, 3);
 
         return new AttemptResponse(correct, null, analysis, applied, newMastery, wrongBookAdded, reviewNext);
     }
@@ -242,9 +255,11 @@ public class ExerciseService {
                 r.comment = node.path("comment").asText("");
             }
         } catch (Exception ignore) {
-            // AI 不可用：兜底按完成度判定（已认真作答即通过），避免阻塞学生流程
+            // AI 不可用：兜底按完成度判定（已认真作答即通过），避免阻塞学生流程；
+            // 兜底口径在评语中显式告知学生，避免误认为 AI 已逐行评审
             r.correct = answer.trim().length() >= 10;
-            r.comment = "AI 点评暂不可用。已记录你的作答，可对照参考要点自行复盘。";
+            r.comment = "【AI 点评暂不可用·按完成度兜底判定（作答满 10 字即通过）】"
+                    + "已记录你的作答，建议稍后重试获取逐行点评，或对照参考要点自行复盘。";
         }
         return r;
     }

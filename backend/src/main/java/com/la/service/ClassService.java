@@ -2,6 +2,8 @@ package com.la.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.la.entity.*;
 import com.la.exception.BizException;
 import com.la.mapper.*;
@@ -9,6 +11,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 /**
@@ -33,6 +37,26 @@ public class ClassService {
     private final LearningResourceMapper learningResourceMapper;
     private final ResourceProgressMapper resourceProgressMapper;
     private final UserMapper userMapper;
+    /** 磁盘文件 best-effort 清理：解析 LAB 报告提交中的存储文件名用 */
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    /** 上传目录基址（与 ResourceService/AssignmentService 存储口径一致） */
+    private static final Path RESOURCE_DIR = Path.of("uploads", "resource");
+    private static final Path REPORT_DIR = Path.of("uploads", "report");
+
+    /** 安全删除上传目录内的文件：解析后必须仍位于基目录下（防路径穿越），失败静默不影响主流程 */
+    private void deleteUploadedFile(Path base, String relativeName) {
+        if (relativeName == null || relativeName.isBlank()) {
+            return;
+        }
+        try {
+            Path absBase = base.toAbsolutePath().normalize();
+            Path target = absBase.resolve(relativeName).normalize();
+            if (target.startsWith(absBase)) {
+                Files.deleteIfExists(target);
+            }
+        } catch (Exception ignore) { }
+    }
 
     /** 删除班级（仅所有者；事务内级联清理关联数据；幂等：班级不存在时静默成功） */
     @Transactional
@@ -53,7 +77,7 @@ public class ClassService {
         coTeacherMapper.delete(new LambdaQueryWrapper<ClassCoTeacher>()
                 .eq(ClassCoTeacher::getClassId, classId));
 
-        // 2) 级联删除该班作业：提交评分 → 学生提交 → Rubric → 题目 → 作业
+        // 2) 级联删除该班作业：提交评分 → 学生提交（含磁盘实验报告文件）→ Rubric → 题目 → 作业
         List<Assignment> assigns = assignmentMapper.selectList(new LambdaQueryWrapper<Assignment>()
                 .eq(Assignment::getClassId, classId));
         if (!assigns.isEmpty()) {
@@ -63,6 +87,13 @@ public class ClassService {
             if (!subs.isEmpty()) {
                 rubricScoreMapper.delete(new LambdaQueryWrapper<RubricScore>()
                         .in(RubricScore::getSubmissionId, subs.stream().map(Submission::getId).toList()));
+                // LAB 报告的磁盘文件随提交记录一并清理（best-effort，失败不影响事务）
+                for (Submission s : subs) {
+                    String stored = extractReportFile(s.getAnswers());
+                    if (stored != null) {
+                        deleteUploadedFile(REPORT_DIR, stored);
+                    }
+                }
             }
             submissionMapper.delete(new LambdaQueryWrapper<Submission>()
                     .in(Submission::getAssignmentId, aIds));
@@ -78,7 +109,7 @@ public class ClassService {
         warningMapper.delete(new LambdaQueryWrapper<Warning>()
                 .eq(Warning::getClassId, classId));
 
-        // 4) 级联删除该班学习资源及其学习进度记录
+        // 4) 级联删除该班学习资源（DB 记录 + 学习进度 + 磁盘文件）
         List<LearningResource> resources = learningResourceMapper.selectList(
                 new LambdaQueryWrapper<LearningResource>()
                         .eq(LearningResource::getClassId, classId));
@@ -88,6 +119,9 @@ public class ClassService {
                             resources.stream().map(LearningResource::getId).toList()));
             learningResourceMapper.delete(new LambdaQueryWrapper<LearningResource>()
                     .eq(LearningResource::getClassId, classId));
+            for (LearningResource r : resources) {
+                deleteUploadedFile(RESOURCE_DIR, r.getFilePath());
+            }
         }
 
         // 5) 学生账号保留，但移出该班级（解除关联关系）
@@ -97,5 +131,27 @@ public class ClassService {
 
         // 6) 删除班级本身
         classMapper.deleteById(classId);
+    }
+
+    /** 从提交 answers JSON 中提取实验报告存储文件名（数组/对象两种历史格式兼容） */
+    private String extractReportFile(String answers) {
+        if (answers == null || answers.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode n = JSON.readTree(answers);
+            if (n.isArray()) {
+                for (JsonNode item : n) {
+                    String f = item.path("reportFile").asText("");
+                    if (!f.isBlank()) {
+                        return f;
+                    }
+                }
+            }
+            String f = n.path("reportFile").asText("");
+            return f.isBlank() ? null : f;
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

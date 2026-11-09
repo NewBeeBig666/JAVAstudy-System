@@ -66,9 +66,14 @@ public class ClassImportService {
         Parsed parsed;
         try (InputStream in = file.getInputStream()) {
             if (lower.endsWith(".xlsx")) {
-                parsed = parseExcel(new XSSFWorkbook(in));
+                // Workbook 自身也需关闭（POI 包内资源），与流一并 try-with-resources
+                try (XSSFWorkbook wb = new XSSFWorkbook(in)) {
+                    parsed = parseExcel(wb);
+                }
             } else if (lower.endsWith(".xls")) {
-                parsed = parseExcel(new org.apache.poi.hssf.usermodel.HSSFWorkbook(in));
+                try (org.apache.poi.hssf.usermodel.HSSFWorkbook wb = new org.apache.poi.hssf.usermodel.HSSFWorkbook(in)) {
+                    parsed = parseExcel(wb);
+                }
             } else if (lower.endsWith(".docx")) {
                 parsed = parseDocx(in);
             } else if (lower.endsWith(".doc")) {

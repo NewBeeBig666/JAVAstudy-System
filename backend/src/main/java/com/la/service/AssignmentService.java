@@ -277,6 +277,24 @@ public class AssignmentService {
         Submission sub = submissionMapper.selectOne(new LambdaQueryWrapper<Submission>()
                 .eq(Submission::getAssignmentId, assignmentId)
                 .eq(Submission::getStudentId, studentId));
+        // 记录旧报告文件：更新成功后清理，防止重复上传堆积孤儿文件
+        String oldFile = null;
+        if (sub != null && sub.getAnswers() != null) {
+            try {
+                JsonNode old = objectMapper.readTree(sub.getAnswers());
+                if (old.isArray()) {
+                    for (JsonNode n : old) {
+                        if (!n.path("reportFile").asText("").isBlank()) {
+                            oldFile = n.path("reportFile").asText();
+                            break;
+                        }
+                    }
+                } else if (!old.path("reportFile").asText("").isBlank()) {
+                    oldFile = old.path("reportFile").asText();
+                }
+            } catch (Exception ignore) { }
+        }
+        boolean isNew = sub == null;
         if (sub == null) {
             sub = new Submission();
             sub.setAssignmentId(assignmentId);
@@ -292,21 +310,31 @@ public class AssignmentService {
         // answers 存数组（与题目型作业结构一致，parseObjects 可解析）：
         // [{"reportFile": "存储文件名", "fileName": "原始文件名"}]
         sub.setAnswers(toJson(List.of(Map.of("reportFile", storedName, "fileName", fileName))));
-        if (sub.getId() == null) {
-            submissionMapper.insert(sub);
-        } else {
-            submissionMapper.update(null, new LambdaUpdateWrapper<Submission>()
-                    .eq(Submission::getId, sub.getId())
-                    .set(Submission::getCode, sub.getCode())
-                    .set(Submission::getAnswers, sub.getAnswers())
-                    .set(Submission::getStatus, "PENDING")
-                    .set(Submission::getAttempts, sub.getAttempts())
-                    .set(Submission::getSubmittedAt, sub.getSubmittedAt())
-                    .set(Submission::getScore, null)
-                    .set(Submission::getAiScore, null)
-                    .set(Submission::getAiComment, null)
-                    .set(Submission::getTeacherComment, null)
-                    .set(Submission::getGradedAt, null));
+        try {
+            if (isNew) {
+                submissionMapper.insert(sub);
+            } else {
+                submissionMapper.update(null, new LambdaUpdateWrapper<Submission>()
+                        .eq(Submission::getId, sub.getId())
+                        .set(Submission::getCode, sub.getCode())
+                        .set(Submission::getAnswers, sub.getAnswers())
+                        .set(Submission::getStatus, "PENDING")
+                        .set(Submission::getAttempts, sub.getAttempts())
+                        .set(Submission::getSubmittedAt, sub.getSubmittedAt())
+                        .set(Submission::getScore, null)
+                        .set(Submission::getAiScore, null)
+                        .set(Submission::getAiComment, null)
+                        .set(Submission::getTeacherComment, null)
+                        .set(Submission::getGradedAt, null));
+            }
+        } catch (RuntimeException e) {
+            // DB 写失败：删除刚落盘的报告文件，避免孤儿文件只增不减
+            try { Files.deleteIfExists(REPORT_DIR.resolve(storedName)); } catch (IOException ignore) { }
+            throw e;
+        }
+        // 更新成功：清理被替代的旧报告文件（best-effort，失败不影响业务）
+        if (oldFile != null && !oldFile.isBlank() && !oldFile.equals(storedName)) {
+            try { Files.deleteIfExists(REPORT_DIR.resolve(oldFile)); } catch (IOException ignore) { }
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("submissionId", sub.getId());
