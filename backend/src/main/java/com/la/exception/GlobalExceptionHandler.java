@@ -56,6 +56,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResponse.fail(400, "操作已存在，请勿重复提交，稍后刷新查看结果"));
     }
 
+    // 上传请求超过 multipart 尺寸上限（如成果物压缩包超过 200MB）：400 明确提示而非 500
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMaxUploadSize(org.springframework.web.multipart.MaxUploadSizeExceededException e) {
+        return ResponseEntity.badRequest().body(ApiResponse.fail(400, "上传文件超过大小上限，请压缩或拆分后重试"));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleOther(Exception e) {
         log.error("未处理异常", e);

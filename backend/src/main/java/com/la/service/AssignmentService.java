@@ -238,10 +238,26 @@ public class AssignmentService {
     /* ==================== 实验报告作业（LAB） ==================== */
 
     private static final Path REPORT_DIR = Path.of("uploads", "report");
+    private static final Path DELIVERABLE_DIR = Path.of("uploads", "deliverable");
+    /** 成果物压缩包大小上限（报告 ≤50MB + 成果物 ≤200MB，multipart 请求上限 260MB） */
+    private static final long DELIVERABLE_MAX = 200L * 1024 * 1024;
 
-    /** 学生上传实验报告（Word）：保存文件并创建/更新提交（可重复上传，上次批改作废） */
+    /** 作业是否开启「成果物上传」（教师发布配置，存于 description JSON 的 deliverable 字段） */
+    public static boolean deliverableEnabled(String description) {
+        if (description == null || description.isBlank()) {
+            return false;
+        }
+        try {
+            return new ObjectMapper().readTree(description).path("deliverable").path("enabled").asBoolean(false);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 学生上传实验报告（Word）+ 成果物压缩包（教师开启后必填：zip/rar ≤200MB，与报告缺一不可）：
+     *  保存文件并创建/更新提交（可重复上传，上次批改作废），成功后清理被替代的旧文件 */
     @Transactional
-    public Map<String, Object> submitReport(Long studentId, Long assignmentId, MultipartFile file) {
+    public Map<String, Object> submitReport(Long studentId, Long assignmentId, MultipartFile file, MultipartFile deliverable) {
         Assignment as = assignmentMapper.selectById(assignmentId);
         if (as == null || !"LAB".equals(as.getScoreMode())) {
             throw new BizException("该作业不支持报告提交");
@@ -262,8 +278,27 @@ public class AssignmentService {
         if (file.getSize() > 50L * 1024 * 1024) {
             throw new BizException("文件超过大小上限（50MB）");
         }
+        // 成果物压缩包：教师开启该功能后必填，与实验报告缺一不可
+        boolean needDeliverable = deliverableEnabled(as.getDescription());
+        String deliverableName = deliverable == null || deliverable.getOriginalFilename() == null
+                ? "" : deliverable.getOriginalFilename().trim();
+        if (needDeliverable) {
+            if (deliverable == null || deliverable.isEmpty() || deliverableName.isBlank()) {
+                throw new BizException("请同时上传成果物压缩包（zip/rar）：实验报告与成果物缺一不可");
+            }
+            String dLower = deliverableName.toLowerCase();
+            if (!dLower.endsWith(".zip") && !dLower.endsWith(".rar")) {
+                throw new BizException("成果物仅支持 zip / rar 压缩包格式");
+            }
+            if (deliverable.getSize() > DELIVERABLE_MAX) {
+                throw new BizException("成果物压缩包超过大小上限（200MB）");
+            }
+        }
         try {
             Files.createDirectories(REPORT_DIR);
+            if (needDeliverable) {
+                Files.createDirectories(DELIVERABLE_DIR);
+            }
         } catch (IOException e) {
             throw new BizException("创建存储目录失败，请联系管理员");
         }
@@ -274,24 +309,34 @@ public class AssignmentService {
         } catch (IOException e) {
             throw new BizException("报告保存失败，请重试");
         }
+        String storedDeliverable = null;
+        if (needDeliverable) {
+            storedDeliverable = "as" + assignmentId + "-u" + studentId + "-" + System.currentTimeMillis()
+                    + "-d-" + deliverableName.replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
+            try {
+                deliverable.transferTo(DELIVERABLE_DIR.resolve(storedDeliverable));
+            } catch (IOException e) {
+                // 成果物落盘失败：回滚刚保存的报告，保持一次提交的原子性
+                try { Files.deleteIfExists(REPORT_DIR.resolve(storedName)); } catch (IOException ignore) { }
+                throw new BizException("成果物保存失败，请重试");
+            }
+        }
 
         Submission sub = submissionMapper.selectOne(new LambdaQueryWrapper<Submission>()
                 .eq(Submission::getAssignmentId, assignmentId)
                 .eq(Submission::getStudentId, studentId));
-        // 记录旧报告文件：更新成功后清理，防止重复上传堆积孤儿文件
+        // 记录旧报告/旧成果物文件：更新成功后清理，防止重复上传堆积孤儿文件
         String oldFile = null;
+        String oldDeliverable = null;
         if (sub != null && sub.getAnswers() != null) {
             try {
                 JsonNode old = objectMapper.readTree(sub.getAnswers());
-                if (old.isArray()) {
-                    for (JsonNode n : old) {
-                        if (!n.path("reportFile").asText("").isBlank()) {
-                            oldFile = n.path("reportFile").asText();
-                            break;
-                        }
-                    }
-                } else if (!old.path("reportFile").asText("").isBlank()) {
-                    oldFile = old.path("reportFile").asText();
+                JsonNode rep = old.isArray() && old.size() > 0 ? old.get(0) : old;
+                if (!rep.path("reportFile").asText("").isBlank()) {
+                    oldFile = rep.path("reportFile").asText();
+                }
+                if (!rep.path("deliverableFile").asText("").isBlank()) {
+                    oldDeliverable = rep.path("deliverableFile").asText();
                 }
             } catch (Exception ignore) { }
         }
@@ -307,10 +352,17 @@ public class AssignmentService {
         }
         sub.setStatus("PENDING");
         sub.setSubmittedAt(LocalDateTime.now());
-        sub.setCode("【实验报告】" + fileName);
+        sub.setCode("【实验报告】" + fileName + (needDeliverable ? " +【成果物】" + deliverableName : ""));
         // answers 存数组（与题目型作业结构一致，parseObjects 可解析）：
-        // [{"reportFile": "存储文件名", "fileName": "原始文件名"}]
-        sub.setAnswers(toJson(List.of(Map.of("reportFile", storedName, "fileName", fileName))));
+        // [{"reportFile": "存储名", "fileName": "原始名", "deliverableFile": "存储名", "deliverableName": "原始名"}]
+        Map<String, Object> ans = new LinkedHashMap<>();
+        ans.put("reportFile", storedName);
+        ans.put("fileName", fileName);
+        if (needDeliverable) {
+            ans.put("deliverableFile", storedDeliverable);
+            ans.put("deliverableName", deliverableName);
+        }
+        sub.setAnswers(toJson(List.of(ans)));
         try {
             if (isNew) {
                 submissionMapper.insert(sub);
@@ -329,17 +381,24 @@ public class AssignmentService {
                         .set(Submission::getGradedAt, null));
             }
         } catch (RuntimeException e) {
-            // DB 写失败：删除刚落盘的报告文件，避免孤儿文件只增不减
+            // DB 写失败：删除刚落盘的报告/成果物文件，避免孤儿文件只增不减
             try { Files.deleteIfExists(REPORT_DIR.resolve(storedName)); } catch (IOException ignore) { }
+            if (storedDeliverable != null) {
+                try { Files.deleteIfExists(DELIVERABLE_DIR.resolve(storedDeliverable)); } catch (IOException ignore) { }
+            }
             throw e;
         }
-        // 更新成功：清理被替代的旧报告文件（best-effort，失败不影响业务）
+        // 更新成功：清理被替代的旧报告/旧成果物文件（best-effort，失败不影响业务）
         if (oldFile != null && !oldFile.isBlank() && !oldFile.equals(storedName)) {
             try { Files.deleteIfExists(REPORT_DIR.resolve(oldFile)); } catch (IOException ignore) { }
+        }
+        if (oldDeliverable != null && !oldDeliverable.isBlank() && !oldDeliverable.equals(storedDeliverable)) {
+            try { Files.deleteIfExists(DELIVERABLE_DIR.resolve(oldDeliverable)); } catch (IOException ignore) { }
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("submissionId", sub.getId());
         result.put("fileName", fileName);
+        result.put("deliverableName", needDeliverable ? deliverableName : null);
         result.put("attempts", sub.getAttempts());
         return result;
     }
@@ -371,6 +430,35 @@ public class AssignmentService {
             throw e;
         } catch (Exception e) {
             throw new BizException("报告信息解析失败");
+        }
+    }
+
+    /** 教师批阅：读取学生上传的成果物压缩包（文件对象 + 原文件名） */
+    public Map<String, Object> studentDeliverable(Long submissionId) {
+        Submission sub = submissionMapper.selectById(submissionId);
+        if (sub == null) {
+            throw new BizException("提交不存在");
+        }
+        try {
+            JsonNode ans = objectMapper.readTree(sub.getAnswers() == null ? "[]" : sub.getAnswers());
+            JsonNode rep = ans.isArray() && ans.size() > 0 ? ans.get(0) : ans;
+            String stored = rep.path("deliverableFile").asText("");
+            String fileName = rep.path("deliverableName").asText("成果物.zip");
+            if (stored.isBlank()) {
+                throw new BizException("该提交没有成果物文件");
+            }
+            File f = DELIVERABLE_DIR.resolve(stored).toFile();
+            if (!f.exists()) {
+                throw new BizException("成果物文件已丢失，请联系管理员");
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("file", f);
+            m.put("fileName", fileName);
+            return m;
+        } catch (BizException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BizException("成果物信息解析失败");
         }
     }
 
@@ -564,7 +652,7 @@ public class AssignmentService {
         }
         as.setTitle(req.getTitle());
         // 实验报告型：description 存模板关联 JSON（复用现有列，零表结构变更）；
-        // 分组实验配置一并存入 group 字段 {enabled, mode, count}
+        // 分组实验配置存入 group 字段 {enabled, mode, count}；成果物上传配置存入 deliverable 字段 {enabled}
         if (isLab) {
             Map<String, Object> desc = new LinkedHashMap<>();
             desc.put("templateId", req.getLabTemplateId());
@@ -575,6 +663,9 @@ public class AssignmentService {
                 g.put("mode", groupMode);
                 g.put("count", groupCount);
                 desc.put("group", g);
+            }
+            if (Boolean.TRUE.equals(req.getDeliverableEnabled())) {
+                desc.put("deliverable", Map.of("enabled", true));
             }
             as.setDescription(toJson(desc));
         } else {
@@ -804,6 +895,10 @@ public class AssignmentService {
                     gd.put("mode", String.valueOf(groupCfg.get("mode")).toLowerCase());
                     gd.put("count", groupCfg.get("count"));
                     labDto.put("group", gd);
+                }
+                // 成果物上传配置（开启时输出：学生端须同时提交实验报告与成果物压缩包）
+                if (deliverableEnabled(as.getDescription())) {
+                    labDto.put("deliverable", Map.of("enabled", true));
                 }
                 dto.put("lab", labDto);
             } catch (Exception e) {

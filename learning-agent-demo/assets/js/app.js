@@ -3662,6 +3662,7 @@
       main = '<div class="empty" style="padding:80px 20px"><div class="empty-ico">' + icon('inbox', 24) + '</div><div class="empty-title">该学生未提交</div><div class="empty-desc">可直接记 0 分，或回到列表提醒学生补交。</div></div>';
     } else if (isLab) {
       const rep = (sub.answers || []).find(x => x && x.reportFile) || {};
+      const dlv = (sub.answers || []).find(x => x && x.deliverableFile) || {};
       main = `<div class="note warn" style="margin-bottom:12px;white-space:pre-line"><b>AI 初评${sub.aiScore != null ? '（' + sub.aiScore + ' 分）' : ''}：</b>${h(sub.aiComment || (g.aiBusy ? '正在自动初评（AI 阅读实验报告评审中），完成后总分将自动预填，您也可以直接手动录入分数…' : '尚未初评，可稍后重试'))}</div>
         <div class="hw-qlist-head" style="margin-bottom:12px">${icon('file', 14)} 实验报告作业 · 模板：${h(a.lab.templateTitle || '实验报告模板')} · 满分 100</div>
         <div class="card">
@@ -3674,7 +3675,17 @@
             </div>
             <div class="note" style="margin-top:10px">下载学生的 Word 报告后离线批阅：报告内一、二、三部分为实验要求（模板自带），四及以后为该生作答，最底部为评分表与评语区。AI 初评已按实验要求对作答内容评审，可作参考。</div>
           </div>
-        </div>`;
+        </div>
+        ${dlv.deliverableFile ? `<div class="card" style="margin-top:12px">
+          <div class="card-head">${icon('layers', 15)}<h3>学生提交的成果物</h3></div>
+          <div class="card-body">
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <span class="badge brand">${icon('layers', 12)} ${h(dlv.deliverableName || '成果物.zip')}</span>
+              <button class="btn sm" data-act="labDownloadDeliverable" data-id="${h(sub.id)}">${icon('download', 14)} 下载成果物</button>
+            </div>
+            <div class="note" style="margin-top:10px">成果物为学生的完整项目代码压缩包（zip/rar ≤ 200MB），下载后可在本地解压运行验证，结合实验报告与 AI 初评综合评分。</div>
+          </div>
+        </div>` : ''}`;
     } else if (isQ) {
       // 学生作答映射：questionId -> value
       const ansMap = {};
@@ -3866,6 +3877,8 @@
         groupEnabled: !!(a.lab && a.lab.group && a.lab.group.enabled),
         groupMode: a.lab && a.lab.group && a.lab.group.mode ? String(a.lab.group.mode).toUpperCase() : 'RANDOM',
         groupCount: a.lab && a.lab.group && a.lab.group.count ? Number(a.lab.group.count) : 4,
+        // 成果物上传配置回填（旧作业无该字段视为未开启）
+        deliverableEnabled: !!(a.lab && a.lab.deliverable && a.lab.deliverable.enabled),
         kps,
         questions: (a.questions || []).map(q => ({
           // 保留题目 id：编辑保存时后端按 id 原位差量更新，保持 id 稳定
@@ -3894,7 +3907,9 @@
         folderId: State.composeFolder != null ? State.composeFolder : null,
         kps: [], questions: [], busy: false, aiBusy: false, _dtp: null, _kpOpen: false, preview: false,
         // 分组实验配置（实验报告作业）：默认关闭
-        groupEnabled: false, groupMode: 'RANDOM', groupCount: 4
+        groupEnabled: false, groupMode: 'RANDOM', groupCount: 4,
+        // 成果物上传配置（实验报告作业）：默认关闭
+        deliverableEnabled: false
       };
     }
     renderOverlays();
@@ -3968,7 +3983,12 @@
     </div>
     ${on ? `<div class="cfg-row"><span class="cfg-label"></span><span class="hint">${rnd
       ? '发布时系统自动按「全班人数 ÷ 分组数量」均衡分配（余数摊入前几组），组员随机组合，并在每组随机指定 1 名组长'
-      : '学生自主邀请同班同学组队：发起邀请者自动成为组长，被邀请人为组员；每组人数上限按分组数量折算'}</span></div>` : ''}`;
+      : '学生自主邀请同班同学组队：发起邀请者自动成为组长，被邀请人为组员；每组人数上限按分组数量折算'}</span></div>` : ''}
+    <div class="cfg-row"><span class="cfg-label">成果物上传</span>
+      <button class="toggle ${c.deliverableEnabled ? 'on' : ''}" data-act="toggleDeliverable" title="开启后学生须同时提交实验报告与成果物压缩包"><i></i></button>
+      <span class="cfg-sub">允许学生上传成果物</span>
+      ${c.deliverableEnabled ? '<span class="cfg-sub" style="color:var(--text-3)">（学生须同时提交 Word 报告与 zip/rar 项目代码压缩包，缺一不可）</span>' : ''}
+    </div>`;
   }
 
   function composeQListHtml() {
@@ -4568,6 +4588,8 @@
         groupEnabled: groupOn,
         groupMode: groupOn ? (c.groupMode || 'RANDOM') : null,
         groupCount: groupOn ? parseInt(c.groupCount, 10) : null,
+        // 成果物上传配置（实验报告作业）：开启后学生须同时提交报告与成果物
+        deliverableEnabled: isLab && !!c.deliverableEnabled,
         // 作业级知识点：教师在「关联知识点」面板的选择（作业卡与学生端展示以此为准）
         kps: c.kps || [],
         questions: c.questions.map(q => ({
@@ -4840,9 +4862,11 @@
       endAt: a.due || '', allowLate: !!a.allowLate,
       sub: sub ? {
         status: sub.status, submittedAt: sub.submittedAt, attempts: sub.attempts,
-        score: sub.score, aiScore: sub.aiScore, aiComment: sub.aiComment, teacherComment: sub.teacherComment
+        score: sub.score, aiScore: sub.aiScore, aiComment: sub.aiComment, teacherComment: sub.teacherComment,
+        // 已提交的成果物文件名（教师开启成果物上传时提交记录携带）
+        deliverableName: ((sub.answers || []).find(x => x && x.deliverableName) || {}).deliverableName || null
       } : null,
-      file: null, busy: false,
+      file: null, deliverableFile: null, busy: false,
       // 分组实验：group=后端返回的我的分组信息（null=尚未加载完成）
       group: null, groupLoading: !!(a.lab.group && a.lab.group.enabled), groupErr: null
     };
@@ -5007,6 +5031,8 @@
     const overdue = labOverdue(c);
     const graded = c.sub && c.sub.status === 'graded';
     const submitted = !!c.sub && c.sub.status !== 'missing';
+    // 成果物上传：教师开启后学生须同时提交实验报告与成果物压缩包
+    const needDel = !!(c.lab.deliverable && c.lab.deliverable.enabled);
     const tplName = c.lab.templateFileName || (c.lab.templateTitle || '实验报告模板');
     return `<div class="compose-mask">
       <div class="compose-top">
@@ -5043,21 +5069,26 @@
             </div>
           </div>
           ${graded ? '' : `<div class="card" style="margin-top:14px">
-            <div class="card-head">${icon('upload', 15)}<h3>第二步 · 上传实验报告</h3></div>
+            <div class="card-head">${icon('upload', 15)}<h3>第二步 · 上传实验报告${needDel ? '与成果物' : ''}</h3></div>
             <div class="card-body">
               ${overdue ? '<div class="note">作业已截止，无法上传报告。</div>' : `
-              <div class="note">仅支持 Word 格式（.doc / .docx），大小不超过 50MB。${submitted ? '重新上传会覆盖之前提交的报告，教师批改前均可更新。' : ''}</div>
+              <div class="note">实验报告：Word 格式（.doc / .docx）≤ 50MB。${submitted ? '重新上传会覆盖之前提交的报告，教师批改前均可更新。' : ''}${needDel ? ' 本作业要求同时上传成果物，两者缺一不可。' : ''}</div>
               <input type="file" id="labReportInput" accept=".doc,.docx" style="display:none" data-lab-report>
+              ${needDel ? '<input type="file" id="labDeliverableInput" accept=".zip,.rar" style="display:none" data-lab-deliverable>' : ''}
               <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px">
-                <button class="btn" data-act="labPickReport" ${c.busy ? 'disabled' : ''}>${icon('file', 14)} ${c.file ? '重新选择文件' : '选择 Word 文件'}</button>
-                <button class="btn primary" data-act="labUploadSubmit" ${c.busy || !c.file ? 'disabled' : ''}>${c.busy ? '上传中…' : icon('upload', 14) + ' 上传报告'}</button>
+                <button class="btn" data-act="labPickReport" ${c.busy ? 'disabled' : ''}>${icon('file', 14)} ${c.file ? '重新选择报告' : '选择 Word 文件'}</button>
+                ${needDel ? `<button class="btn" data-act="labPickDeliverable" ${c.busy ? 'disabled' : ''}>${icon('layers', 14)} ${c.deliverableFile ? '重新选择成果物' : '选择成果物压缩包'}</button>` : ''}
+                <button class="btn primary" data-act="labUploadSubmit" ${c.busy || !c.file || (needDel && !c.deliverableFile) ? 'disabled' : ''}>${c.busy ? '上传中…' : icon('upload', 14) + (needDel ? ' 上传报告与成果物' : ' 上传报告')}</button>
                 ${c.file ? `<span class="badge ok">${icon('file', 12)} ${h(c.file.name)}（${(c.file.size / 1024 / 1024).toFixed(2)} MB）</span>` : ''}
-              </div>`}
+                ${needDel && c.deliverableFile ? `<span class="badge ok">${icon('layers', 12)} ${h(c.deliverableFile.name)}（${(c.deliverableFile.size / 1024 / 1024).toFixed(2)} MB）</span>` : ''}
+              </div>
+              ${needDel ? `<div class="hint" style="margin-top:10px">成果物：zip / rar 压缩包 ≤ 200MB，压缩包内需包含完整可运行的项目代码；提交时实验报告与成果物须同时上传，缺一不可。</div>` : ''}`}
             </div>
           </div>`}
           ${submitted ? `<div class="card" style="margin-top:14px">
             <div class="card-head">${icon('sparkles', 15)}<h3>提交与批改情况</h3></div>
             <div class="card-body">
+              ${c.sub.deliverableName ? `<div class="note" style="margin-bottom:8px">${icon('layers', 12)} 已提交成果物：<b>${h(c.sub.deliverableName)}</b></div>` : ''}
               ${c.sub.aiScore != null ? `<div class="note" style="margin-bottom:8px"><b>AI 初评：${c.sub.aiScore} / 100 分</b>${c.sub.aiComment ? '<br>' + h(c.sub.aiComment) : ''}</div>` : '<div class="note" style="margin-bottom:8px">AI 初评未完成，完成后会显示在这里。</div>'}
               ${graded ? `<div class="note ok"><b>教师批改：${c.sub.score} / 100 分</b>${c.sub.teacherComment ? '<br>教师评语：' + h(c.sub.teacherComment) : ''}</div>` : '<div class="note">教师批改完成后，最终成绩与评语会显示在这里。</div>'}
             </div>
@@ -5096,7 +5127,7 @@
     }
   }
 
-  // 上传实验报告（Word），成功后刷新作业列表与视图状态
+  // 上传实验报告（Word）与成果物压缩包（教师开启时必填），成功后刷新作业列表与视图状态
   async function labUploadSubmit() {
     const c = State.lab;
     if (!c || c.busy) return;
@@ -5104,19 +5135,28 @@
     if (!file) { toast('请先选择 Word 报告文件'); return; }
     const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();
     if (ext !== 'doc' && ext !== 'docx') { toast('实验报告仅支持 Word 格式（.doc/.docx）'); return; }
-    if (file.size > 50 * 1024 * 1024) { toast('文件超过大小上限（50MB）'); return; }
+    if (file.size > 50 * 1024 * 1024) { toast('实验报告文件超过大小上限（50MB）'); return; }
+    // 成果物压缩包：教师开启该功能后必填，与实验报告缺一不可
+    const needDel = !!(c.lab.deliverable && c.lab.deliverable.enabled);
+    if (needDel) {
+      if (!c.deliverableFile) { toast('请选择成果物压缩包（zip/rar）：实验报告与成果物缺一不可'); return; }
+      const dExt = c.deliverableFile.name.slice(c.deliverableFile.name.lastIndexOf('.') + 1).toLowerCase();
+      if (dExt !== 'zip' && dExt !== 'rar') { toast('成果物仅支持 zip/rar 压缩包格式'); return; }
+      if (c.deliverableFile.size > 200 * 1024 * 1024) { toast('成果物压缩包超过大小上限（200MB）'); return; }
+    }
     c.busy = true;
     renderOverlays();
     try {
       const fd = new FormData();
       fd.append('file', file);
+      if (needDel) fd.append('deliverable', c.deliverableFile);
       await API.upload('/assignments/' + c.asId + '/report', fd);
       DB.assignments = await API.get('/assignments/my');
       const a = DB.assignments.find(x => String(x.id) === String(c.asId));
       State.lab = a ? labStateOf(a) : null;
       renderOverlays();
       render();
-      toast('实验报告已上传，等待教师批改', 'ok');
+      toast(needDel ? '实验报告与成果物已上传，等待教师批改' : '实验报告已上传，等待教师批改', 'ok');
     } catch (e) {
       c.busy = false;
       renderOverlays();
@@ -6777,6 +6817,11 @@
       const input = document.getElementById('labReportInput');
       if (input) input.click();
     },
+    // 学生端实验报告视图：选择成果物压缩包（教师开启成果物上传时）
+    labPickDeliverable() {
+      const input = document.getElementById('labDeliverableInput');
+      if (input) input.click();
+    },
     async labUploadSubmit() { await labUploadSubmit(); },
     ansSaveDraft() { saveAnswerDraft(false); },
     answerSubmit() {
@@ -6833,6 +6878,13 @@
       const c = State.compose;
       if (!c) return;
       c.groupEnabled = !c.groupEnabled;
+      renderOverlays();
+    },
+    // 成果物上传开关（实验报告作业）：开启后学生须同时提交 Word 报告与 zip/rar 成果物压缩包
+    toggleDeliverable() {
+      const c = State.compose;
+      if (!c) return;
+      c.deliverableEnabled = !c.deliverableEnabled;
       renderOverlays();
     },
     openDtp(v, id, t) { openDtpField(v, t); },
@@ -7285,6 +7337,49 @@
         document.body.appendChild(link); link.click(); link.remove();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
         toast('报告已下载：' + name, 'ok');
+      } catch (e) {
+        const msg = (e && e.name === 'AbortError') ? '下载超时无响应，请重试' : ('下载失败：' + e.message);
+        toast(msg);
+      } finally {
+        State.labDownBusy = false;
+        if (t && document.body.contains(t)) t.disabled = false;
+      }
+    },
+    /* --- 教师：批阅页下载学生上传的成果物压缩包（zip/rar） --- */
+    async labDownloadDeliverable(v, id, t) {
+      const sub = DB.submissions.find(x => String(x.id) === String(id));
+      if (!sub) { toast('提交记录不存在'); return; }
+      if (State.labDownBusy) return;
+      if (t) { t.disabled = true; }
+      State.labDownBusy = true;
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 300000);
+        const res = await fetch('/api/teacher/submissions/' + id + '/deliverable-file', {
+          headers: { 'Authorization': 'Bearer ' + API.token() },
+          signal: ctrl.signal
+        });
+        clearTimeout(timer);
+        if (res.status === 401) { Auth.logout(); return; }
+        const ct = res.headers.get('Content-Type') || '';
+        if (ct.indexOf('application/json') >= 0) {
+          let data = null;
+          try { data = await res.json(); } catch (e) { /* 非 JSON */ }
+          throw new Error((data && data.msg) || ('下载失败（' + res.status + '）'));
+        }
+        if (!res.ok) throw new Error('下载失败（' + res.status + '）');
+        const blob = await res.blob();
+        if (!blob.size) throw new Error('成果物文件为空');
+        let name = '成果物.zip';
+        const cd = res.headers.get('Content-Disposition') || '';
+        const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+        if (m) { try { name = decodeURIComponent(m[1]); } catch (e) { name = m[1]; } }
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url; link.download = name;
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        toast('成果物已下载：' + name, 'ok');
       } catch (e) {
         const msg = (e && e.name === 'AbortError') ? '下载超时无响应，请重试' : ('下载失败：' + e.message);
         toast(msg);
@@ -8125,6 +8220,14 @@
       const file = t.files && t.files[0];
       if (file) {
         State.lab.file = file;
+        renderOverlays();
+      }
+    }
+    // 实验报告：学生视图内成果物压缩包选择（教师开启成果物上传时）
+    if (t && t.dataset && t.dataset.labDeliverable !== undefined && State.lab) {
+      const file = t.files && t.files[0];
+      if (file) {
+        State.lab.deliverableFile = file;
         renderOverlays();
       }
     }

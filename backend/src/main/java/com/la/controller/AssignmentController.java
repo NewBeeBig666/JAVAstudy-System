@@ -43,11 +43,12 @@ public class AssignmentController {
         return ApiResponse.ok(assignmentService.submitAnswer(CurrentUser.id(), id, req.getAnswers()));
     }
 
-    @Operation(summary = "上传实验报告（实验报告型作业，Word 格式）")
+    @Operation(summary = "上传实验报告（实验报告型作业，Word 格式；教师开启成果物上传时须同时携带 deliverable）")
     @PostMapping(value = "/{id}/report", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResponse<Map<String, Object>> submitReport(@PathVariable Long id,
-                                                         @RequestParam("file") MultipartFile file) {
-        return ApiResponse.ok(assignmentService.submitReport(CurrentUser.id(), id, file));
+                                                         @RequestParam("file") MultipartFile file,
+                                                         @RequestParam(value = "deliverable", required = false) MultipartFile deliverable) {
+        return ApiResponse.ok(assignmentService.submitReport(CurrentUser.id(), id, file, deliverable));
     }
 
     @Operation(summary = "实验报告作业：我的分组信息（所在小组成员/组长标注/组队邀请）")

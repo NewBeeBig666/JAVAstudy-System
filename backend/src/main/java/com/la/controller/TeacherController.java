@@ -286,6 +286,27 @@ public class TeacherController {
         }
     }
 
+    @Operation(summary = "下载学生上传的成果物压缩包（实验报告型作业，教师开启成果物上传后）")
+    @GetMapping("/submissions/{id}/deliverable-file")
+    public ResponseEntity<org.springframework.core.io.InputStreamResource> deliverableFile(@PathVariable Long id) {
+        Map<String, Object> r = assignmentService.studentDeliverable(id);
+        File f = (File) r.get("file");
+        String fileName = (String) r.get("fileName");
+        // 流式下发（最大 200MB），与报告下载同口径
+        try {
+            org.springframework.core.io.InputStreamResource body =
+                    new org.springframework.core.io.InputStreamResource(new java.io.FileInputStream(f));
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_OCTET_STREAM_VALUE)
+                    .header(HttpHeaders.CONTENT_DISPOSITION,
+                            "attachment; filename*=UTF-8''" + java.net.URLEncoder.encode(fileName, java.nio.charset.StandardCharsets.UTF_8))
+                    .contentLength(f.length())
+                    .body(body);
+        } catch (IOException e) {
+            throw new BizException("成果物文件读取失败");
+        }
+    }
+
     @Operation(summary = "批量 AI 初评（异步，完成后通知教师）")
     @PostMapping("/assignments/{id}/ai-grade-batch")
     public ApiResponse<Void> aiGradeBatch(@PathVariable Long id) {

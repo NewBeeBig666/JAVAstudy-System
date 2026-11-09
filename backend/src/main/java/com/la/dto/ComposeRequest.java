@@ -51,6 +51,9 @@ public class ComposeRequest {
     /** 分组数量：随机分组用于均衡分配；自行组队用于折算每组人数上限 */
     private Integer groupCount;
 
+    /** 实验报告作业：允许学生上传成果物（开启后学生须同时提交 Word 报告与 zip/rar 成果物压缩包） */
+    private Boolean deliverableEnabled;
+
     /** 所属作业文件夹（NULL/缺省 = 内置「其他」；修改时仅在该值非空时覆盖） */
     private Long folderId;
 
