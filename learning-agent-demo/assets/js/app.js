@@ -180,7 +180,8 @@
     route: '<circle cx="6" cy="19" r="3"/><circle cx="6" cy="5" r="3"/><circle cx="18" cy="19" r="3"/><path d="M9 19h5a2 2 0 0 0 2-2V7"/><path d="M9 5h3a2 2 0 0 1 2 2v3"/>',
     flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/>',
     dots: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
-    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'
+    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+    upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>'
   };
   const icon = (n, s, c) => '<svg class="ico ' + (c || '') + '" width="' + (s || 18) + '" height="' + (s || 18) +
     '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
@@ -1808,7 +1809,7 @@
       }
       return `<div class="card" id="hw-${a.id}" style="${State.focusHwId === a.id ? 'border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)' : ''}">
         <div class="card-head">${icon('clipboard', 15)}<h3>${h(a.title)}</h3>
-          <div class="spacer"></div>${a.lab ? '<span class="badge brand">实验报告</span>' : ''}<span class="badge ${st.cls}">${st.label}</span></div>
+          <div class="spacer"></div>${a.lab ? '<span class="badge brand">实验报告</span>' : ''}${a.lab && a.lab.group && a.lab.group.enabled ? '<span class="badge brand">分组实验</span>' : ''}<span class="badge ${st.cls}">${st.label}</span></div>
         <div class="card-body">
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             ${a.kp.map(k => '<span class="badge brand">' + kpName(k) + '</span>').join('')}
@@ -2039,6 +2040,7 @@
         ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
             <span class="badge brand">实验报告作业 · 满分 100</span>
             <span class="badge">${icon('file', 12)} 模板：${h(a.lab.templateTitle || '实验报告模板')}</span>
+            ${a.lab.group && a.lab.group.enabled ? `<span class="badge brand">${icon('users', 12)} 分组实验 · ${a.lab.group.mode === 'self' ? '学生自行组队' : '随机分组 ' + a.lab.group.count + ' 组'}</span>` : ''}
             ${a.allowLate ? '<span class="badge warn">允许补交</span>' : ''}
           </div>`
         : isQ
@@ -2072,11 +2074,98 @@
             ${a.status === 'draft'
               ? '<button class="btn primary sm" data-act="publishDraft" data-val="' + a.id + '">' + icon('send', 14) + ' 正式发布给学生</button>'
               : '<button class="btn sm" data-act="gotoSubs" data-val="' + a.id + '">' + icon('eye', 14) + ' 查看提交与批改</button>'}
+            ${a.lab && a.lab.group && a.lab.group.enabled && a.status !== 'draft'
+              ? '<button class="btn sm ghost" data-act="viewGroups" data-val="' + a.id + '" title="实时查看各小组组建状态与成员构成">' + icon('users', 14) + ' 查看分组</button>' : ''}
             <button class="btn sm ghost" data-act="subAsPick" data-val="${a.id}">在左侧选中</button>
           </div>
         </div></div>`;
     }).join('');
     return { head, body };
+  }
+
+  /* ===== 教师端：实验报告作业分组全景（弹窗展示 + 4 秒轮询实时刷新） ===== */
+  // 分组弹窗内容（独立拆分：轮询刷新时仅局部更新 #labGroupsBody，避免整层重渲染重放弹窗动画）
+  function labGroupsBodyHtml(d) {
+    const g = d.data;
+    if (d.loading && !g) {
+      return '<div style="padding:28px;text-align:center;color:var(--text-3);font-size:13px">分组数据加载中…</div>';
+    }
+    if (d.err) {
+      return `<div class="note warn" style="margin-bottom:12px">分组数据加载失败：${h(d.err)}</div>
+        <button class="btn sm" data-act="labGroupsRefresh">${icon('refresh', 13)} 重试</button>`;
+    }
+    const selfMode = g.mode === 'self';
+    const groups = g.groups || [];
+    const ungrouped = g.ungrouped || [];
+    const invites = selfMode ? (g.invites || []) : [];
+    return `
+      <div class="note" style="margin-bottom:12px">
+        <b>${selfMode ? '学生自行组队' : '随机分组'}</b> · 班级 ${g.classSize} 人 · 已分组 <b>${g.groupedCount}</b> 人 · 已建 ${groups.length} 个小组${selfMode ? `（目标 ${g.groupCount} 组 · 每组上限 ${g.cap} 人）` : ''}${selfMode ? ' · 组建状态每 4 秒自动刷新' : ''}
+      </div>
+      ${groups.length ? `<div style="max-height:300px;overflow-y:auto;padding-right:4px;display:flex;flex-direction:column;gap:10px">
+        ${groups.map(grp => `
+          <div class="card" style="margin:0;box-shadow:none">
+            <div class="card-head" style="padding:10px 14px">
+              ${icon('users', 15)}<h3>${h(grp.name)}</h3>
+              <span class="badge">${grp.members.length} 人</span>
+              ${selfMode ? (grp.members.length >= g.cap ? '<span class="badge ok">已满员</span>' : `<span class="badge warn">组队中 ${grp.members.length}/${g.cap}</span>`) : ''}
+              <div class="spacer"></div>
+            </div>
+            <div class="card-body" style="padding:10px 14px">
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                ${(grp.members || []).map(mm => `<span class="chip ${mm.leader ? 'on' : ''}">${h(mm.name)}${mm.leader ? ' · 组长' : ''}</span>`).join('') || '<span class="hint">暂无成员</span>'}
+              </div>
+            </div>
+          </div>`).join('')}
+      </div>` : `<div class="note" style="margin-bottom:12px">${selfMode ? '学生尚未开始组队，可提醒学生进入作业详情发起组队邀请。' : '尚未生成分组。'}</div>`}
+      ${ungrouped.length ? `<div style="margin-top:12px">
+        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">未分组学生（${ungrouped.length} 人）</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">${ungrouped.map(u => `<span class="chip">${h(u.name)}</span>`).join('')}</div>
+      </div>` : ''}
+      ${invites.length ? `<div style="margin-top:12px">
+        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">待响应的组队邀请（${invites.length} 条）</div>
+        <div class="mini-list">${invites.map(iv => `<div class="mini-row"><span class="nm">${h(iv.fromName)} → ${h(iv.toName)}</span><span class="vl">待响应</span></div>`).join('')}</div>
+      </div>` : ''}`;
+  }
+
+  // 分组弹窗轮询：弹窗关闭/切换后自动停止（间隔内自检）
+  let labGroupsTimer = null;
+  function stopLabGroupsPoll() {
+    if (labGroupsTimer) { clearInterval(labGroupsTimer); labGroupsTimer = null; }
+  }
+  function startLabGroupsPoll() {
+    stopLabGroupsPoll();
+    labGroupsTimer = setInterval(() => {
+      const m = State.modal;
+      if (!m || m.type !== 'labGroups') { stopLabGroupsPoll(); return; }
+      refreshLabGroups();
+    }, 4000);
+  }
+  // 拉取分组数据：弹窗已渲染时仅局部刷新 #labGroupsBody（不重放弹窗动画）
+  async function refreshLabGroups() {
+    const m = State.modal;
+    if (!m || m.type !== 'labGroups') return;
+    const asId = m.data.asId;
+    try {
+      const r = await API.get('/teacher/assignments/' + asId + '/groups');
+      const m2 = State.modal;
+      if (!m2 || m2.type !== 'labGroups' || String(m2.data.asId) !== String(asId)) return;
+      m2.data.data = r;
+      m2.data.loading = false;
+      m2.data.err = null;
+      const box = document.getElementById('labGroupsBody');
+      if (box) box.innerHTML = labGroupsBodyHtml(m2.data);
+      else renderOverlays();
+    } catch (e) {
+      const m2 = State.modal;
+      if (m2 && m2.type === 'labGroups' && String(m2.data.asId) === String(asId)) {
+        m2.data.loading = false;
+        m2.data.err = e.message;
+        const box = document.getElementById('labGroupsBody');
+        if (box) box.innerHTML = labGroupsBodyHtml(m2.data);
+        stopLabGroupsPoll();
+      }
+    }
   }
 
   function viewSubmissions() {
@@ -3302,6 +3391,13 @@
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn primary" data-act="doAsMove" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 移动中…' : icon('folderPlus', 15) + ' 移动'}</button>`;
 
+    } else if (m.type === 'labGroups') {
+      // 实验报告作业分组全景：内容拆至 labGroupsBodyHtml，轮询仅局部刷新不重放弹窗动画
+      title = '分组实验 · ' + (d.title || '');
+      body = `<div id="labGroupsBody">${labGroupsBodyHtml(d)}</div>`;
+      foot = `<button class="btn" data-act="closeModal">关闭</button>
+        <button class="btn primary" data-act="labGroupsRefresh">${icon('refresh', 14)} 立即刷新</button>`;
+
     } else if (m.type === 'coTeacher') {
       // 班级共同管理教师面板：每次打开重新拉取（loading→数据/错误三态）
       if (d.loading) {
@@ -3766,6 +3862,10 @@
         allowLate: !!a.allowLate,
         // 实验报告型回填：模板资源关联（a.lab 由后端 DTO 输出）
         lab: a.lab && a.lab.templateId ? { templateId: a.lab.templateId, templateTitle: a.lab.templateTitle || '' } : null,
+        // 分组实验配置回填（旧作业无该字段视为未开启）
+        groupEnabled: !!(a.lab && a.lab.group && a.lab.group.enabled),
+        groupMode: a.lab && a.lab.group && a.lab.group.mode ? String(a.lab.group.mode).toUpperCase() : 'RANDOM',
+        groupCount: a.lab && a.lab.group && a.lab.group.count ? Number(a.lab.group.count) : 4,
         kps,
         questions: (a.questions || []).map(q => ({
           // 保留题目 id：编辑保存时后端按 id 原位差量更新，保持 id 稳定
@@ -3792,7 +3892,9 @@
         startAt: composeNowStr(), endAt: '', allowLate: false,
         // 新建：取顶栏「选择文件夹」下拉的当前值（未选择 = 其他）
         folderId: State.composeFolder != null ? State.composeFolder : null,
-        kps: [], questions: [], busy: false, aiBusy: false, _dtp: null, _kpOpen: false, preview: false
+        kps: [], questions: [], busy: false, aiBusy: false, _dtp: null, _kpOpen: false, preview: false,
+        // 分组实验配置（实验报告作业）：默认关闭
+        groupEnabled: false, groupMode: 'RANDOM', groupCount: 4
       };
     }
     renderOverlays();
@@ -3829,6 +3931,7 @@
           <button class="toggle ${c.allowLate ? 'on' : ''}" data-act="toggleLate" title="开启后截止时间后学生仍可补交"><i></i></button>
         </div>
         ${c._dtp ? composeDtpHtml() : ''}
+        ${c.lab && c.lab.templateId ? composeGroupCfgHtml() : ''}
       </div>
       <div class="compose-body">
         <aside class="compose-nav" id="composeNav">${composeNavHtml()}</aside>
@@ -3847,6 +3950,25 @@
         </div>
       </div>
     </div>`;
+  }
+
+  /* 分组实验配置（实验报告作业）：开关 + 分组模式（随机/自行组队）+ 分组数量 */
+  function composeGroupCfgHtml() {
+    const c = State.compose;
+    const on = !!c.groupEnabled;
+    const rnd = c.groupMode !== 'SELF';
+    return `<div class="cfg-row"><span class="cfg-label">分组实验</span>
+      <button class="toggle ${on ? 'on' : ''}" data-act="toggleGroup" title="开启后学生以小组形式完成实验"><i></i></button>
+      ${on ? `
+        <label class="radio"><input type="radio" name="composeGroupMode" data-ans="groupMode" data-val="RANDOM" ${rnd ? 'checked' : ''}><i></i>随机分组</label>
+        <label class="radio"><input type="radio" name="composeGroupMode" data-ans="groupMode" data-val="SELF" ${!rnd ? 'checked' : ''}><i></i>学生自行组队</label>
+        <span class="cfg-sub">分组数量</span>
+        <input class="input" type="number" min="1" max="99" step="1" style="width:82px" value="${h(c.groupCount == null ? '' : String(c.groupCount))}" data-bind="compose" data-key="groupCount">
+        <span class="cfg-sub">组</span>` : '<span class="cfg-sub" style="margin-left:2px">开启后学生以小组形式完成实验</span>'}
+    </div>
+    ${on ? `<div class="cfg-row"><span class="cfg-label"></span><span class="hint">${rnd
+      ? '发布时系统自动按「全班人数 ÷ 分组数量」均衡分配（余数摊入前几组），组员随机组合，并在每组随机指定 1 名组长'
+      : '学生自主邀请同班同学组队：发起邀请者自动成为组长，被邀请人为组员；每组人数上限按分组数量折算'}</span></div>` : ''}`;
   }
 
   function composeQListHtml() {
@@ -4408,6 +4530,12 @@
     if (isLab) {
       if (!c.lab.templateId) { toast('实验报告作业需先上传 Word 报告模板'); return; }
     }
+    // 分组实验（实验报告作业）：分组数量校验
+    const groupOn = isLab && !!c.groupEnabled;
+    if (groupOn) {
+      const gc = parseInt(c.groupCount, 10);
+      if (!gc || gc < 1 || gc > 99) { toast('分组数量须为 1~99 之间的整数'); return; }
+    }
     for (let i = 0; i < c.questions.length; i++) {
       const q = c.questions[i], no = '第 ' + (i + 1) + ' 题';
       if (!q.title.trim()) { toast(no + '缺少题干'); return; }
@@ -4436,6 +4564,10 @@
         // 实验报告型：模板资源 ID（模板上传时已入学习资源板块）
         labTemplateId: isLab ? Number(c.lab.templateId) : null,
         labTemplateTitle: isLab ? (c.lab.templateTitle || '') : null,
+        // 分组实验配置（实验报告作业）：模式 RANDOM=随机分组 / SELF=学生自行组队
+        groupEnabled: groupOn,
+        groupMode: groupOn ? (c.groupMode || 'RANDOM') : null,
+        groupCount: groupOn ? parseInt(c.groupCount, 10) : null,
         // 作业级知识点：教师在「关联知识点」面板的选择（作业卡与学生端展示以此为准）
         kps: c.kps || [],
         questions: c.questions.map(q => ({
@@ -4696,6 +4828,8 @@
     if (!a || !a.lab) { toast('该作业不是实验报告作业'); return; }
     State.lab = labStateOf(a);
     renderOverlays();
+    // 分组实验作业：并行拉取我的分组信息（小组成员/组长/组队邀请）
+    if (a.lab.group && a.lab.group.enabled) loadLabGroup();
   }
 
   // 从作业 DTO 构建/刷新实验报告视图状态（上传成功后复用）
@@ -4708,8 +4842,158 @@
         status: sub.status, submittedAt: sub.submittedAt, attempts: sub.attempts,
         score: sub.score, aiScore: sub.aiScore, aiComment: sub.aiComment, teacherComment: sub.teacherComment
       } : null,
-      file: null, busy: false
+      file: null, busy: false,
+      // 分组实验：group=后端返回的我的分组信息（null=尚未加载完成）
+      group: null, groupLoading: !!(a.lab.group && a.lab.group.enabled), groupErr: null
     };
+  }
+
+  // 拉取我的分组信息（进入实验报告视图/发起组队操作后刷新）
+  async function loadLabGroup() {
+    const c = State.lab;
+    if (!c) return;
+    try {
+      const r = await API.get('/assignments/' + c.asId + '/my-group');
+      const c2 = State.lab;
+      if (!c2 || String(c2.asId) !== String(c.asId)) return;
+      c2.group = r;
+      c2.groupLoading = false;
+      c2.groupErr = null;
+    } catch (e) {
+      const c2 = State.lab;
+      if (!c2 || String(c2.asId) !== String(c.asId)) return;
+      c2.groupLoading = false;
+      c2.groupErr = e.message;
+    }
+    const c3 = State.lab;
+    if (c3 && String(c3.asId) === String(c.asId)) renderOverlays();
+  }
+
+  // 小组信息卡（分组实验作业置顶展示）：
+  // - 已入组：小组名称 + 全部成员（组长置首标注）+ 组队操作区（自行组队）
+  // - 未入组：待响应邀请（接受/拒绝）+ 可邀请同学列表（自行组队）
+  function labGroupCardHtml(c) {
+    if (c.groupLoading) {
+      return `<div class="card" style="margin-bottom:14px">
+        <div class="card-head">${icon('users', 15)}<h3>我的小组</h3></div>
+        <div class="card-body"><div class="hint">分组信息加载中…</div></div>
+      </div>`;
+    }
+    if (c.groupErr) {
+      return `<div class="card" style="margin-bottom:14px">
+        <div class="card-head">${icon('users', 15)}<h3>我的小组</h3></div>
+        <div class="card-body"><div class="note warn">分组信息加载失败：${h(c.groupErr)}</div>
+          <button class="btn sm" style="margin-top:10px" data-act="labGroupReload">${icon('refresh', 13)} 重试</button></div>
+      </div>`;
+    }
+    const g = c.group || {};
+    const selfMode = g.mode === 'self';
+    const grp = g.myGroup;
+    const head = `<div class="card-head">${icon('users', 15)}<h3>我的小组</h3>
+      <span class="badge brand">${selfMode ? '学生自行组队' : '随机分组'}</span>
+      ${selfMode ? `<span class="badge">每组上限 ${g.cap} 人</span>` : ''}</div>`;
+    if (grp) {
+      const sentMap = {};
+      (g.sentInvites || []).forEach(x => { sentMap[String(x.toId)] = x.status; });
+      const canInvite = selfMode && g.isLeader && grp.members.length < g.cap;
+      const invitable = (g.invitable || []).filter(u => !sentMap[String(u.id)]);
+      return `<div class="card" style="margin-bottom:14px">
+        ${head}
+        <div class="card-body">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+            <span class="badge brand">${h(grp.name)}</span>
+            <span class="badge">${grp.members.length} 名成员</span>
+            ${g.isLeader ? '<span class="badge warn">你是组长</span>' : ''}
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${(grp.members || []).map(mm => `<span class="chip ${mm.leader ? 'on' : ''}">${h(mm.name)}${mm.leader ? ' · 组长' : ''}</span>`).join('')}
+          </div>
+          <div class="hint" style="margin-top:10px">请小组成员协作完成实验，组长负责组织分工；每人各自上传实验报告，教师与 AI 按小组协作情况评阅。</div>
+          ${canInvite ? `<div style="margin-top:12px">
+            <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">邀请同学加入（还可邀请 ${g.cap - grp.members.length} 人）</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              ${invitable.length ? invitable.map(u => `<button class="chip" data-act="labInvite" data-val="${h(u.id)}" ${c.busy ? 'disabled' : ''}>＋ ${h(u.name)}</button>`).join('')
+                : '<span class="hint">暂无可邀请的同学（其余同学已在队伍中或已被你邀请）</span>'}
+            </div>
+          </div>` : ''}
+          ${(g.sentInvites || []).length ? `<div style="margin-top:12px">
+            <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">我发出的邀请</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              ${(g.sentInvites || []).map(x => `<span class="chip ${x.status === 'accepted' ? 'on' : ''}">${h(x.toName)}
+                <span style="font-size:11px;color:${x.status === 'accepted' ? 'var(--brand)' : x.status === 'pending' ? 'var(--warn)' : 'var(--text-3)'}">${x.status === 'accepted' ? '已加入' : x.status === 'pending' ? '待响应' : x.status === 'rejected' ? '已婉拒' : '已失效'}</span></span>`).join('')}
+            </div>
+          </div>` : ''}
+        </div>
+      </div>`;
+    }
+    // 未入组
+    const invites = g.invites || [];
+    const invitable = g.invitable || [];
+    return `<div class="card" style="margin-bottom:14px">
+      ${head}
+      <div class="card-body">
+        <div class="note" style="margin-bottom:12px">你还未加入小组。${selfMode ? '可主动邀请同学组队（发起邀请后你自动成为组长），或接受下方收到的组队邀请。' : '分组由教师发布作业时统一生成，请联系教师查看。'}</div>
+        ${invites.length ? `<div style="margin-bottom:14px">
+          <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">收到的组队邀请（${invites.length} 条）</div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            ${invites.map(inv => `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span class="chip on">${h(inv.fromName)} 邀请您加入 TA 的队伍</span>
+              <button class="btn sm primary" data-act="labInviteAccept" data-val="${h(inv.id)}" ${c.busy ? 'disabled' : ''}>${icon('check', 13)} 接受</button>
+              <button class="btn sm ghost" data-act="labInviteReject" data-val="${h(inv.id)}" ${c.busy ? 'disabled' : ''}>婉拒</button>
+            </div>`).join('')}
+          </div>
+          <div class="hint" style="margin-top:8px">可同时收到多个邀请，接受任意一个后，其余邀请将自动失效。</div>
+        </div>` : ''}
+        ${selfMode ? `<div>
+          <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">邀请同学组队（点击同学姓名发起邀请）</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${invitable.length ? invitable.map(u => `<button class="chip" data-act="labInvite" data-val="${h(u.id)}" ${c.busy ? 'disabled' : ''}>＋ ${h(u.name)}</button>`).join('')
+              : '<span class="hint">暂无可邀请的同学（其余同学已在队伍中）</span>'}
+          </div>
+        </div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // 发起组队邀请（自行组队模式）
+  async function labGroupInvite(studentId) {
+    const c = State.lab;
+    if (!c || c.busy) return;
+    c.busy = true;
+    renderOverlays();
+    try {
+      const r = await API.post('/assignments/' + c.asId + '/group/invite', { toStudentId: Number(studentId) });
+      c.group = r;
+      c.busy = false;
+      renderOverlays();
+      toast('组队邀请已发送，等待对方回应', 'ok');
+    } catch (e) {
+      c.busy = false;
+      renderOverlays();
+      toast(e.message);
+      // 失败后刷新分组状态（对方可能刚加入其他队伍）
+      loadLabGroup();
+    }
+  }
+
+  // 接受 / 拒绝组队邀请
+  async function labGroupInviteRespond(inviteId, kind) {
+    const c = State.lab;
+    if (!c || c.busy) return;
+    c.busy = true;
+    renderOverlays();
+    try {
+      const r = await API.post('/assignments/' + c.asId + '/group/invites/' + inviteId + '/' + kind);
+      c.group = r;
+      c.busy = false;
+      renderOverlays();
+      toast(kind === 'accept' ? '已加入小组' : '已婉拒该邀请', 'ok');
+    } catch (e) {
+      c.busy = false;
+      renderOverlays();
+      toast(e.message);
+      loadLabGroup();
+    }
   }
 
   // 截止校验（与后端一致：截止后未关闭时仅 allowLate 可补交）
@@ -4748,6 +5032,7 @@
       </div>
       <div class="ans-body">
         <div class="ans-main">
+          ${c.lab.group && c.lab.group.enabled ? labGroupCardHtml(c) : ''}
           <div class="card">
             <div class="card-head">${icon('download', 15)}<h3>第一步 · 下载实验报告模板</h3></div>
             <div class="card-body">
@@ -6461,6 +6746,31 @@
       State.lab = null;
       renderOverlays();
     },
+    // 教师端：查看实验报告作业分组全景（弹窗 + 4 秒轮询实时刷新）
+    viewGroups(v) {
+      const a = DB.assignments.find(x => String(x.id) === String(v));
+      if (!a) { toast('作业不存在'); return; }
+      State.modal = { type: 'labGroups', data: { asId: String(v), title: a.title || '', loading: true, err: null, data: null } };
+      renderOverlays();
+      refreshLabGroups();
+      startLabGroupsPoll();
+    },
+    labGroupsRefresh() {
+      const m = State.modal;
+      if (m && m.type === 'labGroups') refreshLabGroups();
+    },
+    // 学生端：分组信息重试加载
+    labGroupReload() {
+      const c = State.lab;
+      if (!c) return;
+      c.groupLoading = true;
+      c.groupErr = null;
+      renderOverlays();
+      loadLabGroup();
+    },
+    async labInvite(v) { await labGroupInvite(v); },
+    async labInviteAccept(v) { await labGroupInviteRespond(v, 'accept'); },
+    async labInviteReject(v) { await labGroupInviteRespond(v, 'reject'); },
     labDownloadTpl() { labDownloadTpl(); },
     // 学生端实验报告视图：选择报告文件（与教师模板弹窗的 labPickFile 区分，避免重名覆盖）
     labPickReport() {
@@ -6517,6 +6827,13 @@
     toggleLate(v, id, t) {
       State.compose.allowLate = !State.compose.allowLate;
       if (t && t.classList) t.classList.toggle('on', State.compose.allowLate);
+    },
+    // 分组实验开关（实验报告作业）：开启/关闭后展开/收起模式与数量配置
+    toggleGroup() {
+      const c = State.compose;
+      if (!c) return;
+      c.groupEnabled = !c.groupEnabled;
+      renderOverlays();
     },
     openDtp(v, id, t) { openDtpField(v, t); },
     dtpPrev() { shiftDtpMonth(-1); },
@@ -7827,6 +8144,12 @@
         // 评分机制切换：radio 原生切换 + 整层重渲染（按钮操作无焦点丢失；分值展示联动）
         c.scoreMode = t.dataset.val || 'AVERAGE';
         if (c.scoreMode !== 'CUSTOM') c.questions.forEach(q => { q.score = null; });
+        renderOverlays();
+        return;
+      }
+      if (t.dataset.ans === 'groupMode') {
+        // 分组模式切换（实验报告作业）：radio 原生切换 + 重渲染（模式说明联动）
+        c.groupMode = t.dataset.val || 'RANDOM';
         renderOverlays();
         return;
       }

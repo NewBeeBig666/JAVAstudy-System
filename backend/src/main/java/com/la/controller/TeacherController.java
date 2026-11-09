@@ -19,6 +19,7 @@ import com.la.service.CoTeacherService;
 import com.la.service.ComposeAiService;
 import com.la.service.ComposeImportService;
 import com.la.service.GradingService;
+import com.la.service.LabGroupService;
 import com.la.service.TeacherService;
 import com.la.service.TeacherAssistantService;
 import com.la.service.WarningScanService;
@@ -70,6 +71,7 @@ public class TeacherController {
     private final ScoreExportService scoreExportService;
     private final SubmissionExportService submissionExportService;
     private final TeacherAssistantService teacherAssistantService;
+    private final LabGroupService labGroupService;
 
     @Operation(summary = "上传 Excel/Word 名单批量添加班级（.xlsx/.xls/.docx/.doc）")
     @PostMapping(value = "/classes/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -234,6 +236,12 @@ public class TeacherController {
     @GetMapping("/assignments/{id}/submissions")
     public ApiResponse<List<Map<String, Object>>> submissions(@PathVariable Long id) {
         return ApiResponse.ok(assignmentService.submissionList(id));
+    }
+
+    @Operation(summary = "实验报告作业分组全景（实时：小组组建状态/成员构成/未分组名单/组队邀请）")
+    @GetMapping("/assignments/{id}/groups")
+    public ApiResponse<Map<String, Object>> assignmentGroups(@PathVariable Long id) {
+        return ApiResponse.ok(labGroupService.teacherGroups(CurrentUser.id(), id));
     }
 
     @Operation(summary = "导出班级作业成绩 Excel（全部作业或指定发布时间段，含学生姓名/学号/各作业成绩/提交时间）")

@@ -42,6 +42,15 @@ public class ComposeRequest {
     /** 实验报告作业：模板标题（资源标题，展示用） */
     private String labTemplateTitle;
 
+    /** 实验报告作业：开启分组实验（scoreMode=LAB 时有效） */
+    private Boolean groupEnabled;
+
+    /** 分组模式：RANDOM=随机分组 / SELF=学生自行组队 */
+    private String groupMode;
+
+    /** 分组数量：随机分组用于均衡分配；自行组队用于折算每组人数上限 */
+    private Integer groupCount;
+
     /** 所属作业文件夹（NULL/缺省 = 内置「其他」；修改时仅在该值非空时覆盖） */
     private Long folderId;
 

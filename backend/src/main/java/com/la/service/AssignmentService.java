@@ -43,6 +43,7 @@ public class AssignmentService {
     private final ObjectMapper objectMapper;
     private final LearningResourceMapper learningResourceMapper;
     private final AssignmentFolderMapper assignmentFolderMapper;
+    private final LabGroupService labGroupService;
 
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
     private static final DateTimeFormatter DUE = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
@@ -476,6 +477,17 @@ public class AssignmentService {
                 || learningResourceMapper.selectById(req.getLabTemplateId()) == null)) {
             throw new BizException("实验报告作业需先上传 Word 报告模板");
         }
+        // 分组实验配置（实验报告作业）：RANDOM=随机分组 / SELF=学生自行组队
+        boolean groupOn = isLab && Boolean.TRUE.equals(req.getGroupEnabled());
+        String groupMode = null;
+        Integer groupCount = null;
+        if (groupOn) {
+            groupMode = "SELF".equalsIgnoreCase(req.getGroupMode()) ? "SELF" : "RANDOM";
+            groupCount = req.getGroupCount();
+            if (groupCount == null || groupCount < 1 || groupCount > 99) {
+                throw new BizException("分组数量须为 1~99 之间的整数");
+            }
+        }
         List<ComposeRequest.QuestionReq> questions = isLab ? List.of()
                 : (req.getQuestions() != null ? req.getQuestions() : List.of());
         if (questions.isEmpty() && !isLab) {
@@ -529,6 +541,18 @@ public class AssignmentService {
             if ("ONGOING".equals(oldStatus) && "DRAFT".equals(status)) {
                 status = "ONGOING";
             }
+            // 分组配置不可变约束：已产生分组数据（小组/组员/邀请任一存在）后，
+            // 修改分组模式/分组数量/换班级会使已组建队伍与配置不一致，直接拒绝
+            if (isLab && labGroupService.hasGroupData(req.getId())) {
+                Map<String, Object> oldCfg = LabGroupService.parseGroupConfig(as.getDescription());
+                boolean same = groupOn && oldCfg != null
+                        && oldCfg.get("mode").equals(groupMode)
+                        && ((Number) oldCfg.get("count")).intValue() == groupCount.intValue();
+                boolean classChanged = req.getClassId() != null && !req.getClassId().equals(as.getClassId());
+                if (!same || classChanged) {
+                    throw new BizException("该作业已生成分组数据，不能修改分组配置、分组数量或班级");
+                }
+            }
         } else {
             as = new Assignment();
             as.setTeacherId(teacherId);
@@ -539,10 +563,23 @@ public class AssignmentService {
             throw new BizException("缺少发放班级");
         }
         as.setTitle(req.getTitle());
-        // 实验报告型：description 存模板关联 JSON（复用现有列，零表结构变更）
-        as.setDescription(isLab ? toJson(Map.of(
-                "templateId", req.getLabTemplateId(),
-                "templateTitle", req.getLabTemplateTitle() == null ? "" : req.getLabTemplateTitle())) : "");
+        // 实验报告型：description 存模板关联 JSON（复用现有列，零表结构变更）；
+        // 分组实验配置一并存入 group 字段 {enabled, mode, count}
+        if (isLab) {
+            Map<String, Object> desc = new LinkedHashMap<>();
+            desc.put("templateId", req.getLabTemplateId());
+            desc.put("templateTitle", req.getLabTemplateTitle() == null ? "" : req.getLabTemplateTitle());
+            if (groupOn) {
+                Map<String, Object> g = new LinkedHashMap<>();
+                g.put("enabled", true);
+                g.put("mode", groupMode);
+                g.put("count", groupCount);
+                desc.put("group", g);
+            }
+            as.setDescription(toJson(desc));
+        } else {
+            as.setDescription("");
+        }
         // 作业级知识点：以教师在「关联知识点」面板选择为准（作业卡/学生端展示与之一致）；
         // 面板未选择时兜底取各题关联知识点合集（kp_code 逗号多值需拆分去重，避免
         // "a,b" 合并串入库导致前端 kpName 查不到而显示原始编码）
@@ -630,6 +667,11 @@ public class AssignmentService {
         rubricMapper.delete(new LambdaQueryWrapper<Rubric>().eq(Rubric::getAssignmentId, as.getId()));
 
         notifyOnPublish(as, as.getTitle(), as.getClassId(), oldStatus);
+        // 分组实验（随机模式）：发布为 ONGOING 时生成小组
+        // （按全班人数÷组数均衡分配、组员随机、每组随机指定 1 名组长；已生成则幂等跳过）
+        if (isLab && groupOn && "RANDOM".equals(groupMode) && "ONGOING".equals(as.getStatus())) {
+            labGroupService.generateRandomGroups(as, groupCount);
+        }
         return toAssignmentDto(as, true);
     }
 
@@ -660,6 +702,8 @@ public class AssignmentService {
         }
         rubricMapper.delete(new LambdaQueryWrapper<Rubric>().eq(Rubric::getAssignmentId, assignmentId));
         questionMapper.delete(new LambdaQueryWrapper<Question>().eq(Question::getAssignmentId, assignmentId));
+        // 分组实验数据（小组/组员/组队邀请）随作业级联删除
+        labGroupService.deleteGroupData(assignmentId);
         assignmentMapper.deleteById(assignmentId);
     }
 
@@ -752,6 +796,15 @@ public class AssignmentService {
                 labDto.put("templateId", lab.path("templateId").asText());
                 labDto.put("templateTitle", lab.path("templateTitle").asText(""));
                 labDto.put("templateFileName", lab.path("templateFileName").asText(""));
+                // 分组实验配置（开启时输出，前端据此展示分组入口与组队流程）
+                Map<String, Object> groupCfg = LabGroupService.parseGroupConfig(as.getDescription());
+                if (groupCfg != null) {
+                    Map<String, Object> gd = new LinkedHashMap<>();
+                    gd.put("enabled", true);
+                    gd.put("mode", String.valueOf(groupCfg.get("mode")).toLowerCase());
+                    gd.put("count", groupCfg.get("count"));
+                    labDto.put("group", gd);
+                }
                 dto.put("lab", labDto);
             } catch (Exception e) {
                 dto.put("lab", null);

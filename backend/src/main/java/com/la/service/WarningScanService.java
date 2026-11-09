@@ -157,9 +157,12 @@ public class WarningScanService {
         // (学生, 知识点) → 做错次数
         Map<String, Long> wrongCnt = records.stream()
                 .collect(Collectors.groupingBy(r -> r.getUserId() + ":" + r.getKpId(), Collectors.counting()));
-        Map<Long, KnowledgePoint> kpById = kpMapper.selectBatchIds(
-                        records.stream().map(ExerciseRecord::getKpId).filter(Objects::nonNull).distinct().toList())
-                .stream().collect(Collectors.toMap(KnowledgePoint::getId, k -> k));
+        // 防御空集合：kpId 全空时 selectBatchIds 会生成 IN () 坏 SQL（存量边界，做错记录可能不挂知识点）
+        List<Long> kpIds = records.stream().map(ExerciseRecord::getKpId)
+                .filter(Objects::nonNull).distinct().toList();
+        Map<Long, KnowledgePoint> kpById = kpIds.isEmpty() ? Map.of()
+                : kpMapper.selectBatchIds(kpIds).stream()
+                        .collect(Collectors.toMap(KnowledgePoint::getId, k -> k));
         for (Map.Entry<String, Long> e : wrongCnt.entrySet()) {
             if (e.getValue() < KP_WRONG_TIMES) {
                 continue;
