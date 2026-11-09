@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -87,6 +88,168 @@ public class ResourceAiService {
     /** 提取 Word 文档纯文本（实验报告作业：模板/学生报告内容读取，供 AI 初评） */
     public String extractWordText(Path file) {
         return extractText("word", file);
+    }
+
+    /**
+     * 「原文件即时预览」结构化内容提取（纯 POI 本地解析，不调用 AI）：
+     * - word：文档结构 items=[{t:h1|h2|h3|p|li|tbl, x|rows}]（docx 保留标题层级/列表/表格，.doc 退化为段落）
+     * - ppt：幻灯片结构 items=[{title, lines:[...]}]（逐页页卡）
+     * - pdf/image/video：返回 null（PDF 走浏览器原生直显，图片/视频原生渲染，无需提取）
+     * 上传时调用一次存库（extracted_text），预览改为读库即时渲染，消除点击后的实时提取等待。
+     */
+    public String extractStructuredJson(String fileType, Path file) {
+        if (fileType == null || (!"word".equals(fileType) && !"ppt".equals(fileType))) {
+            return null;
+        }
+        try {
+            Map<String, Object> m = new java.util.LinkedHashMap<>();
+            if ("word".equals(fileType)) {
+                m.put("kind", "doc");
+                m.put("items", docItems(file));
+            } else {
+                m.put("kind", "slides");
+                m.put("items", slideItems(file));
+            }
+            return objectMapper.writeValueAsString(m);
+        } catch (Exception e) {
+            log.warn("[资源预览] 结构化提取失败 type={} file={}：{}", fileType, file.getFileName(), e.getMessage());
+            return null;
+        }
+    }
+
+    /** Word 文档结构化：docx 走 body 元素遍历（段落样式 + 表格），.doc 退化为纯段落 */
+    private List<Map<String, Object>> docItems(Path file) throws Exception {
+        String name = file.getFileName().toString().toLowerCase();
+        List<Map<String, Object>> items = new java.util.ArrayList<>();
+        try (InputStream in = Files.newInputStream(file)) {
+            if (name.endsWith(".docx")) {
+                try (XWPFDocument doc = new XWPFDocument(in)) {
+                    for (org.apache.poi.xwpf.usermodel.IBodyElement el : doc.getBodyElements()) {
+                        if (el.getElementType() == org.apache.poi.xwpf.usermodel.BodyElementType.TABLE) {
+                            XWPFTable t = (XWPFTable) el;
+                            List<List<String>> rows = new java.util.ArrayList<>();
+                            for (XWPFTableRow r : t.getRows()) {
+                                List<String> cells = new java.util.ArrayList<>();
+                                for (XWPFTableCell c : r.getTableCells()) {
+                                    String txt = c.getText() == null ? "" : c.getText().trim();
+                                    cells.add(txt.length() > 500 ? txt.substring(0, 500) : txt);
+                                }
+                                rows.add(cells);
+                            }
+                            if (!rows.isEmpty()) {
+                                items.add(Map.of("t", "tbl", "rows", rows));
+                            }
+                        } else if (el.getElementType() == org.apache.poi.xwpf.usermodel.BodyElementType.PARAGRAPH) {
+                            org.apache.poi.xwpf.usermodel.XWPFParagraph p = (org.apache.poi.xwpf.usermodel.XWPFParagraph) el;
+                            String txt = p.getText() == null ? "" : p.getText().trim();
+                            if (txt.isEmpty()) {
+                                continue;
+                            }
+                            String t = "p";
+                            // 标题样式识别：styleID/样式名含 heading/标题 + 层级数字
+                            String styleId = p.getStyleID() == null ? "" : p.getStyleID();
+                            java.util.regex.Matcher mh = java.util.regex.Pattern
+                                    .compile("(?i)heading\\s*([1-9])").matcher(styleId);
+                            if (mh.find()) {
+                                int lv = Math.min(3, Integer.parseInt(mh.group(1)));
+                                t = "h" + lv;
+                            }
+                            // 编号/项目符号段落 → 列表项
+                            if ("p".equals(t) && p.getNumID() != null) {
+                                t = "li";
+                            }
+                            items.add(Map.of("t", t, "x", txt.length() > 5000 ? txt.substring(0, 5000) : txt));
+                        }
+                        if (items.size() >= 800) {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                try (WordExtractor ex = new WordExtractor(in)) {
+                    for (String para : ex.getParagraphText()) {
+                        String txt = para == null ? "" : para.trim();
+                        if (txt.isEmpty()) {
+                            continue;
+                        }
+                        items.add(Map.of("t", "p", "x", txt.length() > 5000 ? txt.substring(0, 5000) : txt));
+                        if (items.size() >= 800) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return items;
+    }
+
+    /** PPT 结构化：逐页 [{title, lines}]（标题取每页首个非空文本形状，其余文本为正文行） */
+    private List<Map<String, Object>> slideItems(Path file) throws Exception {
+        String name = file.getFileName().toString().toLowerCase();
+        List<Map<String, Object>> items = new java.util.ArrayList<>();
+        try (InputStream in = Files.newInputStream(file)) {
+            if (name.endsWith(".pptx")) {
+                try (XMLSlideShow ppt = new XMLSlideShow(in)) {
+                    for (XSLFSlide slide : ppt.getSlides()) {
+                        String title = "";
+                        List<String> lines = new java.util.ArrayList<>();
+                        for (XSLFShape shape : slide.getShapes()) {
+                            if (!(shape instanceof XSLFTextShape ts) || ts.getText() == null) {
+                                continue;
+                            }
+                            for (String line : ts.getText().split("\n")) {
+                                String s = line.trim();
+                                if (s.isEmpty()) {
+                                    continue;
+                                }
+                                if (title.isEmpty()) {
+                                    title = s.length() > 200 ? s.substring(0, 200) : s;
+                                } else {
+                                    lines.add(s.length() > 1000 ? s.substring(0, 1000) : s);
+                                }
+                            }
+                        }
+                        items.add(Map.of("title", title, "lines", lines));
+                        if (items.size() >= 300) {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                try (org.apache.poi.hslf.usermodel.HSLFSlideShow ppt =
+                             new org.apache.poi.hslf.usermodel.HSLFSlideShow(in)) {
+                    for (HSLFSlide slide : ppt.getSlides()) {
+                        String title = "";
+                        List<String> lines = new java.util.ArrayList<>();
+                        for (org.apache.poi.hslf.usermodel.HSLFShape shape : slide.getShapes()) {
+                            if (!(shape instanceof HSLFTextShape ts)) {
+                                continue;
+                            }
+                            for (HSLFTextParagraph para : ts.getTextParagraphs()) {
+                                StringBuilder sb = new StringBuilder();
+                                for (HSLFTextRun run : para.getTextRuns()) {
+                                    sb.append(run.getRawText() == null ? "" : run.getRawText());
+                                }
+                                String s = sb.toString().trim();
+                                if (s.isEmpty()) {
+                                    continue;
+                                }
+                                if (title.isEmpty()) {
+                                    title = s.length() > 200 ? s.substring(0, 200) : s;
+                                } else {
+                                    lines.add(s.length() > 1000 ? s.substring(0, 1000) : s);
+                                }
+                            }
+                        }
+                        items.add(Map.of("title", title, "lines", lines));
+                        if (items.size() >= 300) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return items;
     }
 
     /** 文本类资源提取纯文本（按 file_path 读取磁盘文件），图片/视频返回 null；

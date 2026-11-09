@@ -161,6 +161,14 @@ public class LearningResourceController {
         return ApiResponse.ok(m);
     }
 
+    @Operation(summary = "「原文件即时预览」内容：word/ppt 返回结构化原文（上传时预提取，读库零等待）；"
+            + "pdf=原生直显标记；image/video=原生渲染标记")
+    @GetMapping("/api/resources/{id}/content")
+    public ApiResponse<Map<String, Object>> content(@PathVariable Long id) {
+        checkAccess(id);
+        return ApiResponse.ok(resourceService.content(id));
+    }
+
     /* ==================== 鉴权与工具 ==================== */
 
     /** 学生仅能访问本班资源 */

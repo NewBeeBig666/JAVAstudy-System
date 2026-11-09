@@ -117,6 +117,8 @@ public class ResourceService {
             r.setFileSize(size);
             r.setKpCodes(toJson(mergeKpCodes(rec.kpCodes(), manualKpCodes)));
             r.setAiSummary(rec.summary());
+            // 结构化原文一次提取存库：预览即时读取渲染（纯 POI 解析，非 AI，不增加上传等待感）
+            r.setExtractedText(resourceAiService.extractStructuredJson(fileType, dest));
             resourceMapper.insert(r);
 
             log.info("[资源上传] id={} type={} size={} aiKp={} title={}", r.getId(), fileType, size,
@@ -310,6 +312,58 @@ public class ResourceService {
             throw new BizException("资源不存在或已被删除");
         }
         return r;
+    }
+
+    /**
+     * 「原文件即时预览」内容读取：预览弹窗的数据源（替代旧的实时文本提取）。
+     * - word/ppt：优先返回上传时预提取的结构化原文（extracted_text，毫秒级读库零等待）；
+     *   存量资源（V17 前上传）首次访问时懒回填一次并缓存，后续即时。
+     * - pdf：kind=pdf，前端走浏览器原生 iframe 直显原文件。
+     * - image/video：kind=media，前端原生 <img>/<video> 渲染（无需内容数据）。
+     */
+    public Map<String, Object> content(Long resourceId) {
+        LearningResource r = getById(resourceId);
+        String type = r.getFileType();
+        Map<String, Object> m = new LinkedHashMap<>();
+        if ("pdf".equals(type)) {
+            m.put("kind", "pdf");
+            return m;
+        }
+        if ("image".equals(type) || "video".equals(type)) {
+            m.put("kind", "media");
+            return m;
+        }
+        if (!"word".equals(type) && !"ppt".equals(type)) {
+            m.put("kind", "media");
+            return m;
+        }
+        String json = r.getExtractedText();
+        if (json == null || json.isBlank()) {
+            // 存量资源懒回填：一次本地 POI 提取（非 AI），入库后后续预览即时
+            try {
+                json = resourceAiService.extractStructuredJson(type, STORE_DIR.resolve(r.getFilePath()));
+            } catch (Exception e) {
+                log.warn("[资源预览] 回填提取失败 id={}：{}", resourceId, e.getMessage());
+                json = null;
+            }
+            if (json != null) {
+                LearningResource upd = new LearningResource();
+                upd.setId(r.getId());
+                upd.setExtractedText(json);
+                resourceMapper.updateById(upd);
+            }
+        }
+        if (json == null || json.isBlank()) {
+            // 文件损坏/提取失败：回退 pdf 式下载引导（前端提示改用「下载」）
+            m.put("kind", "empty");
+            return m;
+        }
+        try {
+            m = objectMapper.readValue(json, Map.class);
+        } catch (Exception e) {
+            m.put("kind", "empty");
+        }
+        return m;
     }
 
     /** 预览/下载的 Content-Type（按扩展名） */

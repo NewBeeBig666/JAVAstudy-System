@@ -41,5 +41,10 @@ public class LearningResource {
     /** AI 生成的内容简介 */
     private String aiSummary;
 
+    /** 结构化原文内容 JSON（doc:{items:[{t,x}]} / slides:{items:[{title,lines}]}）：
+     *  上传时一次性提取存库，预览即时读取渲染，消除点击后的实时提取等待；
+     *  pdf/image/video 为空——PDF 浏览器原生直显，图片/视频原生渲染 */
+    private String extractedText;
+
     private LocalDateTime createdAt;
 }

@@ -41,10 +41,12 @@ const ok = (name, cond, detail) => {
     if (t && !t.includes('加载中')) break;
     await page.waitForTimeout(300);
   }
-  await page.waitForSelector('[data-act="resEditKp"]', { timeout: 20000 });
+  await page.waitForSelector('[data-act="resEditMenu"]', { timeout: 20000 });
   ok('进入教师端学习资源页', true);
 
-  // [1] 打开第一个资源的编辑弹窗
+  // [1] 打开第一个资源的编辑弹窗（v1.15 起卡片编辑入口改为菜单：编辑菜单 → 编辑关联知识点）
+  await page.click('[data-act="resEditMenu"]');
+  await page.waitForSelector('[data-act="resEditKp"]', { timeout: 8000 });
   await page.click('[data-act="resEditKp"]');
   await page.waitForSelector('#nsPickArea', { timeout: 10000 });
   ok('编辑弹窗渲染分层组件（nsPickArea）', true);
@@ -69,7 +71,14 @@ const ok = (name, cond, detail) => {
 
   const before = await page.$$eval('#nsPills .ns-pill', els => els.length).catch(() => 0);
   const beforeCnt = (await page.textContent('#resKpCount')).trim();
-  await page.click('#nsPickArea .pick-list [data-act="pickKp"]');
+  // 点选一个「未关联」的节点（首个节点可能已在原关联中，点它会反选导致计数减少）
+  const origCodes = orig.map(o => o.code);
+  const pickVal = await page.evaluate(codes => {
+    const rows = Array.from(document.querySelectorAll('#nsPickArea .pick-list [data-act="pickKp"]'));
+    const r = rows.find(x => !codes.includes(x.dataset.val)) || rows[0];
+    return r ? r.dataset.val : null;
+  }, origCodes);
+  if (pickVal) await page.click(`#nsPickArea .pick-list [data-act="pickKp"][data-val="${pickVal}"]`);
   await page.waitForTimeout(300);
   const afterCnt = (await page.textContent('#resKpCount')).trim();
   const after = await page.$$eval('#nsPills .ns-pill', els => els.length).catch(() => 0);
@@ -110,6 +119,8 @@ const ok = (name, cond, detail) => {
   ok('列表卡片知识点徽章更新（保存生效）', cardBadges.length > 0, cardBadges.length + ' 个徽章');
 
   // [5] 重新打开 → 回显一致；全部清空保存；再恢复原关联
+  await page.click('[data-act="resEditMenu"]');
+  await page.waitForSelector('[data-act="resEditKp"]', { timeout: 8000 });
   await page.click('[data-act="resEditKp"]');
   await page.waitForSelector('#nsPickArea', { timeout: 10000 });
   await page.waitForTimeout(300);
@@ -132,6 +143,8 @@ const ok = (name, cond, detail) => {
 
   // 恢复原有关联（避免污染数据）：搜索名称 → 按 data-val 编码精确点选
   if (orig.length) {
+    await page.click('[data-act="resEditMenu"]');
+    await page.waitForSelector('[data-act="resEditKp"]', { timeout: 8000 });
     await page.click('[data-act="resEditKp"]');
     await page.waitForSelector('#nsPickArea', { timeout: 10000 });
     for (const kp of orig) {

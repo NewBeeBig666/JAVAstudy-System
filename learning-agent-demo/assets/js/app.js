@@ -2368,10 +2368,12 @@
     d.covered = merged.reduce((n, seg) => n + (seg[1] - seg[0]), 0);
   }
 
-  // 学习达标进度（0~1）：视频=播放进度/90%；文本=滚动覆盖比；图片=全可见即 1
+  // 学习达标进度（0~1）：视频=播放进度/90%；Word/PPT 结构化原文=滚动覆盖比；
+  // PDF 原生直显=阅读时长（60 秒，iframe 内部滚动无法监听）；图片=全可见即 1
   function resLearnPct(d) {
     if (d.kind === 'video') return Math.min(1, (d.playedPct || 0) / 0.9);
-    if (d.kind === 'text') {
+    if (d.kind === 'pdf') return Math.min(1, (d.readSec || 0) / 60);
+    if (d.kind === 'doc' || d.kind === 'slides') {
       if (!d.scrollHeight) return 0;
       return Math.min(1, (d.covered || 0) / d.scrollHeight);
     }
@@ -2382,14 +2384,61 @@
       const pct = Math.round((d.playedPct || 0) * 100);
       return pct >= 90 ? '已观看 ' + pct + '%，即将自动记录' : '已观看 ' + pct + '%（观看至 90% 自动记录学完）';
     }
-    if (d.kind === 'text') {
+    if (d.kind === 'pdf') {
+      const s = d.readSec || 0;
+      return s >= 60 ? '已阅读 ' + s + ' 秒，即将自动记录' : '已阅读 ' + s + ' 秒（满 60 秒自动记录学完）';
+    }
+    if (d.kind === 'doc' || d.kind === 'slides') {
       const pct = Math.round(resLearnPct(d) * 100);
       return '已完整阅读 ' + pct + '%（滚动至底部自动记录学完）';
     }
     return '内容已完整展示';
   }
 
-  // 预览弹窗渲染后挂载：文本绑定滚动监听、视频绑定播放进度、图片立即达标
+  // Word 结构化原文视图：保留标题层级/列表/表格的文档式排版（内容全部 h() 转义防注入）
+  function resDocHtml(d) {
+    if (!d.items || !d.items.length) {
+      return '<div class="note" style="margin:0">该文档未提取到可预览的原文内容（可能为纯图片型文档），请使用「下载」查看原文件。</div>';
+    }
+    const body = d.items.map(it => {
+      if (it.t === 'tbl' && Array.isArray(it.rows)) {
+        return '<table style="border-collapse:collapse;margin:10px 0;width:100%"><tbody>'
+          + it.rows.map(r => '<tr>' + r.map(c =>
+            '<td style="border:1px solid var(--border);padding:6px 10px;font-size:13px;line-height:1.6">' + h(c) + '</td>').join('') + '</tr>').join('')
+          + '</tbody></table>';
+      }
+      if (it.t === 'h1') return '<div style="font-size:17px;font-weight:800;margin:20px 0 8px;color:var(--text-1)">' + h(it.x) + '</div>';
+      if (it.t === 'h2') return '<div style="font-size:15.5px;font-weight:700;margin:16px 0 6px;color:var(--text-1)">' + h(it.x) + '</div>';
+      if (it.t === 'h3') return '<div style="font-size:14.5px;font-weight:700;margin:12px 0 5px;color:var(--text-1)">' + h(it.x) + '</div>';
+      if (it.t === 'li') return '<div style="font-size:13.5px;line-height:1.9;margin:3px 0 3px 16px;color:var(--text-1)">· ' + h(it.x) + '</div>';
+      return '<div style="font-size:13.5px;line-height:1.9;margin:6px 0;color:var(--text-1)">' + h(it.x) + '</div>';
+    }).join('');
+    return '<div id="resPrevScroll" style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:18px 22px;background:var(--bg,#fff)">' + body + '</div>'
+      + '<div class="hint" style="margin-top:6px">Word 原文即时预览（保留标题 / 列表 / 表格结构）；需要完整排版效果请使用「下载」。</div>';
+  }
+
+  // PPT 结构化原文视图：逐页幻灯片卡片（页码徽章 + 页标题 + 正文行）
+  function resSlidesHtml(d) {
+    if (!d.items || !d.items.length) {
+      return '<div class="note" style="margin:0">该演示文稿未提取到可预览的文本内容（可能为纯图片型 PPT），请使用「下载」查看原文件。</div>';
+    }
+    let n = 0;
+    const slides = d.items.map(s => {
+      n++;
+      const lines = (s.lines || []).map(l =>
+        '<div style="font-size:13.5px;line-height:1.85;margin:3px 0 3px 14px;color:var(--text-1)">· ' + h(l) + '</div>').join('');
+      return '<div style="border:1px solid var(--border);border-radius:8px;margin:0 0 12px;overflow:hidden;background:var(--bg,#fff)">'
+        + '<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border);background:rgba(15,111,106,.05)">'
+        + '<span class="badge brand">' + n + '</span>'
+        + '<b style="font-size:13.5px;color:var(--text-1)">' + h(s.title || '（本页无标题）') + '</b></div>'
+        + '<div style="padding:12px 16px">' + (lines || '<span style="font-size:12.5px;color:var(--text-3)">（本页无文本内容）</span>') + '</div>'
+        + '</div>';
+    }).join('');
+    return '<div id="resPrevScroll" style="max-height:52vh;overflow:auto;padding:2px">' + slides + '</div>'
+      + '<div class="hint" style="margin-top:6px">PPT 原文即时预览（逐页文本内容）；需要完整排版效果请使用「下载」。</div>';
+  }
+
+  // 预览弹窗渲染后挂载：Word/PPT 绑定滚动监听、PDF 启动阅读计时、视频绑定播放进度、图片立即达标
   function mountResPreview() {
     const m = State.modal;
     if (!m || m.type !== 'resPreview' || !m.data || !m.data.learn) return;
@@ -2411,7 +2460,22 @@
       resLearnAchieve(d);
       return;
     }
-    // 文本预览：绑定滚动容器（文本异步加载后 renderOverlays 重建会重新挂载）
+    if (d.kind === 'pdf') {
+      // PDF 原生直显：浏览器内置阅读器无法监听内部滚动，改阅读时长判定
+      // （打开期间每秒累计，关闭弹窗自动暂停；计时器自守卫防泄漏）
+      if (d.timerId) clearInterval(d.timerId);
+      d.timerId = setInterval(() => {
+        if (!State.modal || State.modal.type !== 'resPreview' || State.modal.data !== d) {
+          clearInterval(d.timerId);
+          d.timerId = null;
+          return;
+        }
+        d.readSec = (d.readSec || 0) + 1;
+        resLearnTick(d);
+      }, 1000);
+      return;
+    }
+    // Word/PPT 结构化原文预览：绑定滚动容器（内容加载后 renderOverlays 重建会重新挂载）
     const el = document.getElementById('resPrevScroll');
     if (el) {
       d.scrollHeight = el.scrollHeight;
@@ -2491,26 +2555,30 @@
       updateResCard(id);
     }
     // 预览弹窗骨架先行（大文件取流期间即有反馈，无卡顿感）
-    const kind = r.fileType === 'image' ? 'image' : r.fileType === 'video' ? 'video' : 'text';
+    const isDoc = r.fileType === 'word' || r.fileType === 'ppt';
+    const kind = r.fileType === 'image' ? 'image' : r.fileType === 'video' ? 'video'
+      : r.fileType === 'pdf' ? 'pdf' : 'docload';
     const completed = !!(isStudent && r.myProgress && r.myProgress.completed);
     const data = {
       id: r.id, kind: kind, title: r.title || '资源预览', fileName: r.fileName || '',
-      url: null, text: '', textLoading: kind === 'text',
+      url: null, items: null, readSec: 0, textLoading: isDoc,
       learn: !!isStudent, playedPct: 0, cover: [], covered: 0, scrollHeight: 0,
       completed: completed, done: completed
     };
     State.modal = { type: 'resPreview', data: data };
     renderOverlays();
-    if (kind === 'text') {
-      // Word/PPT/PDF：拉取后端提取的文本内容渲染（加载中文案占位）
+    if (isDoc) {
+      // Word/PPT「原文件即时预览」：读取上传时预提取的结构化原文（读库毫秒级返回，
+      // 无实时提取等待；存量资源首次打开由后端懒回填一次，之后同样即时）
       try {
-        const t = await API.get('/resources/' + id + '/text');
-        data.text = (t && t.text) || '';
-        data.textLoading = false;
+        const c = await API.get('/resources/' + id + '/content');
+        data.kind = (c && (c.kind === 'doc' || c.kind === 'slides')) ? c.kind : 'empty';
+        data.items = (c && Array.isArray(c.items)) ? c.items : null;
       } catch (e) {
-        data.text = ''; data.textLoading = false;
-        data.textError = e.message || '文本内容加载失败';
+        data.kind = 'empty';
+        data.textError = e.message || '原文内容加载失败';
       }
+      data.textLoading = false;
       if (State.modal && State.modal.type === 'resPreview') renderOverlays();
       return;
     }
@@ -3362,10 +3430,11 @@
 
     } else if (m.type === 'resPreview') {
       title = (d.title || '资源预览') + (d.fileName ? ' · ' + d.fileName : '');
-      // 内容区：图片/视频原生渲染；Word/PPT/PDF 文本模式预览（可滚动，滚动覆盖判定学习完成）
+      // 内容区「原文件即时预览」：图片/视频原生渲染；PDF 浏览器原生直显；
+      // Word=结构化文档视图（标题/列表/表格）、PPT=幻灯片页卡，滚动覆盖判定学习完成
       let media;
       if (d.textLoading) {
-        media = '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">文本内容加载中…</div>';
+        media = '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">原文内容加载中…</div>';
       } else if (d.kind === 'video') {
         media = d.url
           ? `<video id="resPrevMedia" controls playsinline style="width:100%;max-height:56vh;border-radius:8px;background:#000" src="${d.url}"></video>`
@@ -3374,12 +3443,19 @@
         media = d.url
           ? `<img src="${d.url}" alt="预览" style="width:100%;max-height:56vh;object-fit:contain;border-radius:8px">`
           : '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">图片加载中…</div>';
+      } else if (d.kind === 'pdf') {
+        // PDF：浏览器原生 PDF 阅读器直显原文件（blob URL，零转换零等待）
+        media = d.url
+          ? `<iframe src="${d.url}" title="PDF 原文件预览" style="width:100%;height:58vh;border:1px solid var(--border);border-radius:8px;background:#525659"></iframe>`
+          : '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">PDF 文件加载中…</div>';
+      } else if (d.kind === 'doc') {
+        media = resDocHtml(d);
+      } else if (d.kind === 'slides') {
+        media = resSlidesHtml(d);
       } else {
         media = d.textError
-          ? '<div class="note warn" style="margin:0">文本预览加载失败：' + h(d.textError) + '，可点击「下载」获取原文件。</div>'
-          : (d.text && d.text.trim()
-            ? '<div id="resPrevScroll" style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:14px 16px;font-size:13.5px;line-height:1.9;white-space:pre-wrap;word-break:break-word;color:var(--text-1)">' + h(d.text) + '</div><div class="hint" style="margin-top:6px">文本模式预览（已提取正文内容）；需要完整排版请使用「下载」。</div>'
-            : '<div class="note" style="margin:0">该文档未提取到文本内容（可能为纯图片型文档），请使用「下载」查看原文件。</div>');
+          ? '<div class="note warn" style="margin:0">原文预览加载失败：' + h(d.textError) + '，可点击「下载」获取原文件。</div>'
+          : '<div class="note" style="margin:0">该文档未提取到可预览的原文内容（可能为纯图片型文档），请使用「下载」查看原文件。</div>';
       }
       // 学生端：学习进度区（#resLearnBox 局部替换容器——达标时只换此块，滚动位置与媒体播放不受影响）
       const learnBox = !d.learn ? '' :
@@ -3392,7 +3468,9 @@
             <div class="progress-track"><div class="progress-bar" id="resLearnBar" style="width:${Math.round(resLearnPct(d) * 100)}%"></div></div>
             <div class="hint" style="margin-top:6px">${d.kind === 'video'
               ? '完整观看视频（播放进度 ≥90%）后自动记录学完并同步学习档案。'
-              : '从头到尾完整滚动阅读后自动记录学完并同步学习档案；直接跳转到底部不会计为完成。'}</div>
+              : d.kind === 'pdf'
+                ? 'PDF 为原文件直显，阅读满 60 秒后自动记录学完并同步学习档案。'
+                : '从头到尾完整滚动阅读后自动记录学完并同步学习档案；直接跳转到底部不会计为完成。'}</div>
           </div>`}</div>`;
       body = media + learnBox;
       foot = `<button class="btn" data-act="resDownload" data-id="${d.id}">${icon('download', 15)} 下载</button>
@@ -5895,7 +5973,8 @@
     },
     resPreviewClose() {
       const d = State.modal && State.modal.data;
-      // 清理 blob URL，防内存泄漏（滚动判定无计时器，无需清理定时器）
+      // 清理：PDF 阅读计时器 + blob URL，防内存泄漏（计时器另有自守卫兜底）
+      if (d && d.timerId) { clearInterval(d.timerId); d.timerId = null; }
       if (d && d.url) { try { URL.revokeObjectURL(d.url); } catch (e) { /* 忽略 */ } }
       State.modal = null; renderOverlays();
     },

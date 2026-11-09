@@ -49,3 +49,7 @@ uploads/
 
 # 服务器巡检结果文件（可能含敏感环境信息，严禁上传）
 backend/server-check-result.txt
+
+# E2E fixture 生成产物（类路径/编译中间物不入库；test-* 样例文件保留入库）
+tools/.pwtest/fixtures/cp.txt
+tools/.pwtest/fixtures/classes/
