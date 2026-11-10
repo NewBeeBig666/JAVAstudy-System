@@ -211,7 +211,7 @@
     quizReply: {},
     quizDone: {},
     insight: null,
-    filters: { hw: 'all', warn: 'all', subAs: 'as-2', exKp: 'all', exNav: [], classId: 'c1', report: 'overview' },
+    filters: { hw: 'all', warn: 'all', subAs: 'as-2', exKp: 'all', exNav: [], classId: 'c1', report: 'overview', subFilter: null },
     search: ''
   };
 
@@ -2185,20 +2185,31 @@
     // 导出当前班级全部学生、全部已发布作业（含最新作业）的成绩 Excel，支持时间段筛选
     // 副标题统计：已提交人数（去除未提交记录）与待批改份数
     const submittedN = list.filter(s => s.status !== 'missing').length;
+    const missingN = list.length - submittedN;
     const head = mainHead('提交批改', h(a.title) + ' · 共 ' + list.length + ' 条记录 · 已提交 ' + submittedN + ' 人 · ' + pend + ' 份待批改',
       '<button class="btn sm" data-act="exportModal" title="导出当前班级全部作业成绩 Excel（支持时间段筛选）">' + icon('download', 14) + ' 导出成绩</button>');
 
     if (!list.length) {
       return { head, body: emptyBox('还没有学生提交', '作业发布后学生的提交会实时出现在这里，支持 AI 初评 + Rubric 人工复核。') };
     }
+    // 提交状态筛选：''=全部 / submitted=已提交 / missing=未提交（切换作业时重置）
+    const f = State.filters.subFilter || '';
+    const filtered = !f ? list
+      : list.filter(s => f === 'submitted' ? s.status !== 'missing' : s.status === 'missing');
+    const fLabel = f === 'submitted' ? '已提交' : f === 'missing' ? '未提交' : '';
     const body = `<div class="card"><div class="card-head">${icon('inbox', 15)}<h3>提交列表</h3><div class="spacer"></div>
+      <button class="btn sm ${f ? 'brand' : ''}" data-act="subFilterMenu" title="按提交状态筛选学生名单">${icon('search', 14)} 筛选${f ? ' · ' + fLabel : ''} ${icon('chevronD', 12)}</button>
       <button class="btn sm" data-act="exportSubs" title="导出全部已提交学生的作业与批改记录（每人一份 Word，打包 ZIP 下载）">${icon('download', 14)} 导出学生作业</button>
       <span class="badge warn">${pend} 待批改</span>
       ${reviewed ? `<span class="badge brand">${reviewed} AI初评待复核</span>` : ''}
       ${pend ? '<button class="btn sm primary" data-act="batchAi">AI 批量初评</button>' : ''}</div>
+      ${f ? `<div style="padding:8px 14px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="badge brand">筛选中：仅显示${fLabel}学生（${filtered.length} / ${list.length} 人）</span>
+        <button class="btn sm ghost" data-act="subFilterClear">${icon('x', 12)} 清除筛选</button>
+      </div>` : ''}
       <div style="overflow-x:auto"><table class="table">
         <thead><tr><th>学生</th><th>提交时间</th><th class="num">次数</th><th class="num">相似度</th><th>时段</th><th class="num">AI 初评</th><th class="num">最终分</th><th>状态</th></tr></thead>
-        <tbody>${list.map(s => {
+        <tbody>${filtered.length ? filtered.map(s => {
           const stb = s.status === 'graded' ? '<span class="badge ok">已批改</span>'
             : s.status === 'ai_reviewed' ? '<span class="badge brand">AI初评完成 · 待复核</span>'
             : s.status === 'pending' ? '<span class="badge warn">待批改</span>' : '<span class="badge danger">未提交</span>';
@@ -2211,9 +2222,10 @@
             <td class="num">${s.aiScore != null ? s.aiScore : '—'}</td>
             <td class="num" style="font-weight:700">${s.score != null ? s.score : '—'}</td>
             <td>${stb}</td></tr>`;
-        }).join('')}</tbody>
+        }).join('') : `<tr><td colspan="8" style="padding:32px 12px;text-align:center;color:var(--text-3)">
+          当前筛选（${fLabel}）下没有学生，<b data-act="subFilterClear" style="color:var(--brand);cursor:pointer">点击清除筛选</b> 查看完整名单</td></tr>`}</tbody>
       </table></div>
-      <div class="card-body"><div class="note">点击任意一行打开批改抽屉：查看代码 → 参考 AI 初评 → 按 Rubric 打分 → 填写评语 → 发布反馈（学生侧实时可见）。</div></div>
+      <div class="card-body"><div class="note">点击任意一行打开批改抽屉：查看代码 → 参考 AI 初评 → 按 Rubric 打分 → 填写评语 → 发布反馈（学生侧实时可见）。${f ? ' 当前列表为筛选结果，行点击批改等交互不受影响。' : ''}</div></div>
     </div>`;
     return { head, body };
   }
@@ -7293,6 +7305,8 @@
     },
     subAsPick(v) {
       State.filters.subAs = v;
+      // 切换目标作业时重置提交状态筛选（每份作业的提交分布不同，残留筛选易误导）
+      State.filters.subFilter = null;
       // 作业管理页点击左侧栏作业：停留本页不跳转提交批改——
       // 中间作业卡高亮 + 平滑定位到该作业（后续点「查看提交与批改」再进入批改）
       if (State.section === 'assignments') {
@@ -7305,6 +7319,46 @@
       }
       render();
       loadSubmissions(v);
+    },
+    // 提交批改：按提交状态筛选学生名单（筛选面板复用 as-menu 浮层，点击外部/滚动自动收起）
+    subFilterMenu(v, id, t) {
+      closeAsMenu();
+      if (!t) return;
+      const a = DB.assignments.find(x => x.id === State.filters.subAs) || DB.assignments[0];
+      const list = (DB.submissions || []).filter(s => s.asId === a.id);
+      const submittedN = list.filter(s => s.status !== 'missing').length;
+      const missingN = list.length - submittedN;
+      const cur = State.filters.subFilter || '';
+      const item = (val, label, n) => `<button class="as-menu-item" data-act="subFilter" data-val="${val}"
+        style="${cur === val ? 'color:var(--brand);font-weight:600' : ''}">${cur === val ? '✓ ' : ''}${label}（${n} 人）</button>`;
+      const menu = document.createElement('div');
+      menu.className = 'as-menu';
+      menu.innerHTML = item('', '全部学生', list.length)
+        + item('submitted', '已提交作业学生', submittedN)
+        + item('missing', '未提交作业学生', missingN);
+      const r = t.getBoundingClientRect();
+      // 按钮正下方展开，靠右边缘时回退避免溢出视口
+      menu.style.left = Math.max(8, Math.min(r.left + window.scrollX, document.documentElement.clientWidth - 208)) + 'px';
+      menu.style.top = (r.bottom + window.scrollY + 6) + 'px';
+      document.body.appendChild(menu);
+      asMenuEl = menu;
+      setTimeout(() => {
+        document.addEventListener('click', asMenuOutside, true);
+        window.addEventListener('scroll', closeAsMenu, true);
+      }, 0);
+    },
+    subFilter(v) {
+      closeAsMenu();
+      State.filters.subFilter = v ? String(v) : null;
+      render();
+      toast(v === 'submitted' ? '已筛选：仅显示已提交作业学生'
+        : v === 'missing' ? '已筛选：仅显示未提交作业学生' : '已恢复全部学生名单');
+    },
+    subFilterClear() {
+      if (!State.filters.subFilter) return;
+      State.filters.subFilter = null;
+      render();
+      toast('已清除筛选，展示完整名单', 'ok');
     },
     openSub(v) {
       const sub = DB.submissions.find(x => x.id === v);
