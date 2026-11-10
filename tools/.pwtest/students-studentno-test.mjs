@@ -100,11 +100,18 @@ const sqlVal = (q) => {
   const noStuCell = await page.$$eval('table.table tbody tr td:first-child',
     els => (els.find(e => e.textContent.includes('NoStuTest')) || {}).textContent || '').then(t => t.trim());
   ok('[UI] 无学号学生显示「学号 —」', noStuCell.includes('NoStuTest') && noStuCell.includes('学号 —'), noStuCell.replace(/\s+/g, ' '));
-  // 2.4 交互不受影响：点击行 → 学生档案打开
+  // 2.4 交互不受影响：点击行 → 学生档案打开，档案卡头部展示该生学号
   await page.click('table.table tbody tr');
   await page.waitForTimeout(800);
   const bodyTxt = (await page.textContent('#main').catch(() => ''));
   ok('[UI] 行点击打开学生档案交互正常', bodyTxt.includes('学生档案'), '');
+  const profileHead = (await page.$$eval('.card-head h3', els => {
+    const hit = els.find(e => e.textContent.includes('学生档案'));
+    return hit && hit.parentElement ? hit.parentElement.textContent : '';
+  }).catch(() => '')).trim();
+  ok('[UI] 档案卡头部展示该生学号并与选中行一致',
+    profileHead.includes('学生档案') && profileHead.includes('学号 ' + (first.studentNo || '—'))
+    && profileHead.includes(first.name), profileHead.replace(/\s+/g, ' '));
   ok('无 JS 报错 / 无意外 4xx 5xx', errors.length === 0, errors.slice(0, 2).join(' ; '));
 
   /* 3) 清场 */

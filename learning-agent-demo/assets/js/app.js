@@ -2805,6 +2805,7 @@
         </tr>`).join('')}</tbody>
       </table></div></div>
       ${sel ? `<div class="card"><div class="card-head">${icon('user', 15)}<h3>${sel.name} · 学生档案</h3>
+        <span style="font-size:11.5px;color:var(--text-3);white-space:nowrap">学号 ${h(sel.studentNo || '—')}</span>
         <button class="btn sm ghost" data-act="resetPwdModal" ${sel ? '' : 'disabled'} title="更多操作">${icon('dots', 14)} 更多</button><div class="spacer"></div>
         <span class="badge ${sel.risk === 'high' ? 'danger' : sel.risk === 'mid' ? 'warn' : 'ok'}">${sel.risk === 'high' ? '高危' : sel.risk === 'mid' ? '关注' : '正常'}</span></div>
         <div class="card-body">
