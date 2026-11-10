@@ -26,7 +26,13 @@
         <div class="form-row"><label>用户名</label>
           <input class="input" id="lgUser" placeholder="请输入用户名" autocomplete="username"></div>
         <div class="form-row"><label>密码</label>
-          <input class="input" id="lgPass" type="password" placeholder="请输入密码" autocomplete="current-password"></div>
+          <div class="pwd-field">
+            <input class="input" id="lgPass" type="password" placeholder="请输入密码" autocomplete="current-password">
+            <button type="button" class="eye-toggle" id="eyeLg" aria-label="显示密码" aria-pressed="false" title="显示密码">
+              <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/></svg>
+            </button>
+          </div></div>
         <button class="btn primary block" type="submit" id="lgBtn">登 录</button>
       </form>
 
@@ -34,7 +40,13 @@
         <div class="form-row"><label>用户名</label>
           <input class="input" id="rgUser" placeholder="字母 / 数字 / 下划线，3-30 位" autocomplete="username"></div>
         <div class="form-row"><label>密码</label>
-          <input class="input" id="rgPass" type="password" placeholder="至少 6 位" autocomplete="new-password"></div>
+          <div class="pwd-field">
+            <input class="input" id="rgPass" type="password" placeholder="至少 6 位" autocomplete="new-password">
+            <button type="button" class="eye-toggle" id="eyeRg" aria-label="显示密码" aria-pressed="false" title="显示密码">
+              <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/><path d="M4 4l16 16"/></svg>
+            </button>
+          </div></div>
         <div class="form-row"><label>姓名</label>
           <input class="input" id="rgName" placeholder="真实姓名"></div>
         <div class="form-row"><label>角色</label>
@@ -59,6 +71,27 @@ function switchTab(which) {
   document.getElementById('loginForm').style.display = which === 'login' ? '' : 'none';
   document.getElementById('regForm').style.display = which === 'reg' ? '' : 'none';
 }
+
+/* 密码可见性切换（小眼睛按钮）：
+ * - pointerdown preventDefault 阻止按钮抢占焦点，点击后输入框保持聚焦（输入流程不被打断）
+ * - 切换 input.type 并同步 aria-label / aria-pressed / title（无障碍状态说明）
+ * - 图标交叉过渡由 CSS .eye-toggle.show 驱动（opacity + scale 平滑切换） */
+function bindEye(toggleId, inputId) {
+  const t = document.getElementById(toggleId);
+  const inp = document.getElementById(inputId);
+  if (!t || !inp) return;
+  t.addEventListener('pointerdown', function (e) { e.preventDefault(); });
+  t.addEventListener('click', function () {
+    const show = inp.type === 'password';
+    inp.type = show ? 'text' : 'password';
+    t.classList.toggle('show', show);
+    t.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+    t.setAttribute('aria-pressed', show ? 'true' : 'false');
+    t.title = show ? '隐藏密码' : '显示密码';
+  });
+}
+bindEye('eyeLg', 'lgPass');
+bindEye('eyeRg', 'rgPass');
 
 function setBtn(btn, text, disabled) {
   btn.disabled = !!disabled;
