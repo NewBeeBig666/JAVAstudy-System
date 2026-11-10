@@ -229,7 +229,8 @@ public class TeacherService {
                     : (mastery < 52 || submitRate < 60 ? "mid" : "low");
 
             result.add(new StudentSummary(String.valueOf(stu.getId()), stu.getRealName(), mastery, submitRate,
-                    absDays, risk, weakKps.stream().map(kpNames::get).toList(), trend, attempts));
+                    absDays, risk, weakKps.stream().map(kpNames::get).toList(), trend, attempts,
+                    stu.getStudentNo() == null ? "" : stu.getStudentNo()));
         }
         return result;
     }
@@ -374,5 +375,7 @@ public class TeacherService {
         private List<String> weak;
         private List<Integer> trend;
         private long attempts;
+        /** 学号（教师端学生列表姓名下方展示；未导入学号的学生为空） */
+        private String studentNo;
     }
 }

@@ -2793,7 +2793,8 @@
       <div style="overflow-x:auto"><table class="table">
         <thead><tr><th>学生</th><th>掌握度</th><th class="num">提交率</th><th class="num">连续未登录</th><th>近 7 日活跃</th><th>薄弱知识点</th><th>风险</th></tr></thead>
         <tbody>${DB.students.map(s => `<tr data-act="studentPick" data-val="${s.id}" class="${String(State.activeStudent) === String(s.id) ? 'on' : ''}">
-          <td><b>${h(s.name)}</b>${s.id === 's01' ? ' <span class="badge brand">我</span>' : ''}</td>
+          <td><b>${h(s.name)}</b>${s.id === 's01' ? ' <span class="badge brand">我</span>' : ''}
+            <div style="font-size:11.5px;color:var(--text-3);margin-top:2px;white-space:nowrap">学号 ${h(s.studentNo || '—')}</div></td>
           <td style="width:150px"><div style="display:flex;align-items:center;gap:8px">
             <div class="bar ${bcls(s.mastery)}" style="flex:1"><i style="width:${s.mastery}%"></i></div><span style="font-weight:600">${s.mastery}</span></div></td>
           <td class="num">${s.submitRate}%</td>
