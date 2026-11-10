@@ -43,6 +43,7 @@ public class LearningResourceController {
     private final ResourceAiService resourceAiService;
     private final UserMapper userMapper;
     private final ClassMapper classMapper;
+    private final com.la.service.CoTeacherService coTeacherService;
 
     /* ==================== 教师端 ==================== */
 
@@ -55,8 +56,27 @@ public class LearningResourceController {
         // kpCodes：教师手动选择的知识点（逗号分隔），与 AI 识别结果合并
         List<String> manual = kpCodes == null || kpCodes.isBlank()
                 ? List.of() : List.of(kpCodes.split(","));
+        // 资源归属班级校验：教师拥有可管理班级（授课 ∪ 共同管理）时，归属班级须在其中；
+        // 无任何可管理班级的教师按演示兼容口径放行（与 defaultClassId 全库回退一致）
+        Long targetClass = classId != null ? classId : defaultClassId();
+        if (targetClass != null && hasAnyManageableClass(CurrentUser.id())) {
+            ClassEntity cls = classMapper.selectById(targetClass);
+            boolean owned = cls != null && cls.getTeacherId() != null
+                    && cls.getTeacherId().equals(CurrentUser.id());
+            boolean coManaged = coTeacherService.coManagedClassIds(CurrentUser.id()).contains(targetClass);
+            if (!owned && !coManaged) {
+                throw new BizException("无权向该班级上传资源");
+            }
+        }
         return ApiResponse.ok(resourceService.upload(CurrentUser.id(),
-                classId != null ? classId : defaultClassId(), title, file, manual));
+                targetClass, title, file, manual));
+    }
+
+    /** 教师是否拥有任何可管理班级（授课 ∪ 共同管理；均无时兼容演示账号放行） */
+    private boolean hasAnyManageableClass(Long teacherId) {
+        return classMapper.selectCount(new LambdaQueryWrapper<ClassEntity>()
+                .eq(ClassEntity::getTeacherId, teacherId)) > 0
+                || !coTeacherService.coManagedClassIds(teacherId).isEmpty();
     }
 
     @Operation(summary = "教师资源列表（含每个资源已学完人数）")

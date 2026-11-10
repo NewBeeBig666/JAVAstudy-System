@@ -2276,7 +2276,10 @@
     if (DB.resources !== undefined) return;
     DB.resources = null;
     DB.resLoadError = '';
-    const path = State.role === 'teacher' ? '/teacher/resources' : '/resources';
+    // 教师端资源列表跟随当前选中班级（与作业/看板同口径；不带 classId 会落到后端默认班级兜底）
+    const path = State.role === 'teacher'
+      ? '/teacher/resources' + (State.filters.classId != null ? '?classId=' + encodeURIComponent(State.filters.classId) : '')
+      : '/resources';
     API.get(path).then(list => {
       DB.resources = list || [];
       // 知识图谱板块（教师端关联资源卡）同样依赖资源数据，加载完成后需重渲染
@@ -6135,13 +6138,18 @@
         fd.append('title', (c.title || '实验') + ' 实验报告模板');
         fd.append('file', file);
         if (c.kps && c.kps.length) fd.append('kpCodes', c.kps.join(','));
+        // 模板资源归属教师当前选中班级（该班学生方可在学习资源板块下载模板）
+        if (State.filters.classId != null) fd.append('classId', String(State.filters.classId));
         const r = await API.upload('/teacher/resources', fd);
         c.lab = { templateId: r.id, templateTitle: r.title || ((c.title || '实验') + ' 实验报告模板') };
         d.uploading = false;
         State.modal = null; renderOverlays();
         toast('模板已上传并关联，已同步发布到「学习资源」板块', 'ok');
-        // 刷新教师资源列表
-        try { DB.resources = await API.get('/teacher/resources'); } catch (e) { /* 忽略 */ }
+        // 刷新教师资源列表（按当前选中班级）
+        try {
+          DB.resources = await API.get('/teacher/resources'
+            + (State.filters.classId != null ? '?classId=' + encodeURIComponent(State.filters.classId) : ''));
+        } catch (e) { /* 忽略 */ }
       } catch (e) {
         d.uploading = false; renderOverlays();
         toast(e.message);
@@ -6195,9 +6203,10 @@
             d.uploading = false;
             State.modal = null; renderOverlays();
             toast('「' + (r.title || d.title) + '」上传成功，AI 关联 ' + aiKp + ' 个知识点' + (aiKp ? '' : '，可在卡片上编辑关联'), 'ok');
-            // 刷新教师资源列表（含已学完人数）
+            // 刷新教师资源列表（按当前选中班级）
             try {
-              DB.resources = await API.get('/teacher/resources');
+              DB.resources = await API.get('/teacher/resources'
+                + (State.filters.classId != null ? '?classId=' + encodeURIComponent(State.filters.classId) : ''));
               if (State.section === 'resources') render();
             } catch (e) { toast(e.message); }
           } else {
@@ -6220,6 +6229,8 @@
       fd.append('file', file, file.name);
       fd.append('title', d.title.trim());
       fd.append('kpCodes', (d.kps || []).join(','));
+      // 资源归属教师当前选中班级（不带 classId 会落到后端默认班级兜底，导致所选班级学生不可见）
+      if (State.filters.classId != null) fd.append('classId', String(State.filters.classId));
       xhr.send(fd);
     },
     resEditMenu(v, id) {
@@ -6475,20 +6486,22 @@
       render();
       try {
         const qs = '?classId=' + encodeURIComponent(v);
-        const [dash, students, warnings, assignments, folders] = await Promise.all([
+        const [dash, students, warnings, assignments, folders, resources] = await Promise.all([
           API.get('/teacher/dashboard' + qs),
           API.get('/teacher/students' + qs),
           API.get('/teacher/warnings' + qs),
           API.get('/teacher/assignments' + qs),
-          API.get('/teacher/folders' + qs)
+          API.get('/teacher/folders' + qs),
+          API.get('/teacher/resources' + qs)
         ]);
-        // 统一落库：看板 KPI/卡点/重点关注 + 学生列表 + 预警中心 + 作业列表 + 文件夹
+        // 统一落库：看板 KPI/卡点/重点关注 + 学生列表 + 预警中心 + 作业列表 + 文件夹 + 学习资源
         State.filters.classId = v;
         DB.teacherDash = dash;
         DB.classStuckPoints = dash.stuckPoints || [];
         DB.students = students;
         DB.warnings = warnings;
         DB.assignments = assignments;
+        DB.resources = resources;
         // 文件夹绑定班级维度：严格跟随切换后的班级（无文件夹则侧栏仅显示「其他」）
         DB.folders = folders;
         // 跨班切换时复位「发布新作业默认文件夹」（文件夹 id 已按班级隔离）
