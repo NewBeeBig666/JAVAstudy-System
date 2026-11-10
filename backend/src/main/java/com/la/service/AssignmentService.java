@@ -44,6 +44,7 @@ public class AssignmentService {
     private final LearningResourceMapper learningResourceMapper;
     private final AssignmentFolderMapper assignmentFolderMapper;
     private final LabGroupService labGroupService;
+    private final ClassCoTeacherMapper classCoTeacherMapper;
 
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
     private static final DateTimeFormatter DUE = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
@@ -767,8 +768,26 @@ public class AssignmentService {
     }
 
     /**
+     * 教师可管理班级口径：授课班级 ∪ 共同管理班级（共同管理教师与所有者拥有一致的作业管理权限；
+     * 教师无任何可管理班级时回退兼容演示账号）
+     */
+    private List<Long> manageableClassIds(Long teacherId) {
+        List<Long> ids = new ArrayList<>(classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
+                        .eq(ClassEntity::getTeacherId, teacherId))
+                .stream().map(ClassEntity::getId).toList());
+        classCoTeacherMapper.selectList(new LambdaQueryWrapper<ClassCoTeacher>()
+                        .eq(ClassCoTeacher::getTeacherId, teacherId))
+                .forEach(ct -> {
+                    if (!ids.contains(ct.getClassId())) {
+                        ids.add(ct.getClassId());
+                    }
+                });
+        return ids;
+    }
+
+    /**
      * 教师删除作业（级联删除其 Rubric、学生提交与提交评分）
-     * 权限约束：作业须属于当前教师授课班级（教师无授课班级时回退兼容演示账号）
+     * 权限约束：作业须属于当前教师可管理班级（授课 ∪ 共同管理；无任何班级时回退兼容演示账号）
      */
     @Transactional
     public void deleteAssignment(Long teacherId, Long assignmentId) {
@@ -776,9 +795,7 @@ public class AssignmentService {
         if (as == null) {
             throw new BizException("作业不存在");
         }
-        List<Long> ownClassIds = classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
-                        .eq(ClassEntity::getTeacherId, teacherId))
-                .stream().map(ClassEntity::getId).toList();
+        List<Long> ownClassIds = manageableClassIds(teacherId);
         if (!ownClassIds.isEmpty() && !ownClassIds.contains(as.getClassId())) {
             throw new BizException("无权操作该作业");
         }
@@ -800,16 +817,14 @@ public class AssignmentService {
 
     /**
      * 移动作业到指定文件夹（folderId=null 移回内置「其他」）。
-     * 归属校验与删除作业同口径：作业所在班级须为当前教师授课班级。
+     * 归属校验与删除作业同口径：作业所在班级须为当前教师可管理班级（授课 ∪ 共同管理）。
      */
     public Map<String, Object> moveAssignment(Long teacherId, Long assignmentId, Long folderId) {
         Assignment as = assignmentMapper.selectById(assignmentId);
         if (as == null) {
             throw new BizException("作业不存在");
         }
-        List<Long> ownClassIds = classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
-                        .eq(ClassEntity::getTeacherId, teacherId))
-                .stream().map(ClassEntity::getId).toList();
+        List<Long> ownClassIds = manageableClassIds(teacherId);
         if (!ownClassIds.isEmpty() && !ownClassIds.contains(as.getClassId())) {
             throw new BizException("无权操作该作业");
         }

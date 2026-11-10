@@ -101,10 +101,19 @@ async function login(u) {
   ok('[API] classes 返回 owned 标记（所有者=true / 共同管理教师=false）',
     aOwned && aOwned.owned === true && aCoOwned && aCoOwned.owned === false, '');
 
+  // 共同管理教师删除 = 退出自己（仅删自己的关联行）：班级与其他教师数据完整保留
   const del1 = await fetch(API + '/teacher/classes/' + clsA, { method: 'DELETE', headers: H(t2) });
   const del1j = await j(del1);
-  ok('[API] 共同管理教师删除被拒（双重权限校验）', del1j.code !== 0, del1j.msg);
-  ok('[API] 被拒后班级数据保留', cnt('class', `id=${clsA}`) === 1, '');
+  ok('[API] 共同管理教师删除=退出自己（action=left）', del1j.code === 0 && del1j.data && del1j.data.action === 'left',
+    del1j.msg || 'ok');
+  ok('[API] 退出后班级完整保留（不影响其他教师与班级数据）',
+    cnt('class', `id=${clsA}`) === 1
+      && cnt('class_co_teacher', `class_id=${clsA} AND teacher_id=${zhuId}`) === 0
+      && cnt('assignment', `class_id=${clsA}`) === 1
+      && cnt('class_co_teacher', `class_id=${clsB} AND teacher_id=${zhuId}`) === 1,
+    '班级/作业保留，仅自己的关联行移除');
+  const zclsAfter = await j(await fetch(API + '/teacher/classes', { headers: H(t2) }));
+  ok('[API] 退出后自己班级列表不再含该班', !((zclsAfter.data || []).some(c => String(c.id) === String(clsA))), '');
 
   const del2 = await fetch(API + '/teacher/classes/' + clsA, { method: 'DELETE', headers: { Authorization: 'Bearer ' + st } });
   ok('[API] 学生调用被拒（403）', del2.status === 403, 'HTTP ' + del2.status);
@@ -160,14 +169,32 @@ async function login(u) {
   const classItem = (id) => `#side .list-item[data-act="classPick"][data-val="${id}"]`;
   const toastTxt = () => page.textContent('.toast:last-child').catch(() => '');
 
-  // [UI-1] 共同管理教师：右键非本人班级 → 只读提示，无可点的删除入口
+  // [UI-1] 共同管理教师：右键非本人班级 → 「退出班级」入口（= 退出自己，不再是无权只读提示）
   await teacherLogin(page, 'teacher0000001');
   await page.click(classItem(clsB), { button: 'right' });
   await page.waitForSelector('.as-menu', { timeout: 5000 });
   const menuHtml = await page.$eval('.as-menu', e => e.innerHTML);
-  ok('[UI] 共同管理教师右键菜单为只读提示', menuHtml.includes('仅班级所有者') && !menuHtml.includes('classDelModal'), '');
-  await page.mouse.click(400, 300); // 点击空白处关闭菜单
-  await page.waitForTimeout(200);
+  ok('[UI] 共同管理教师右键菜单含「退出班级」入口',
+    menuHtml.includes('classLeaveModal') && menuHtml.includes('退出班级') && !menuHtml.includes('classDelModal'), '');
+  // [UI-1b] 退出班级全流程：确认弹窗（说明数据完整保留）→ 退出成功 → 自己列表移除但班级保留
+  await page.click('.as-menu [data-act="classLeaveModal"]');
+  await page.waitForSelector('.modal', { timeout: 5000 });
+  const leaveTxt = (await page.textContent('.modal .modal-body')).trim();
+  ok('[UI] 退出弹窗说明仅移除自己、数据完整保留',
+    leaveTxt.includes('完整保留') && leaveTxt.includes('其他教师不受影响'), '');
+  await page.click('.modal [data-act="doClassLeave"]');
+  await page.waitForTimeout(1200);
+  const tLeave = (await toastTxt()).trim();
+  ok('[UI] 退出成功提示', tLeave.includes('已退出'), tLeave);
+  ok('[UI] 退出后自己班级列表移除该项，但班级本身保留',
+    !(await page.$(classItem(clsB))) && cnt('class', `id=${clsB}`) === 1, '');
+  // 需求第二句：教师退出后，所有者（其他教师）的共同管理教师列表不再显示该教师
+  const coPanel = await j(await fetch(API + '/teacher/co-teachers?classId=' + clsB, { headers: H(tt) }));
+  ok('[UI] 退出后所有者的共同管理列表不再显示该教师',
+    coPanel.code === 0 && !((coPanel.data.coTeachers || []).some(x => x.username === 'teacher0000001')), '');
+  // 退出后所有者视角班级完整可见（数据不受影响）
+  const chenCls = await j(await fetch(API + '/teacher/classes', { headers: H(tt) }));
+  ok('[UI] 所有者视角班级完整保留', ((chenCls.data || []).some(c => String(c.id) === String(clsB))), '');
 
   // [UI-2] 所有者：右键 → 菜单含可点的「删除班级」→ 确认弹窗文案 → 取消
   await teacherLogin(page, 'teacher');

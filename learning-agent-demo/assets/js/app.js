@@ -3462,6 +3462,14 @@
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn danger" data-act="doClassDel" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 删除中…' : icon('trash', 15) + ' 确认删除'}</button>`;
 
+    } else if (m.type === 'classLeave') {
+      // 退出班级二次确认：仅移除自己账号中的班级关联，班级与其他教师不受影响
+      title = '退出班级';
+      body = `<div class="note" style="margin-bottom:12px">确定要退出班级 <b>${h(d.name)}</b> 吗？退出后你将不再看到或管理该班级，班级的作业、学生与学习数据将<b>完整保留</b>，其他教师不受影响。</div>
+        <div class="hint">班级所有者与其他共同管理教师仍可正常访问本班级；如需重新加入，可联系班级所有者在「其他教师」面板再次添加。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doClassLeave" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 退出中…' : icon('x', 15) + ' 确认退出'}</button>`;
+
     } else if (m.type === 'asFolderDel') {
       // 删除文件夹二次确认：其内作业移回「其他」，不删除作业本身
       title = '删除文件夹';
@@ -4577,6 +4585,9 @@
       const r = await API.post('/teacher/compose', {
         id: c.id != null ? Number(c.id) : null,
         title: c.title, scoreMode: isLab ? 'LAB' : c.scoreMode,
+        // 归属班级：携带教师当前选中的班级（共同管理教师/多班所有者切班发布均落所选班级；
+        // 此前缺省由后端兜底为发布者自己授课的第一个班级，导致共同管理班级收不到作业）
+        classId: State.filters.classId != null ? Number(State.filters.classId) : null,
         startAt: c.startAt || null, endAt: c.endAt, allowLate: !!c.allowLate,
         status: status,
         // 所属文件夹：编辑预填原值，新建取顶栏「选择文件夹」下拉（未选 = 其他）
@@ -4605,7 +4616,9 @@
         }))
       });
       State.compose = null; renderOverlays();
-      DB.assignments = await API.get('/teacher/assignments');
+      // 发布后按当前选中班级刷新（与 classPick 切换同一口径，避免跳到默认班级列表）
+      DB.assignments = await API.get('/teacher/assignments'
+        + (State.filters.classId != null ? '?classId=' + encodeURIComponent(State.filters.classId) : ''));
       render();
       toast(status === 'DRAFT' ? '草稿已保存' : '作业「' + r.title + '」已发布，学生侧已同步收到', 'ok');
     } catch (e) {
@@ -6495,13 +6508,39 @@
         render();
       }
     },
-    /* 删除班级：右键菜单 → 二次确认弹窗 → DELETE（后端仅所有者可删，前端 owned 预校验） */
+    /* 删除班级：右键菜单 → 二次确认弹窗 → DELETE（所有者硬删整班；前端 owned 预校验） */
     classDelModal(v) {
       const c = DB.classes.find(x => String(x.id) === String(v));
       if (!c) { toast('班级不存在或已删除'); return; }
       if (c.owned === false) { toast('仅班级所有者可以删除班级'); return; }
       State.modal = { type: 'classDel', data: { id: c.id, name: c.name, busy: false } };
       renderOverlays();
+    },
+    /* 退出班级：共同管理教师右键菜单 → 二次确认 → DELETE（后端仅删除自己的关联行，
+     * 班级数据与其他教师账号不受影响；其他教师的共同管理列表随即不再显示该教师） */
+    classLeaveModal(v) {
+      const c = DB.classes.find(x => String(x.id) === String(v));
+      if (!c) { toast('班级不存在或已删除'); return; }
+      State.modal = { type: 'classLeave', data: { id: c.id, name: c.name, busy: false } };
+      renderOverlays();
+    },
+    // 班级从本地移除（删除/退出共用）：列表即时更新 + 当前选中班级被移除时自动切换
+    async removeClassLocally(id) {
+      DB.classes = DB.classes.filter(c => String(c.id) !== String(id));
+      if (String(State.filters.classId) === String(id)) {
+        if (DB.classes.length) {
+          render();
+          await Actions.classPick(DB.classes[0].id);
+        } else {
+          // 教师已无任何班级：清空班级维度数据，避免残留旧班状态
+          State.filters.classId = null;
+          DB.students = []; DB.assignments = []; DB.warnings = [];
+          DB.submissions = []; DB.teacherDash = null; DB.classStuckPoints = [];
+          render();
+        }
+      } else {
+        render();
+      }
     },
     async doClassDel() {
       const d = State.modal && State.modal.data;
@@ -6510,28 +6549,31 @@
       try {
         await API.del('/teacher/classes/' + d.id);
         State.modal = null;
-        // 删除成功：本地列表即时移除该班级项，左侧栏同步更新
-        DB.classes = DB.classes.filter(c => String(c.id) !== String(d.id));
-        if (String(State.filters.classId) === String(d.id)) {
-          // 删除的是当前选中班级：自动切换到剩余首个班级（复用 classPick 的四接口联动加载）
-          if (DB.classes.length) {
-            render();
-            await Actions.classPick(DB.classes[0].id);
-          } else {
-            // 教师已无任何班级：清空班级维度数据，避免残留旧班状态
-            State.filters.classId = null;
-            DB.students = []; DB.assignments = []; DB.warnings = [];
-            DB.submissions = []; DB.teacherDash = null; DB.classStuckPoints = [];
-            render();
-          }
-        } else {
-          render();
-        }
+        await Actions.removeClassLocally(d.id);
         toast('班级「' + d.name + '」已删除', 'ok');
       } catch (e) {
         // 失败：给出明确错误提示并保留原班级数据（列表不变化）
         d.busy = false; renderOverlays();
         toast('删除失败：' + e.message);
+      }
+    },
+    async doClassLeave() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        const r = await API.del('/teacher/classes/' + d.id);
+        // 后端按身份分流返回 action（deleted=硬删 / left=仅退出自己）
+        State.modal = null;
+        await Actions.removeClassLocally(d.id);
+        if (r && r.action === 'left') {
+          toast('已退出班级「' + d.name + '」，班级与其他教师不受影响', 'ok');
+        } else {
+          toast('班级「' + d.name + '」已删除', 'ok');
+        }
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('退出失败：' + e.message);
       }
     },
     studentPick(v) {
@@ -7209,7 +7251,9 @@
       try {
         await API.del('/teacher/assignments/' + d.asId);
         State.modal = null; renderOverlays();
-        DB.assignments = await API.get('/teacher/assignments');
+        // 按当前选中班级刷新列表（多班/共同管理场景不跳默认班）
+        DB.assignments = await API.get('/teacher/assignments'
+          + (State.filters.classId != null ? '?classId=' + encodeURIComponent(State.filters.classId) : ''));
         render();
         toast('作业《' + d.title + '》已删除', 'ok');
       } catch (e) {
@@ -7225,7 +7269,9 @@
           id: Number(a.id), title: a.title, desc: a.desc || '', kp: a.kp || [],
           due: a.due || '', status: 'ONGOING', rubric: a.rubric
         });
-        DB.assignments = await API.get('/teacher/assignments');
+        // 按当前选中班级刷新列表（多班/共同管理场景不跳默认班）
+        DB.assignments = await API.get('/teacher/assignments'
+          + (State.filters.classId != null ? '?classId=' + encodeURIComponent(State.filters.classId) : ''));
         render();
         toast('《' + a.title + '》已发布给学生', 'ok');
       } catch (e) { toast(e.message); }
@@ -7693,19 +7739,23 @@
 
     if (me.role === 'TEACHER') {
       State.role = 'teacher'; State.section = 'dashboard';
-      const [graph, classes, students, dash, warnings, assignments, notifications] = await Promise.all([
+      const [graph, classes, students, dash, warnings, notifications] = await Promise.all([
         API.get('/knowledge/graph'),
         API.get('/teacher/classes'),
         API.get('/teacher/students'),
         API.get('/teacher/dashboard'),
         API.get('/teacher/warnings'),
-        API.get('/teacher/assignments'),
         API.get('/notifications')
       ]);
       applyKnowledgeGraph(graph);
       DB.classes = classes; DB.students = students;
       // 初始选中班级 = 第一个授课班级（后续 classPick 切换均以 String 比较保持高亮一致）
       State.filters.classId = classes.length ? classes[0].id : State.filters.classId;
+      // 作业列表按初始选中班级拉取（多班/共同管理场景列表与选中班级一致，
+      // 不再走后端默认班级兜底——此前共同管理教师初始化会看到错误班级的作业列表）
+      const assignments = State.filters.classId != null
+        ? await API.get('/teacher/assignments?classId=' + encodeURIComponent(State.filters.classId)).catch(() => [])
+        : await API.get('/teacher/assignments').catch(() => []);
       // 文件夹绑定班级维度：按初始选中班级拉取（失败降级为空，不影响主流程）
       DB.folders = State.filters.classId != null
         ? await API.get('/teacher/folders?classId=' + encodeURIComponent(State.filters.classId)).catch(() => [])
@@ -7976,9 +8026,11 @@
     if (!c) return;
     const menu = document.createElement('div');
     menu.className = 'as-menu';
+    // 所有人：删除班级（硬删整班）；共同管理教师：退出班级（仅移除自己账号中的班级关联，
+    // 班级数据与其他教师不受影响）
     menu.innerHTML = c.owned
       ? `<button class="as-menu-item danger" data-act="classDelModal" data-val="${h(String(c.id))}">${icon('trash', 14)} 删除班级</button>`
-      : `<div class="as-menu-item" style="cursor:default;opacity:.55">${icon('lock', 14)} 删除班级（仅班级所有者）</div>`;
+      : `<button class="as-menu-item" data-act="classLeaveModal" data-val="${h(String(c.id))}">${icon('x', 14)} 退出班级</button>`;
     // 靠右/靠下边缘时回退，避免菜单溢出视口
     menu.style.left = Math.min(e.pageX, document.documentElement.clientWidth - 200) + 'px';
     menu.style.top = Math.min(e.pageY, window.scrollY + document.documentElement.clientHeight - 56) + 'px';

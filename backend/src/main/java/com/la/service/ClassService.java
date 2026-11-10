@@ -14,12 +14,16 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 班级管理（教师端学情看板左侧栏「授课班级」）：
- * - 删除班级：仅班级所有者可操作（前后端双重权限校验）；
- * - 级联清空该班级的关联管理权限与数据关联关系：共同管理教师、作业（含提交/评分/题目）、
- *   预警、学习资源（含学习进度），学生账号保留但移出该班级（class_id 置空）；
+ * - 删除/退出班级按操作者身份分流：
+ *   · 班级所有者 → 删除整个班级（级联清空关联管理权限与数据关联关系：共同管理教师、
+ *     作业（含提交/评分/题目）、预警、学习资源（含学习进度），学生账号保留但移出该班级）；
+ *   · 共同管理教师 → 仅退出该班级（删除自己的 class_co_teacher 关联行），
+ *     班级本身与其他教师账号中的完整数据不受影响；其他教师的共同管理列表随即不再显示该教师；
+ *   · 与班级无任何关联的教师 → 拒绝（400 仅班级所有者可以删除班级）；
  * - 幂等：目标班级不存在（含已被删除）时直接视为成功返回，不报错、不产生副作用。
  */
 @Service
@@ -58,19 +62,35 @@ public class ClassService {
         } catch (Exception ignore) { }
     }
 
-    /** 删除班级（仅所有者；事务内级联清理关联数据；幂等：班级不存在时静默成功） */
+    /**
+     * 删除/退出班级（按操作者身份分流）：
+     * - 所有者 → 硬删整个班级（级联清理，行为不变）→ action=deleted
+     * - 共同管理教师 → 仅删除自己的关联行（退出班级）→ action=left
+     * - 幂等：班级不存在时静默成功（action=deleted）
+     */
     @Transactional
-    public void deleteClass(Long teacherId, Long classId) {
+    public Map<String, Object> deleteClass(Long teacherId, Long classId) {
         if (classId == null) {
             throw new BizException("缺少班级参数");
         }
         ClassEntity cls = classMapper.selectById(classId);
         if (cls == null) {
             // 幂等：重复提交 / 班级已被删除时不再报错，保证多次删除结果一致
-            return;
+            return Map.of("action", "deleted");
         }
-        if (cls.getTeacherId() == null || !cls.getTeacherId().equals(teacherId)) {
-            throw new BizException("仅班级所有者可以删除班级");
+        boolean isOwner = cls.getTeacherId() != null && cls.getTeacherId().equals(teacherId);
+        if (!isOwner) {
+            // 非所有者：须为共同管理教师，删除 = 仅退出自己（班级数据与其他教师不受影响）
+            Long coCnt = coTeacherMapper.selectCount(new LambdaQueryWrapper<ClassCoTeacher>()
+                    .eq(ClassCoTeacher::getClassId, classId)
+                    .eq(ClassCoTeacher::getTeacherId, teacherId));
+            if (coCnt == null || coCnt == 0) {
+                throw new BizException("仅班级所有者可以删除班级");
+            }
+            coTeacherMapper.delete(new LambdaQueryWrapper<ClassCoTeacher>()
+                    .eq(ClassCoTeacher::getClassId, classId)
+                    .eq(ClassCoTeacher::getTeacherId, teacherId));
+            return Map.of("action", "left");
         }
 
         // 1) 清空共同管理教师权限（对应教师随即失去该班级的管理入口）
@@ -131,6 +151,7 @@ public class ClassService {
 
         // 6) 删除班级本身
         classMapper.deleteById(classId);
+        return Map.of("action", "deleted");
     }
 
     /** 从提交 answers JSON 中提取实验报告存储文件名（数组/对象两种历史格式兼容） */

@@ -118,11 +118,10 @@ public class TeacherController {
         }).toList());
     }
 
-    @Operation(summary = "删除班级（仅班级所有者；级联清空共同管理权限与关联数据；幂等）")
+    @Operation(summary = "删除/退出班级：所有者硬删整班（级联清理）；共同管理教师=仅退出自己（班级与其他教师数据不受影响）；幂等")
     @DeleteMapping("/classes/{id}")
-    public ApiResponse<Void> deleteClass(@PathVariable Long id) {
-        classService.deleteClass(CurrentUser.id(), id);
-        return ApiResponse.ok();
+    public ApiResponse<Map<String, Object>> deleteClass(@PathVariable Long id) {
+        return ApiResponse.ok(classService.deleteClass(CurrentUser.id(), id));
     }
 
     @Operation(summary = "学生列表（掌握度/提交率/风险/趋势）")
@@ -483,11 +482,16 @@ public class TeacherController {
     }
 
     private Long defaultClassId() {
-        // 优先当前教师授课的班级，其次回退到第一个班级
+        // 兜底班级：优先自己授课的班级；无授课班级时回退共同管理的班级（共同管理教师未传
+        // classId 的旧调用不再落到无关班级）；最后回退全库第一个班级（兼容演示账号）
         ClassEntity own = classMapper.selectOne(new LambdaQueryWrapper<ClassEntity>()
                 .eq(ClassEntity::getTeacherId, CurrentUser.id()).last("LIMIT 1"));
         if (own != null) {
             return own.getId();
+        }
+        List<Long> coIds = coTeacherService.coManagedClassIds(CurrentUser.id());
+        if (coIds != null && !coIds.isEmpty()) {
+            return coIds.get(0);
         }
         ClassEntity first = classMapper.selectOne(new LambdaQueryWrapper<ClassEntity>().last("LIMIT 1"));
         return first != null ? first.getId() : 1L;
