@@ -29,7 +29,10 @@
       classStuckPoints: [],
       teacherDash: null,
       notifications: [],
-      llmMock: null
+      llmMock: null,
+      teacherProjects: null,  // 教师端：当前班级项目列表（懒加载，null=未加载）
+      myProjects: null,       // 学生端：项目列表（含我的开发状态，懒加载，null=未加载）
+      projectsLoadedClass: null
     };
   }
   // 脚本加载即初始化（boot 首次渲染前 DB 必须存在）
@@ -220,6 +223,7 @@
       { key: 'chat', label: '学习会话', icon: 'chat' },
       { key: 'resources', label: '学习资源', icon: 'layers' },
       { key: 'knowledge', label: '知识图谱', icon: 'target' },
+      { key: 'projects', label: '项目代码', icon: 'code' },
       { key: 'homework', label: '我的作业', icon: 'clipboard' },
       { key: 'exercise', label: '练习记录', icon: 'book' },
       { key: 'report', label: '画像与报告', icon: 'chart' }
@@ -228,6 +232,7 @@
       { key: 'dashboard', label: '学情看板', icon: 'grid' },
       { key: 'resources', label: '学习资源', icon: 'layers' },
       { key: 'knowledge', label: '知识图谱', icon: 'target' },
+      { key: 'projects', label: '项目代码', icon: 'code' },
       { key: 'assignments', label: '作业管理', icon: 'clipboard' },
       { key: 'submissions', label: '提交批改', icon: 'check' },
       { key: 'warnings', label: '预警中心', icon: 'alert' },
@@ -457,6 +462,12 @@
         <div class="li-extra"><span class="badge ${s.risk === 'high' ? 'danger' : s.risk === 'mid' ? 'warn' : 'ok'}">${s.risk === 'high' ? '高危' : s.risk === 'mid' ? '关注' : '正常'}</span></div>
       </button>`).join('');
 
+    } else if (sec === 'projects') {
+      // 项目目录：树形折叠分组（教师=上架中/已下架；学生=开发中/已提交/未开始），点击切换主区聚焦项目
+      head = `<div class="side-head"><div class="side-title">项目目录</div>
+        <div class="side-tools"><button class="icon-btn" data-act="projectNavRefresh" title="刷新项目目录">${icon('refresh', 15)}</button></div></div>`;
+      body = projectSidebarHtml();
+
     } else if (sec === 'resources') {
       // 资源类型目录：全部 + 五类（PPT/视频/图片/Word/PDF），点击过滤中间资源列表
       head = '<div class="side-head"><div class="side-title">资源分类</div></div>';
@@ -550,6 +561,7 @@
       if (sec === 'chat') { const r = viewChat(); head = r.head; body = r.body; }
       else if (sec === 'resources') { const r = viewResources(); head = r.head; body = r.body; }
       else if (sec === 'knowledge') { const r = viewKnowledge(); head = r.head; body = r.body; }
+      else if (sec === 'projects') { const r = viewStudentProjects(); head = r.head; body = r.body; }
       else if (sec === 'homework') { const r = viewHomework(); head = r.head; body = r.body; }
       else if (sec === 'exercise') { const r = viewExercise(); head = r.head; body = r.body; }
       else if (sec === 'report') { const r = viewReport(); head = r.head; body = r.body; }
@@ -557,6 +569,7 @@
       if (sec === 'dashboard') { const r = viewDashboard(); head = r.head; body = r.body; }
       else if (sec === 'resources') { const r = viewResources(); head = r.head; body = r.body; }
       else if (sec === 'knowledge') { const r = viewKnowledge(); head = r.head; body = r.body; }
+      else if (sec === 'projects') { const r = viewTeacherProjects(); head = r.head; body = r.body; }
       else if (sec === 'assignments') { const r = viewAssignments(); head = r.head; body = r.body; }
       else if (sec === 'submissions') { const r = viewSubmissions(); head = r.head; body = r.body; }
       else if (sec === 'warnings') { const r = viewWarnings(); head = r.head; body = r.body; }
@@ -2168,6 +2181,339 @@
     }
   }
 
+  /* ===========================================================
+   * 项目代码板块（v1.20.8）
+   * 教师端：发布/编辑/上下架项目，实时查看学生完成进度与代码版本
+   * 学生端：实时接收项目 → 创建项目 → 在线编码 → 保存自动多版本留存
+   * =========================================================== */
+
+  // 教师端项目懒加载（按当前班级缓存；切班由 classPick 联动刷新）
+  function ensureProjects() {
+    if (State.role !== 'teacher') return;
+    const cls = State.filters.classId;
+    if (DB.teacherProjects != null && String(DB.projectsLoadedClass) === String(cls)) return;
+    API.get('/teacher/projects' + (cls != null ? '?classId=' + encodeURIComponent(cls) : ''))
+      .then(r => {
+        DB.teacherProjects = r;
+        DB.projectsLoadedClass = cls;
+        if (State.section === 'projects') render();
+      })
+      .catch(() => {
+        if (DB.teacherProjects == null) DB.teacherProjects = [];
+        if (State.section === 'projects') render();
+      });
+  }
+
+  // 学生端项目懒加载：本班全部上架项目 + 我的项目状态（每次进入板块实时拉取）
+  function ensureMyProjects(force) {
+    if (State.role !== 'student') return;
+    if (!force && DB.myProjects != null) return;
+    API.get('/projects/my')
+      .then(r => {
+        DB.myProjects = r;
+        if (State.section === 'projects') render();
+      })
+      .catch(() => {
+        if (DB.myProjects == null) DB.myProjects = [];
+        if (State.section === 'projects') render();
+      });
+  }
+
+  /* ---------------- 项目目录侧栏（树形折叠分组 · 双端权限差异化） ---------------- */
+  const PROJ_FOLDERS_KEY = 'la-proj-folders';
+  function projFoldersOpenState() {
+    if (!State.projFoldersOpen) {
+      try { State.projFoldersOpen = JSON.parse(localStorage.getItem(PROJ_FOLDERS_KEY)) || {}; }
+      catch (e) { State.projFoldersOpen = {}; }
+    }
+    return State.projFoldersOpen;
+  }
+  // 折叠分组行 + 组内项目项（复用作业文件夹侧栏的 as-folder 样式与 IDE 折叠交互习惯）
+  function projFolderHtml(g, itemHtml) {
+    const st = projFoldersOpenState();
+    const open = st[g.key] !== false; // 默认展开
+    return `<div class="as-folder ${open ? '' : 'closed'}" id="projFolderRow-${g.key}" data-act="projFolderToggle" data-val="${g.key}" title="${open ? '收起' : '展开'}「${g.name}」">
+        <span class="asf-chev">${icon('chevronD', 14)}</span>
+        <span class="asf-name">${g.name}</span>
+        <span class="asf-count">${g.items.length}</span>
+      </div>
+      <div class="as-folder-items" id="projFolderItems-${g.key}" style="display:${open ? '' : 'none'}">${g.items.map(itemHtml).join('') || '<div class="asf-empty">（暂无项目）</div>'}</div>`;
+  }
+  function projectSidebarHtml() {
+    if (State.role === 'teacher') {
+      const list = DB.teacherProjects;
+      if (list == null) return '<div class="asf-empty">目录加载中…</div>';
+      if (!list.length) return '<div class="asf-empty">还没有发布项目</div>';
+      const item = p => `<button class="list-item ${String(State.projectSel) === String(p.id) ? 'on' : ''}" data-act="projectPick" data-val="${p.id}" title="查看「${h(p.title)}」">
+          <div class="li-main"><div class="li-title">${h(p.title)}</div>
+          <div class="li-sub">${p.studentCount || 0} 人参与 · ${p.versionCount || 0} 个版本</div></div>
+        </button>`;
+      return projFolderHtml({ key: 'pub', name: '上架中', items: list.filter(p => p.status === 'PUBLISHED') }, item)
+        + projFolderHtml({ key: 'off', name: '已下架', items: list.filter(p => p.status !== 'PUBLISHED') }, item);
+    }
+    // 学生端：按我的开发状态分组（仅展示本班上架项目）
+    const list = DB.myProjects;
+    if (list == null) return '<div class="asf-empty">目录加载中…</div>';
+    if (!list.length) return '<div class="asf-empty">教师暂未发布项目</div>';
+    const item = p => `<button class="list-item ${String(State.projectSel) === String(p.id) ? 'on' : ''}" data-act="projectPick" data-val="${p.id}" title="查看「${h(p.title)}」">
+        <div class="li-main"><div class="li-title">${h(p.title)}</div>
+        <div class="li-sub">${p.mine ? (p.mine.status === 'SUBMITTED' ? '已提交' : '开发中') + ' · v' + (p.mine.versionCount || 0) : '未开始'}</div></div>
+        ${p.mine ? '<div class="li-extra"><span class="badge ' + (p.mine.status === 'SUBMITTED' ? 'ok' : 'brand') + '">' + (p.mine.versionCount || 0) + ' 版</span></div>' : ''}
+      </button>`;
+    return projFolderHtml({ key: 'dev', name: '开发中', items: list.filter(p => p.mine && p.mine.status === 'IN_PROGRESS') }, item)
+      + projFolderHtml({ key: 'sub', name: '已提交', items: list.filter(p => p.mine && p.mine.status === 'SUBMITTED') }, item)
+      + projFolderHtml({ key: 'new', name: '未开始', items: list.filter(p => !p.mine) }, item);
+  }
+
+  /* ---------------- 主区聚焦视图数据（选中项目 → 进度/代码详情，含加载态） ----------------
+   * key 约定：'t:'+projectId（教师学生进度）/ 's:'+studentProjectId（学生最新代码与版本记录）
+   * 切换项目时 key 变化即重新拉取；保存/发布/上下架后置 null 使缓存失效 */
+  function ensureProjectViewFetch(key, fetcher) {
+    const cur = State.projView;
+    if (cur && cur.key === key && (cur.loading || cur.data || cur.err)) return;
+    State.projView = { key: key, loading: true, err: null, data: null };
+    fetcher().then(r => {
+      if (!State.projView || State.projView.key !== key) return;
+      State.projView = { key: key, loading: false, err: null, data: r };
+      if (State.section === 'projects') render();
+    }).catch(e => {
+      if (!State.projView || State.projView.key !== key) return;
+      State.projView = { key: key, loading: false, err: e.message, data: null };
+      if (State.section === 'projects') render();
+    });
+  }
+
+  /* ---------------- 教师：项目代码视图（左侧目录 + 聚焦项目 + 内联学生进度实时轮询） ---------------- */
+  function viewTeacherProjects() {
+    ensureProjects();
+    const list = DB.teacherProjects;
+    if (list == null) {
+      return { head: mainHead('项目代码', '发布编程项目，实时查看学生的开发进度与代码迭代'), body: skeleton() };
+    }
+    const head = mainHead('项目代码',
+      '发布编程项目 · 共 ' + list.length + ' 个 · 上架中 ' + list.filter(p => p.status === 'PUBLISHED').length + ' 个 · 左侧目录点击切换项目',
+      '<button class="btn primary sm" data-act="projectComposeModal">' + icon('plus', 14) + ' 发布新项目</button>');
+    if (!list.length) {
+      return { head, body: emptyBox('还没有发布项目', '点击右上角「发布新项目」，填写项目需求说明后发布；学生将在「项目代码」板块实时收到并开始开发。') };
+    }
+    // 选中项目：优先上次选择，否则自动聚焦第一个（IDE 目录习惯）
+    const sel = list.find(p => String(p.id) === String(State.projectSel)) || list[0];
+    State.projectSel = sel.id;
+    // 学生进度：切换/首次进入时拉取（含加载态提示），此后 4 秒轮询增量更新
+    ensureProjectViewFetch('t:' + sel.id, () => API.get('/teacher/projects/' + sel.id + '/progress'));
+    if (!projectPollTimer) startProjectPoll();
+    const d = (State.projView && State.projView.key === 't:' + sel.id) ? State.projView : { loading: true };
+    const on = sel.status === 'PUBLISHED';
+    const body = `<div class="card"><div class="card-head">${icon('code', 15)}
+        <h3>${h(sel.title)}</h3>
+        <span class="badge ${on ? 'ok' : ''}">${on ? '上架中' : '已下架'}</span>
+        <span class="badge">${sel.studentCount || 0} 人参与</span>
+        ${sel.versionCount ? `<span class="badge brand">${sel.versionCount} 个代码版本</span>` : ''}
+        <span class="hint" style="margin-left:4px">更新于 ${h(sel.updatedAt || '-')}</span>
+        <div class="spacer"></div>
+        <button class="btn sm" data-act="projectEditModal" data-id="${sel.id}" title="编辑项目标题与需求说明">${icon('edit', 13)} 编辑</button>
+        <button class="btn sm" data-act="projectToggleStatus" data-id="${sel.id}" data-val="${on ? 'OFFLINE' : 'PUBLISHED'}">${on ? icon('x', 13) + ' 下架' : icon('check', 13) + ' 上架'}</button>
+        <button class="btn sm danger" data-act="projectDeleteModal" data-id="${sel.id}" title="删除项目及其全部学生代码版本">${icon('trash', 13)}</button>
+      </div>
+      <div class="card-body" style="padding:12px 14px">
+        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:6px">项目需求说明</div>
+        <div style="font-size:13px;color:var(--text-2);white-space:pre-wrap;max-height:132px;overflow-y:auto;line-height:1.7">${h(sel.description || '')}</div>
+      </div></div>
+      <div class="card"><div class="card-head">${icon('users', 15)}
+        <h3>学生进度</h3>
+        <div class="spacer"></div>
+        <button class="btn sm ghost" data-act="projectProgressRefreshMain" data-id="${sel.id}" title="立即刷新学生进度">${icon('refresh', 13)} 刷新</button>
+      </div>
+      <div class="card-body" style="padding:0 14px 14px">
+        <div id="projectProgressMain">${projectProgressBodyHtml(d)}</div>
+      </div></div>`;
+    return { head, body };
+  }
+
+  /* ---------------- 学生：项目代码视图（左侧目录 + 聚焦项目 + 我的代码与版本记录） ---------------- */
+  function viewStudentProjects() {
+    ensureMyProjects();
+    const list = DB.myProjects;
+    if (list == null) {
+      return { head: mainHead('项目代码', '接收教师发布的编程项目，在线开发并多版本留存'), body: skeleton() };
+    }
+    const head = mainHead('项目代码',
+      '共 ' + list.length + ' 个项目' + (list.some(p => p.mine) ? ' · 已参与 ' + list.filter(p => p.mine).length : '') + ' · 左侧目录点击切换项目');
+    if (!list.length) {
+      return { head, body: emptyBox('教师暂未发布项目', '教师在本班发布编程项目后，你会在这里实时收到项目需求并开始开发。') };
+    }
+    const sel = list.find(p => String(p.id) === String(State.projectSel)) || list[0];
+    State.projectSel = sel.id;
+    const mine = sel.mine;
+    const st = mine ? (mine.status === 'SUBMITTED' ? '已提交' : '开发中') : null;
+    let detailHtml;
+    if (mine) {
+      ensureProjectViewFetch('s:' + mine.id, () => API.get('/projects/mine/' + mine.id));
+      const d = (State.projView && State.projView.key === 's:' + mine.id) ? State.projView : { loading: true };
+      detailHtml = studentProjectDetailHtml(mine, d);
+    } else {
+      detailHtml = `<div class="card"><div class="card-head">${icon('play', 15)}<h3>开始开发</h3></div>
+        <div class="card-body" style="padding:12px 14px">
+          <div class="note">你尚未创建该项目。创建后即可在线编写代码，每次保存自动留存新版本，教师可实时查看你的进度与迭代记录。</div>
+        </div></div>`;
+    }
+    const body = `<div class="card"><div class="card-head">${icon('code', 15)}
+        <h3>${h(sel.title)}</h3>
+        ${st ? `<span class="badge ${mine.status === 'SUBMITTED' ? 'ok' : 'brand'}">${st} · v${mine.versionCount}</span>` : '<span class="badge">未开始</span>'}
+        <span class="hint" style="margin-left:4px">教师更新于 ${h(sel.updatedAt || '-')}</span>
+        <div class="spacer"></div>
+        ${mine
+          ? `<button class="btn primary sm" data-act="projectEditorOpen" data-id="${mine.id}">${icon('edit', 13)} ${mine.status === 'SUBMITTED' ? '继续完善' : '继续开发'}</button>`
+          : `<button class="btn primary sm" data-act="projectStart" data-id="${sel.id}">${icon('play', 13)} 创建项目并开始开发</button>`}
+      </div>
+      <div class="card-body" style="padding:12px 14px">
+        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:6px">项目需求说明</div>
+        <div style="font-size:13px;color:var(--text-2);white-space:pre-wrap;max-height:150px;overflow-y:auto;line-height:1.7">${h(sel.description || '')}</div>
+        ${mine ? `<div class="note" style="margin-top:10px">我的开发状态：<b>${st} · 已留存 ${mine.versionCount} 个版本</b>${mine.lastVersionAt ? ' · 最新保存 ' + h(mine.lastVersionAt) : (mine.versionCount ? '' : '（尚未保存过代码）')}<br>每次保存自动生成新版本，可随时回看迭代记录。</div>` : ''}
+      </div></div>` + detailHtml;
+    return { head, body };
+  }
+
+  // 学生端：选中项目的最新代码（只读展示）+ 版本迭代记录
+  // 学生端「我的代码」卡片：简略文件行模式——每个代码条目仅保留核心标识字段
+  //（文件名/语言类型/行数·代码量/运行状态/保存时间），不再整段渲染代码内容，
+  // 同屏可承载条目数大幅提升；完整代码在代码工作台查看编辑。
+  function studentProjectDetailHtml(mine, d) {
+    const header = `<div class="card"><div class="card-head">${icon('code', 15)}
+        <h3>我的代码</h3>
+        <span class="badge brand">最新版本 v${mine.versionCount || 0}</span>
+        <div class="spacer"></div>
+        <button class="btn primary sm" data-act="projectEditorOpen" data-id="${mine.id}">${icon('edit', 13)} 进入代码工作台</button>
+      </div>`;
+    if (d.loading) {
+      return header + `<div class="card-body" style="padding:12px 14px">${skeleton()}</div></div>`;
+    }
+    if (d.err) {
+      return header + `<div class="card-body" style="padding:12px 14px">
+        <div class="note warn" style="margin-bottom:12px">代码加载失败：${h(d.err)}</div>
+        <button class="btn sm" data-act="projectViewRetry">${icon('refresh', 13)} 重试</button>
+      </div></div>`;
+    }
+    const data = d.data || {};
+    const files = (data.mine && data.mine.lastFiles) || [];
+    const versions = data.versions || [];
+    const latest = versions[0];
+    let rowsHtml = '<div class="hint">尚未保存过代码：点击「进入代码工作台」开始编写，支持运行调试，每次保存自动留存新版本。</div>';
+    if (files.length) {
+      rowsHtml = files.map(f => {
+        const content = f.content || '';
+        const lines = content.split('\n').length;
+        const bytes = new TextEncoder().encode(content).length;
+        const runnable = /static\s+void\s+main\s*\(/.test(content);
+        return `<div class="code-file-row">
+            ${icon('file', 13)}<b>${h(f.path)}</b>
+            <span class="badge">Java</span>
+            <span class="hint">${lines} 行 · ${bytes >= 1024 ? (bytes / 1024).toFixed(1) + ' KB' : bytes + ' B'}</span>
+            <span class="badge ${runnable ? 'ok' : ''}" title="${runnable ? '该文件包含 main 入口，可直接运行' : '普通类文件，由入口类调用'}">${runnable ? '可运行' : '类文件'}</span>
+            <span class="hint row-time">保存于 ${h(mine.lastVersionAt || '—')}</span>
+          </div>`;
+      }).join('');
+    }
+    return header + `<div class="card-body" style="padding:12px 14px">${rowsHtml}</div></div>
+      <div class="card"><div class="card-head">${icon('layers', 15)}<h3>版本迭代记录</h3>
+        <span class="badge">${versions.length} 个版本</span>
+        <div class="spacer"></div>
+        ${latest ? `<span class="hint">最新 v${latest.versionNo} · ${h(latest.createdAt || '')}</span>` : ''}
+      </div>
+      <div class="card-body" style="padding:0 14px 14px">
+        ${versions.length ? `<div style="max-height:240px;overflow-y:auto">
+          <table class="table"><thead><tr><th>版本</th><th>本版本说明</th><th class="num">代码量</th><th>保存时间</th></tr></thead>
+          <tbody>${versions.map(v => `<tr>
+            <td><b>v${v.versionNo}</b></td>
+            <td style="max-width:260px">${h(v.summary || '—')}</td>
+            <td class="num">${(v.codeSize || 0) >= 1024 ? ((v.codeSize || 0) / 1024).toFixed(1) + ' KB' : (v.codeSize || 0) + ' B'}</td>
+            <td>${h(v.createdAt || '—')}</td>
+          </tr>`).join('')}</tbody></table></div>`
+        : '<div class="hint" style="padding:6px 2px">尚无版本记录。</div>'}
+      </div></div>`;
+  }
+
+  /* ---------------- 教师进度主区内容（项目聚焦视图内联 + 4 秒轮询局部刷新） ---------------- */
+  function projectProgressBodyHtml(d) {
+    if (d.loading && !d.data) {
+      return '<div style="padding:28px;text-align:center;color:var(--text-3);font-size:13px">学生进度加载中…</div>';
+    }
+    if (d.err) {
+      return `<div class="note warn" style="margin-bottom:12px">进度加载失败：${h(d.err)}</div>
+        <button class="btn sm" data-act="projectViewRetry">${icon('refresh', 13)} 重试</button>`;
+    }
+    const g = d.data || {};
+    const rows = g.students || [];
+    return `
+      <div class="note" style="margin-bottom:12px">
+        <b>${h((g.project && g.project.title) || '')}</b> · 已参与 <b>${rows.length}</b> 人 · 已提交 <b>${rows.filter(r => r.status === 'SUBMITTED').length}</b> 人 · 进度每 4 秒自动刷新
+      </div>
+      ${rows.length ? `<div style="max-height:320px;overflow-y:auto">
+        <table class="table"><thead><tr><th>学生</th><th>状态</th><th class="num">版本数</th><th>最新保存</th><th class="num">代码量</th><th>本版本说明</th><th></th></tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td>${h(r.name)}<div style="font-size:11.5px;color:var(--text-3)">学号 ${h(r.studentNo || '—')}</div></td>
+          <td>${r.status === 'SUBMITTED' ? '<span class="badge ok">已提交</span>' : '<span class="badge brand">开发中</span>'}</td>
+          <td class="num"><b>${r.versionCount || 0}</b></td>
+          <td>${h(r.lastVersionAt || '—')}</td>
+          <td class="num">${r.codeSize ? (r.codeSize / 1024).toFixed(1) + ' KB' : '—'}</td>
+          <td style="max-width:200px">${h(r.lastSummary || '—')}</td>
+          <td><button class="btn sm" data-act="projectDetailModal" data-id="${r.studentProjectId}" data-val="${h(r.name)}">${icon('code', 13)} 查看代码</button></td>
+        </tr>`).join('')}</tbody></table>
+      </div>` : '<div class="hint" style="padding:8px 2px">学生尚未创建项目：需学生在「项目代码」板块点击「创建项目并开始开发」。</div>'}`;
+  }
+
+  // 教师端操作后强制重拉项目列表（发布/编辑/上下架/删除）
+  function reloadProjects() {
+    if (State.role !== 'teacher') return;
+    State.projView = null; // 聚焦视图数据失效（进度统计需重新拉取）
+    const cls = State.filters.classId;
+    API.get('/teacher/projects' + (cls != null ? '?classId=' + encodeURIComponent(cls) : ''))
+      .then(r => {
+        DB.teacherProjects = r;
+        DB.projectsLoadedClass = cls;
+        if (State.section === 'projects') render();
+      })
+      .catch(() => { });
+  }
+
+  // 学生端：跳转独立代码工作台页（ide.html，IDEA 风格文件树/编辑区/输出面板/运行）
+  function openIdePage(spId) {
+    location.href = 'ide.html?sp=' + spId;
+  }
+
+  // 教师进度轮询：仅当教师停留在「项目代码」板块且有选中项目时运行，离开/切换角色自动停止
+  let projectPollTimer = null;
+  function stopProjectPoll() {
+    if (projectPollTimer) { clearInterval(projectPollTimer); projectPollTimer = null; }
+  }
+  function startProjectPoll() {
+    stopProjectPoll();
+    projectPollTimer = setInterval(() => {
+      if (!(State.role === 'teacher' && State.section === 'projects' && State.projectSel != null)) { stopProjectPoll(); return; }
+      refreshProjectProgress(State.projectSel);
+    }, 4000);
+  }
+  // 拉取学生进度并局部刷新主区 #projectProgressMain（不整页重渲染，防滚动跳动）
+  async function refreshProjectProgress(pid) {
+    try {
+      const r = await API.get('/teacher/projects/' + pid + '/progress');
+      const key = 't:' + pid;
+      if (!State.projView || State.projView.key !== key) return;
+      State.projView = { key: key, loading: false, err: null, data: r };
+      const box = document.getElementById('projectProgressMain');
+      if (box) box.innerHTML = projectProgressBodyHtml(State.projView);
+      else if (State.section === 'projects' && State.role === 'teacher') render();
+    } catch (e) {
+      const key = 't:' + pid;
+      if (State.projView && State.projView.key === key) {
+        State.projView = { key: key, loading: false, err: e.message, data: null };
+        stopProjectPoll();
+        const box = document.getElementById('projectProgressMain');
+        if (box) box.innerHTML = projectProgressBodyHtml(State.projView);
+      }
+    }
+  }
+
   function viewSubmissions() {
     const a = DB.assignments.find(x => x.id === State.filters.subAs) || DB.assignments[0];
     if (!a) {
@@ -2440,7 +2786,7 @@
 
   /* ---------------- 学习资源：在线预览 + 学习达标校验（滚动位置判定版） ----------------
    * 完成判定（不含任何时间条件）：
-   * - 文本类（Word/PPT/PDF 文本预览）：滚动覆盖区间合并——用户实际滚过的内容区间
+   * - 文本类（Word/PPT/PDF 页面或文本预览）：滚动覆盖区间合并——用户实际滚过的内容区间
    *   累计覆盖全部内容高度 ≥98% 才判完成；直接拖到底部/跳转只覆盖起止两段，无法达标；
    * - 图片：打开即全部内容可见，直接判完成；
    * - 视频：播放进度 ≥90%（内容消费进度，非时长）。
@@ -2472,12 +2818,17 @@
     d.covered = merged.reduce((n, seg) => n + (seg[1] - seg[0]), 0);
   }
 
-  // 学习达标进度（0~1）：视频=播放进度/90%；Word/PPT 结构化原文=滚动覆盖比；
-  // PDF 原生直显=阅读时长（60 秒，iframe 内部滚动无法监听）；图片=全可见即 1
+  // 学习达标进度（0~1）：视频=播放进度/90%；Word/PPT 结构化原文与 PDF 页面视图=滚动覆盖比；
+  // PDF 原生直显（版面解析失败的兜底回落）=阅读时长（60 秒，iframe 内部滚动无法监听）；图片=全可见即 1
   function resLearnPct(d) {
     if (d.kind === 'video') return Math.min(1, (d.playedPct || 0) / 0.9);
     if (d.kind === 'pdf') return Math.min(1, (d.readSec || 0) / 60);
-    if (d.kind === 'doc' || d.kind === 'slides') {
+    if (d.kind === 'pptPlayer') {
+      const total = d.slideModel && d.slideModel.slides ? d.slideModel.slides.length : 1;
+      return Math.min(1, Object.keys(d.visited || {}).length / total);
+    }
+    // PDF 页面视图与 Word 完全同口径：滚动覆盖区间合并 ≥98% 判完成
+    if (d.kind === 'doc' || d.kind === 'docPlayer' || d.kind === 'slides' || d.kind === 'pdfPlayer') {
       if (!d.scrollHeight) return 0;
       return Math.min(1, (d.covered || 0) / d.scrollHeight);
     }
@@ -2492,11 +2843,96 @@
       const s = d.readSec || 0;
       return s >= 60 ? '已阅读 ' + s + ' 秒，即将自动记录' : '已阅读 ' + s + ' 秒（满 60 秒自动记录学完）';
     }
-    if (d.kind === 'doc' || d.kind === 'slides') {
+    if (d.kind === 'pptPlayer') {
+      const total = d.slideModel && d.slideModel.slides ? d.slideModel.slides.length : 1;
+      const seen = Object.keys(d.visited || {}).length;
+      return '已浏览 ' + seen + ' / ' + total + ' 页（逐页浏览完成后自动记录学完）';
+    }
+    if (d.kind === 'doc' || d.kind === 'docPlayer' || d.kind === 'slides' || d.kind === 'pdfPlayer') {
       const pct = Math.round(resLearnPct(d) * 100);
       return '已完整阅读 ' + pct + '%（滚动至底部自动记录学完）';
     }
     return '内容已完整展示';
+  }
+
+  /* ---------------- Word 版面还原预览（页面化渲染） ----------------
+   * 后端解析真实版式属性（页面几何/字号/加粗/颜色/字体/对齐/缩进/段距/行距/
+   * 项目符号/表格填充/内嵌图片），前端按 1pt=1px 渲染为带页边距的白纸页面，
+   * 对齐桌面 Word 的视觉标准；.doc 老格式与解析失败回落既有结构化文本视图 */
+  function docPlayerHtml(d) {
+    const m = d.docModel;
+    const blocksHtml = (m.blocks || []).map(docBlockHtml).join('');
+    return `<div id="resPrevScroll" class="doc-page-wrap">
+        <div class="doc-page" style="width:${m.w}px;min-height:${m.h}px;padding:${m.marginT}px ${m.marginR}px ${m.marginB}px ${m.marginL}px">
+          ${blocksHtml}
+        </div>
+      </div>
+      <div class="hint" style="margin-top:6px">Word 版面还原预览：按原文件字号、字体、间距、表格与图片渲染；需要完整版式效果请使用「下载」。</div>`;
+  }
+  function docBlockHtml(b) {
+    if (b.t === 'tbl') {
+      return docTableHtml(b);
+    }
+    return docParaHtml(b);
+  }
+  function docParaHtml(p) {
+    const align = p.align === 'CENTER' ? 'center' : p.align === 'RIGHT' ? 'right'
+      : (p.align === 'BOTH' || p.align === 'JUSTIFY') ? 'justify' : 'left';
+    let st = 'text-align:' + align + ';';
+    if (p.firstLine) st += 'text-indent:' + p.firstLine + 'px;';
+    if (p.indentL) st += 'margin-left:' + p.indentL + 'px;';
+    if (p.before) st += 'margin-top:' + p.before + 'px;';
+    if (p.after) st += 'margin-bottom:' + p.after + 'px;';
+    if (p.lineExact) st += 'line-height:' + p.lineExact + 'px;';
+    else if (p.line) st += 'line-height:' + p.line + ';';
+    const bullet = p.bullet ? '<span class="doc-bullet" style="margin-right:5px">•</span>'
+      + ((p.level || 0) ? '<span style="display:inline-block;width:' + ((p.level || 0) * 22) + 'px"></span>' : '') : '';
+    // 文本运行/内嵌图片按文档顺序渲染；无显式字号时按标题级别兜底
+    const runs = (p.runs || []).map(r => {
+      if (r.k === 'img') {
+        return r.w ? `<img class="doc-img" src="${h(r.src)}" alt="文档图片" style="width:${r.w}px;height:${r.h}px">`
+          : `<img class="doc-img" src="${h(r.src)}" alt="文档图片">`;
+      }
+      let rs = '';
+      if (r.size != null) rs += 'font-size:' + r.size + 'px;';
+      if (r.bold) rs += 'font-weight:700;';
+      if (r.italic) rs += 'font-style:italic;';
+      if (r.underline) rs += 'text-decoration:underline;';
+      if (r.color) rs += 'color:' + h(r.color) + ';';
+      if (r.font) rs += 'font-family:' + JSON.stringify(String(r.font)).replace(/"/g, "'") + ',"Microsoft YaHei","PingFang SC",sans-serif;';
+      return '<span style="' + rs + '">' + h(r.x).replace(/\n/g, '<br>') + '</span>';
+    }).join('');
+    const heading = p.heading ? Number(p.heading) : 0;
+    let headStyle = '';
+    if (heading && !(p.runs || []).some(x => x.k === 'txt' && x.size != null)) {
+      headStyle = 'font-size:' + (heading === 1 ? 18 : heading === 2 ? 16 : 15) + 'px;font-weight:700;';
+    }
+    return `<div class="doc-p" style="${st}${headStyle}">${bullet}${runs || '&nbsp;'}</div>`;
+  }
+  function docTableHtml(tb) {
+    const wStyle = tb.widthPt ? 'width:' + tb.width + 'px;'
+      : 'width:' + Math.min(100, Math.max(30, tb.width * 100)) + '%;';
+    const rows = (tb.rows || []).map(row => {
+      const cells = (row.cells || []).map(c => {
+        const paras = (c.paras || []).map(docParaHtml).join('');
+        const st = (c.fill ? 'background:' + h(c.fill) + ';' : '') + (c.w ? 'width:' + c.w + 'px;' : '');
+        return '<td style="' + st + '">' + paras + '</td>';
+      }).join('');
+      return '<tr' + (row.h ? ' style="height:' + row.h + 'px"' : '') + '>' + cells + '</tr>';
+    }).join('');
+    return '<table class="doc-tbl" style="' + wStyle + '"><tbody>' + rows + '</tbody></table>';
+  }
+
+  /* ---------------- PDF 版面还原预览（页面化渲染） ----------------
+   * 后端 PDFBox 逐页渲染位图（宽度封顶 850px），前端在自有滚动容器内逐页渲染；
+   * 学习进度复用与 Word 完全一致的「滚动覆盖 ≥98%」口径（cover/covered/scrollHeight
+   * 同字段、resCoverMerge 同合并、达标同 resLearnAchieve 上报）；解析失败回落原生直显 */
+  function pdfPlayerHtml(d) {
+    const m = d.pdfModel;
+    const pages = (m.pages || []).map((p, i) =>
+      `<img class="pdf-page-img" src="${p.src}" alt="PDF 第 ${i + 1} 页" style="width:${p.w}px;height:${p.h}px">`).join('');
+    return `<div id="resPrevScroll" class="pdf-page-wrap">${pages}</div>
+      <div class="hint" style="margin-top:6px">PDF 版面还原预览：按原文件逐页渲染；需要完整版式效果请使用「下载」。</div>`;
   }
 
   // Word 结构化原文视图：保留标题层级/列表/表格的文档式排版（内容全部 h() 转义防注入）
@@ -2542,12 +2978,174 @@
       + '<div class="hint" style="margin-top:6px">PPT 原文即时预览（逐页文本内容）；需要完整排版效果请使用「下载」。</div>';
   }
 
+  /* ---------------- PPT 幻灯片还原播放器 ----------------
+   * 后端解析为形状级版面模型（自然尺寸 1pt=1px），前端整页 transform:scale 等比缩放：
+   * 左侧页码缩略条 + 中央舞台 + 翻页控制，还原原文件排版/配色/表格/图片 */
+  function pptPlayerHtml(d) {
+    const m = d.slideModel;
+    const total = m.slides.length;
+    const idx = Math.min(Math.max(0, d.slideIdx || 0), total - 1);
+    const sl = m.slides[idx] || { shapes: [] };
+    // 缩略小图：复用版面模型按 transform:scale 微缩渲染每页（与主画布同一渲染逻辑，
+    // 比例与幻灯片实际比例一致），页码角标标注序号
+    const TW = 56;
+    const ts = TW / m.w;
+    const thumbs = m.slides.map((s, i) =>
+      `<button class="ppt-thumb${i === idx ? ' on' : ''}${(d.visited && d.visited[i]) ? ' seen' : ''}"
+        data-act="pptGoto" data-val="${i}" title="第 ${i + 1} 张">
+        <span class="ppt-mini" style="width:${TW}px;height:${Math.round(m.h * ts)}px">
+          <span class="ppt-mini-inner" style="width:${m.w}px;height:${m.h}px;transform:scale(${ts})">${pptSlideHtml(s)}</span>
+        </span>
+        <span class="ppt-thumb-num">${i + 1}</span>
+      </button>`).join('');
+    return `<div class="ppt-player">
+        <div class="ppt-thumbs" id="pptThumbs">${thumbs}</div>
+        <div class="ppt-main">
+          <div class="ppt-stage-wrap">
+            <div class="ppt-stage" id="pptStage">
+              <div class="ppt-slide" id="pptSlide" style="width:${m.w}px;height:${m.h}px">${pptSlideHtml(sl)}</div>
+            </div>
+          </div>
+          <div class="ppt-ctrl">
+            <button class="btn sm" data-act="pptPrev" ${idx === 0 ? 'disabled' : ''} title="上一张（←）">${icon('chevronL', 13)}</button>
+            <span class="ppt-page-ind">第 ${idx + 1} / ${total} 张</span>
+            <button class="btn sm" data-act="pptNext" ${idx >= total - 1 ? 'disabled' : ''} title="下一张（→）">${icon('chevronR', 13)}</button>
+          </div>
+        </div>
+      </div>
+      <div class="hint" style="margin-top:6px">幻灯片还原预览：按原文件比例渲染版面、配色、表格与图片（缩略条点击跳页、←/→ 翻页）；动画等特殊效果请使用「下载」查看。</div>`;
+  }
+
+  // 单页渲染：形状按自然尺寸绝对定位（文本框/色块/表格单元格/图片）
+  function pptSlideHtml(sl) {
+    const shapes = sl.shapes || [];
+    return shapes.map(sh => {
+      const pos = `left:${pptN(sh.x)}px;top:${pptN(sh.y)}px;width:${pptN(sh.w)}px;height:${pptN(sh.h)}px;`;
+      if (sh.t === 'pic') {
+        // decoding=synth：同步解码内嵌图片，翻页到图片页时避免异步解码造成的空白再弹出
+        return `<img class="ppt-shape ppt-pic" src="${h(sh.src)}" alt="幻灯片图片" decoding="sync" style="${pos}">`;
+      }
+      if (sh.t === 'table') {
+        const cells = [];
+        (sh.rows || []).forEach(row => {
+          (row.cells || []).forEach(c => {
+            cells.push(`<div class="ppt-cell" style="left:${pptN(c.x)}px;top:${pptN(c.y)}px;width:${pptN(c.w)}px;height:${pptN(c.h)}px;${c.fill ? 'background:' + h(c.fill) + ';' : ''}">${pptParasHtml(c.paras, false)}</div>`);
+          });
+        });
+        return `<div class="ppt-shape" style="${pos}">${cells.join('')}</div>`;
+      }
+      const paras = sh.paras || [];
+      const empty = !paras.length;
+      const valign = sh.valign === 'MIDDLE' ? 'justify-content:center;'
+        : sh.valign === 'BOTTOM' ? 'justify-content:flex-end;' : '';
+      return `<div class="ppt-shape ppt-text${sh.round ? ' round' : ''}${empty ? ' plain' : ''}"
+        style="${pos}${sh.fill ? 'background:' + h(sh.fill) + ';' : ''}padding:${pptN(sh.insetT != null ? sh.insetT : 3.6)}px ${pptN(sh.insetR != null ? sh.insetR : 7.2)}px ${pptN(sh.insetB != null ? sh.insetB : 3.6)}px ${pptN(sh.insetL != null ? sh.insetL : 7.2)}px;${valign}">${empty ? '' : pptParasHtml(paras, true)}</div>`;
+    }).join('');
+  }
+
+  // 段落/文本运行渲染：字号/加粗/斜体/颜色/字体/对齐/项目符号按原文件还原
+  function pptParasHtml(paras, withBullet) {
+    return (paras || []).map(p => {
+      const align = p.align === 'CENTER' ? 'center' : p.align === 'RIGHT' ? 'right' : p.align === 'JUSTIFY' ? 'justify' : 'left';
+      const level = p.level || 0;
+      const runs = (p.runs || []).map(r => {
+        const st = [];
+        if (r.size != null) st.push('font-size:' + pptN(r.size) + 'px');
+        if (r.bold) st.push('font-weight:700');
+        if (r.italic) st.push('font-style:italic');
+        if (r.color) st.push('color:' + h(r.color));
+        if (r.font) st.push('font-family:' + JSON.stringify(String(r.font)).replace(/"/g, "'") + ',"Microsoft YaHei","PingFang SC",sans-serif');
+        return '<span style="' + st.join(';') + '">' + h(r.x).replace(/\n/g, '<br>') + '</span>';
+      }).join('');
+      const bullet = withBullet && p.bullet ? '<span class="ppt-bullet">•</span>' : '';
+      return `<div class="ppt-para" style="text-align:${align};margin-left:${level * 16}px">${bullet}${runs}</div>`;
+    }).join('');
+  }
+  const pptN = v => (v == null || isNaN(v)) ? 0 : Math.round(Number(v) * 100) / 100;
+
+  // 舞台等比缩放：宽度优先适配容器、高度不超过视口 55%，缩放不改变内部版面
+  function fitPptStage(d) {
+    const stage = document.getElementById('pptStage');
+    const slide = document.getElementById('pptSlide');
+    if (!stage || !slide || !d.slideModel) return;
+    const m = d.slideModel;
+    const avail = Math.max(260, stage.clientWidth || 0);
+    const maxH = Math.max(280, window.innerHeight * 0.55);
+    const scale = Math.min(avail / m.w, maxH / m.h);
+    slide.style.left = '50%';
+    slide.style.marginLeft = (-m.w / 2) + 'px';
+    slide.style.transform = 'scale(' + scale + ')';
+    stage.style.height = (m.h * scale) + 'px';
+  }
+  // 翻页（缩略条/按钮/键盘共用）：记录已浏览页，进度按已浏览页数计算
+  /* 翻页局部更新（防闪屏）：只替换主画布内容与状态类，缩略条/舞台容器不销毁重建——
+   * 旧实现走 renderOverlays() 整窗重建弹窗 DOM（114 张缩略图与 base64 图片全部重新解码），
+   * 重建间隙出现空白帧即闪屏；局部更新保证翻页零重绘闪烁，图片带统一淡入过渡 */
+  function pptApplyPage(d) {
+    const m = d.slideModel;
+    const total = m.slides.length;
+    const idx = d.slideIdx || 0;
+    const slide = document.getElementById('pptSlide');
+    if (slide) {
+      slide.innerHTML = pptSlideHtml(m.slides[idx] || { shapes: [] });
+      // 统一翻页过渡：淡入动画（重放需先移除类并强制回流）
+      slide.classList.remove('ppt-anim');
+      void slide.offsetWidth;
+      slide.classList.add('ppt-anim');
+    }
+    const ind = document.querySelector('.modal .ppt-page-ind');
+    if (ind) ind.textContent = '第 ' + (idx + 1) + ' / ' + total + ' 张';
+    const prev = document.querySelector('.modal [data-act="pptPrev"]');
+    const next = document.querySelector('.modal [data-act="pptNext"]');
+    if (prev) prev.disabled = idx === 0;
+    if (next) next.disabled = idx >= total - 1;
+    // 缩略条仅切换选中/已浏览类（节点不重建，图片不重新解码）
+    document.querySelectorAll('#pptThumbs .ppt-thumb').forEach((b, i) => {
+      b.classList.toggle('on', i === idx);
+      if (d.visited && d.visited[i]) b.classList.add('seen');
+    });
+    const cur = document.querySelector('#pptThumbs .ppt-thumb.on');
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
+  }
+  function pptTurn(delta) {
+    const m = State.modal;
+    const d = m && m.type === 'resPreview' ? m.data : null;
+    if (!d || d.kind !== 'pptPlayer' || !d.slideModel) return;
+    const total = d.slideModel.slides.length;
+    const i = Math.max(0, Math.min(total - 1, (d.slideIdx || 0) + delta));
+    if (i === (d.slideIdx || 0)) return;
+    d.slideIdx = i;
+    d.visited = d.visited || {};
+    d.visited[i] = 1;
+    pptApplyPage(d);
+    resLearnTick(d);
+  }
+
   // 预览弹窗渲染后挂载：Word/PPT 绑定滚动监听、PDF 启动阅读计时、视频绑定播放进度、图片立即达标
   function mountResPreview() {
     const m = State.modal;
-    if (!m || m.type !== 'resPreview' || !m.data || !m.data.learn) return;
+    if (!m || m.type !== 'resPreview' || !m.data) return;
     const d = m.data;
-    if (d.done) return;
+    // PPT 幻灯片播放器：舞台等比缩放适配 + 窗口缩放跟随（教师/学生通用；教师预览无学习进度区）
+    if (d.kind === 'pptPlayer') {
+      fitPptStage(d);
+      if (d._pptResize) window.removeEventListener('resize', d._pptResize);
+      d._pptResize = () => {
+        if (!State.modal || State.modal.type !== 'resPreview' || State.modal.data !== d) {
+          window.removeEventListener('resize', d._pptResize);
+          d._pptResize = null;
+          return;
+        }
+        fitPptStage(d);
+      };
+      window.addEventListener('resize', d._pptResize);
+      const cur = document.querySelector('#pptThumbs .ppt-thumb.on');
+      if (cur) cur.scrollIntoView({ block: 'nearest' });
+      if (!d.learn || d.done) return;
+      resLearnTick(d);
+      return;
+    }
+    if (!d.learn || d.done) return;
     if (d.kind === 'video') {
       const v = document.getElementById('resPrevMedia');
       if (v) {
@@ -2565,8 +3163,10 @@
       return;
     }
     if (d.kind === 'pdf') {
-      // PDF 原生直显：浏览器内置阅读器无法监听内部滚动，改阅读时长判定
-      // （打开期间每秒累计，关闭弹窗自动暂停；计时器自守卫防泄漏）
+      // PDF 原生直显（版面解析失败的兜底回落）：浏览器内置阅读器无法监听内部滚动，
+      // 改阅读时长判定（打开期间每秒累计，关闭弹窗自动暂停；计时器自守卫防泄漏）。
+      // 页面模型加载中（modelLoading）不启动计时——升级为 pdfPlayer 后无计时器
+      if (d.modelLoading) return;
       if (d.timerId) clearInterval(d.timerId);
       d.timerId = setInterval(() => {
         if (!State.modal || State.modal.type !== 'resPreview' || State.modal.data !== d) {
@@ -2579,7 +3179,10 @@
       }, 1000);
       return;
     }
-    // Word/PPT 结构化原文预览：绑定滚动容器（内容加载后 renderOverlays 重建会重新挂载）
+    // Word/PPT/PDF 页面化预览：绑定滚动容器（内容加载后 renderOverlays 重建会重新挂载）；
+    // pdfPlayer 与 Word 完全同口径（cover/covered/scrollHeight → 滚动覆盖 ≥98% 判完成）
+    // Word/PPT 版面模型加载中：文本视图暂不绑定完成判定（模型就绪后切换还原视图再按各自口径计），避免双口径竞争
+    if (d.slideLoading || d.modelLoading) return;
     const el = document.getElementById('resPrevScroll');
     if (el) {
       d.scrollHeight = el.scrollHeight;
@@ -2602,7 +3205,8 @@
   }
   // 进度局部刷新（不重渲染弹窗，滚动位置/视频播放不受影响）；达标走 resLearnAchieve
   function resLearnTick(d) {
-    if (d.done) return;
+    // 学习进度仅学生端记录：教师端翻页/预览只展示内容，不触发完成判定与后端进度提交
+    if (!d.learn || d.done) return;
     if (resLearnPct(d) >= 0.98) { resLearnAchieve(d); return; }
     const bar = document.getElementById('resLearnBar');
     const txt = document.getElementById('resLearnText');
@@ -2611,7 +3215,7 @@
   }
   // 达标统一入口：本地持久化 + 进度区局部替换为完成态 + 实时同步后端学习进度
   async function resLearnAchieve(d) {
-    if (d.done) return;
+    if (!d.learn || d.done) return;
     d.done = true;
     resMarkLearned(d.id);
     const box = document.getElementById('resLearnBox');
@@ -2643,8 +3247,8 @@
     </div>`;
   }
 
-  // 「查看」：打开内置预览容器（图片/视频原生渲染；Word/PPT/PDF 文本模式——PDF 原生
-  // iframe 无法监听内部滚动，统一走后端文本提取以保证滚动判定可靠）
+  // 「查看」：打开内置预览容器（图片/视频原生渲染；Word/PPT 文本模式 + 版面还原；
+  // PDF 优先逐页位图版面还原（滚动覆盖判定，与 Word 同口径），解析失败回落原生直显）
   async function openResFile(id, isStudent) {
     const r = (DB.resources || []).find(x => String(x.id) === String(id)) || {};
     if (isStudent) {
@@ -2682,9 +3286,65 @@
         data.kind = 'empty';
         data.textError = e.message || '原文内容加载失败';
       }
+      // Word：拉取版面模型 → 页面化还原视图（先即时呈现既有结构化文本视图零等待，
+      // 模型就绪后无缝升级为 Word 版面还原；modelLoading 期间挂起滚动完成判定防双口径竞争；
+      // .doc 老格式/解析失败保持文本视图）
+      if (r.fileType === 'word' && data.kind === 'doc') {
+        data.textLoading = false;
+        data.modelLoading = true;
+        if (State.modal && State.modal.type === 'resPreview') renderOverlays();
+        try {
+          const dm = await API.get('/resources/' + id + '/doc');
+          if (dm && Array.isArray(dm.blocks) && dm.blocks.length && dm.w > 0) {
+            data.kind = 'docPlayer';
+            data.docModel = dm;
+          }
+        } catch (e) { /* 版面模型不可用 → 保持文本视图 */ }
+        data.modelLoading = false;
+        if (State.modal && State.modal.type === 'resPreview') renderOverlays();
+        return;
+      }
+      // PPT：拉取形状级版面模型 → 幻灯片还原播放器（文本/色块/表格/图片按原比例渲染）。
+      // 时序：先即时渲染既有逐页文本视图（零等待反馈），版面模型后台就绪后无缝升级为播放器；
+      // 模型解析失败时保持文本视图（kind 保持 slides）
+      if (r.fileType === 'ppt' && data.kind === 'slides') {
+        data.textLoading = false;
+        data.slideLoading = true; // 版面模型加载中：文本视图暂挂起完成判定，避免双口径竞争
+        if (State.modal && State.modal.type === 'resPreview') renderOverlays();
+        try {
+          const sm = await API.get('/resources/' + id + '/slides');
+          if (sm && Array.isArray(sm.slides) && sm.slides.length && sm.w > 0 && sm.h > 0) {
+            data.kind = 'pptPlayer';
+            data.slideModel = sm;
+            data.slideIdx = 0;
+            data.visited = { 0: 1 };
+          }
+        } catch (e) { /* 版面模型不可用 → 保持逐页文本视图 */ }
+        data.slideLoading = false;
+        if (State.modal && State.modal.type === 'resPreview') renderOverlays();
+        return;
+      }
       data.textLoading = false;
       if (State.modal && State.modal.type === 'resPreview') renderOverlays();
       return;
+    }
+    // PDF：拉取逐页位图版面模型 → 页面化还原视图（自有滚动容器，学习进度与 Word 完全
+    // 同口径：滚动覆盖 ≥98% 判完成）。时序：先即时呈现加载占位（零等待反馈），模型就绪
+    // 后无缝升级 pdfPlayer；解析失败回落浏览器原生直显（时长兜底口径，兼容老路径）
+    if (r.fileType === 'pdf') {
+      data.modelLoading = true; // 模型加载中：不启动兜底计时、不绑定滚动（防双口径竞争）
+      try {
+        const pm = await API.get('/resources/' + id + '/pdf');
+        if (pm && Array.isArray(pm.pages) && pm.pages.length) {
+          data.kind = 'pdfPlayer';
+          data.pdfModel = pm;
+          data.modelLoading = false;
+          if (State.modal && State.modal.type === 'resPreview') renderOverlays();
+          return;
+        }
+      } catch (e) { /* 版面模型不可用 → 回落下方原生直显 */ }
+      data.modelLoading = false; // 回落：继续走下方 blob 取流 + iframe 原生直显
+      if (State.modal && State.modal.type === 'resPreview') renderOverlays();
     }
     try {
       const res = await fetch('/api/resources/' + id + '/file', {
@@ -3415,6 +4075,61 @@
       foot = `<button class="btn" data-act="closeModal">关闭</button>
         <button class="btn primary" data-act="labGroupsRefresh">${icon('refresh', 14)} 立即刷新</button>`;
 
+    } else if (m.type === 'projectCompose') {
+      // 发布 / 编辑项目：标题 + 详细需求说明（data-bind 双向写回弹窗数据）
+      title = d.id ? '编辑项目' : '发布新项目';
+      body = `<div class="form-row"><label>项目标题（必填，120 字以内）</label>
+          <input class="input" placeholder="如：控制台版学生成绩管理系统" value="${h(d.title || '')}" data-bind="modal" data-key="title" maxlength="120" autocomplete="off"></div>
+        <div class="form-row"><label>项目需求说明（必填）</label>
+          <textarea class="textarea" style="min-height:180px" placeholder="详细描述项目需求：功能点、技术要求、验收标准等，学生将按此需求开发…" data-bind="modal" data-key="description">${h(d.description || '')}</textarea></div>
+        <div class="hint">发布后本班学生将在「项目代码」板块实时收到；支持随时编辑、下架与状态管理。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doProjectSave" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 保存中…' : icon('check', 15) + (d.id ? ' 保存修改' : ' 发布项目')}</button>`;
+
+    } else if (m.type === 'projectDetail') {
+      // 教师在线查看学生代码：版本迭代记录（最新在前），点「展开代码」加载该版本完整文件
+      title = '代码版本 · ' + (d.name || '');
+      if (d.loading) {
+        body = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:13px">版本记录加载中…</div>';
+      } else if (d.err) {
+        body = `<div class="empty"><div class="empty-title">版本记录加载失败</div><div class="empty-desc">${h(d.err)}</div>
+          <button class="btn sm" data-act="projectDetailModal" data-id="${d.spId}" data-val="${h(d.name || '')}">${icon('refresh', 13)} 重试</button></div>`;
+      } else {
+        const vs = d.versions || [];
+        body = (vs.length
+          ? `<div class="hint" style="margin-bottom:10px">共 ${vs.length} 个版本（最新在前），点击「展开代码」在线查看该版本完整文件。</div>` + vs.map(ver => {
+              const open = String(d.openId) === String(ver.id);
+              return `<div class="card" style="margin-bottom:10px"><div class="card-head">${icon('layers', 14)}
+                <h3>v${ver.versionNo}</h3>
+                <span class="badge">${ver.fileCount || 0} 个文件</span>
+                <span class="badge">${(ver.codeSize || 0) >= 1024 ? ((ver.codeSize || 0) / 1024).toFixed(1) + ' KB' : (ver.codeSize || 0) + ' B'}</span>
+                <span class="hint" style="margin-left:4px">${h(ver.createdAt || '')}</span>
+                <div class="spacer"></div>
+                <button class="btn sm" data-act="projectVersionShow" data-val="${ver.id}">${open ? icon('chevronD', 13) + ' 收起' : icon('code', 13) + ' 展开代码'}</button>
+              </div>
+              ${open ? `<div class="card-body" style="padding:12px 14px">
+                ${ver.summary ? `<div class="note" style="margin-bottom:10px">本版本说明：${h(ver.summary)}</div>` : ''}
+                ${(d.detail && String(d.detail.id) === String(ver.id))
+                  ? ((d.detail.files || []).map(f => `<div style="margin-bottom:10px">
+                      <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:5px">${icon('file', 12)} ${h(f.path)}</div>
+                      ${codeEditorHtml('', f.content || '', { ro: true, minHeight: 120 })}
+                    </div>`).join('') || '<div class="hint">该版本无代码文件</div>')
+                  : '<div class="hint">代码加载中…</div>'}
+              </div>` : ''}
+              </div>`;
+            }).join('')
+          : '<div class="empty"><div class="empty-title">该学生尚未保存过代码</div><div class="empty-desc">学生每次保存都会自动生成新版本并出现在这里。</div></div>');
+      }
+      foot = `<button class="btn" data-act="closeModal">关闭</button>`;
+
+    } else if (m.type === 'projectDelete') {
+      // 删除确认：级联删除学生项目与全部版本，不可恢复
+      title = '删除项目';
+      body = `<div class="note warn">确定删除项目 <b>${h(d.title)}</b> 吗？<br>
+        该操作将同时删除 <b>${d.studentCount}</b> 名学生的全部项目代码与迭代版本，<b>删除后不可恢复</b>。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn danger" data-act="doProjectDelete" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 删除中…' : icon('trash', 15) + ' 确认删除'}</button>`;
+
     } else if (m.type === 'coTeacher') {
       // 班级共同管理教师面板：每次打开重新拉取（loading→数据/错误三态）
       if (d.loading) {
@@ -3551,7 +4266,7 @@
 
     } else if (m.type === 'resPreview') {
       title = (d.title || '资源预览') + (d.fileName ? ' · ' + d.fileName : '');
-      // 内容区「原文件即时预览」：图片/视频原生渲染；PDF 浏览器原生直显；
+      // 内容区「原文件即时预览」：图片/视频原生渲染；PDF 优先逐页版面还原（解析失败回落原生直显）；
       // Word=结构化文档视图（标题/列表/表格）、PPT=幻灯片页卡，滚动覆盖判定学习完成
       let media;
       if (d.textLoading) {
@@ -3565,14 +4280,25 @@
           ? `<img src="${d.url}" alt="预览" style="width:100%;max-height:56vh;object-fit:contain;border-radius:8px">`
           : '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">图片加载中…</div>';
       } else if (d.kind === 'pdf') {
-        // PDF：浏览器原生 PDF 阅读器直显原文件（blob URL，零转换零等待）
+        // PDF 兜底直显（版面解析失败时）：浏览器原生 PDF 阅读器直显原文件（blob URL）
         media = d.url
           ? `<iframe src="${d.url}" title="PDF 原文件预览" style="width:100%;height:58vh;border:1px solid var(--border);border-radius:8px;background:#525659"></iframe>`
-          : '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">PDF 文件加载中…</div>';
+          : '<div style="padding:40px 0;text-align:center;color:var(--text-3);font-size:13px">PDF 页面渲染中…</div>';
+      } else if (d.kind === 'pdfPlayer') {
+        // PDF 版面还原：自有滚动容器逐页渲染（学习进度与 Word 同口径滚动覆盖）
+        media = pdfPlayerHtml(d);
       } else if (d.kind === 'doc') {
-        media = resDocHtml(d);
+        media = resDocHtml(d) + (d.modelLoading
+          ? '<div class="hint" style="margin-top:6px;color:var(--brand)">' + icon('sparkles', 13) + ' Word 版面渲染中，完成后自动切换为还原预览…</div>'
+          : '');
+      } else if (d.kind === 'docPlayer') {
+        media = docPlayerHtml(d);
       } else if (d.kind === 'slides') {
-        media = resSlidesHtml(d);
+        media = resSlidesHtml(d) + (d.slideLoading
+          ? '<div class="hint" style="margin-top:6px;color:var(--brand)">' + icon('sparkles', 13) + ' 幻灯片版面渲染中，完成后自动切换为还原预览…</div>'
+          : '');
+      } else if (d.kind === 'pptPlayer') {
+        media = pptPlayerHtml(d);
       } else {
         media = d.textError
           ? '<div class="note warn" style="margin:0">原文预览加载失败：' + h(d.textError) + '，可点击「下载」获取原文件。</div>'
@@ -3590,8 +4316,10 @@
             <div class="hint" style="margin-top:6px">${d.kind === 'video'
               ? '完整观看视频（播放进度 ≥90%）后自动记录学完并同步学习档案。'
               : d.kind === 'pdf'
-                ? 'PDF 为原文件直显，阅读满 60 秒后自动记录学完并同步学习档案。'
-                : '从头到尾完整滚动阅读后自动记录学完并同步学习档案；直接跳转到底部不会计为完成。'}</div>
+                ? 'PDF 为原文件直显（版面还原不可用时的兜底），阅读满 60 秒后自动记录学完并同步学习档案。'
+                : d.kind === 'pptPlayer'
+                  ? '从头到尾逐页浏览幻灯片（缩略条点击跳页、←/→ 翻页）后自动记录学完并同步学习档案。'
+                  : '从头到尾完整滚动阅读后自动记录学完并同步学习档案；直接跳转到底部不会计为完成。'}</div>
           </div>`}</div>`;
       body = media + learnBox;
       foot = `<button class="btn" data-act="resDownload" data-id="${d.id}">${icon('download', 15)} 下载</button>
@@ -5443,7 +6171,9 @@
         toast(e.message);
       }
     },
-    closeModal() { State.modal = null; renderOverlays(); },
+    closeModal() {
+      State.modal = null; renderOverlays();
+    },
     maskClose(id, val, t) {
       // 只有点在遮罩本身（而非弹窗内容）上才关闭
       if (t && (t.classList.contains('mask') || t.classList.contains('drawer-mask'))) {
@@ -6336,10 +7066,27 @@
     },
     resPreviewClose() {
       const d = State.modal && State.modal.data;
-      // 清理：PDF 阅读计时器 + blob URL，防内存泄漏（计时器另有自守卫兜底）
+      // 清理：PDF 阅读计时器 + 幻灯片缩放跟随监听 + blob URL，防内存泄漏（均有自守卫兜底）
       if (d && d.timerId) { clearInterval(d.timerId); d.timerId = null; }
+      if (d && d._pptResize) { window.removeEventListener('resize', d._pptResize); d._pptResize = null; }
       if (d && d.url) { try { URL.revokeObjectURL(d.url); } catch (e) { /* 忽略 */ } }
       State.modal = null; renderOverlays();
+    },
+    // PPT 幻灯片还原播放器：翻页与缩略条跳页（进度按已浏览页数计算）
+    pptPrev() { pptTurn(-1); },
+    pptNext() { pptTurn(1); },
+    pptGoto(v) {
+      const m = State.modal;
+      const d = m && m.type === 'resPreview' ? m.data : null;
+      if (!d || d.kind !== 'pptPlayer' || !d.slideModel) return;
+      const total = d.slideModel.slides.length;
+      const i = Math.max(0, Math.min(total - 1, Number(v) || 0));
+      if (i === (d.slideIdx || 0)) return;
+      d.slideIdx = i;
+      d.visited = d.visited || {};
+      d.visited[i] = 1;
+      pptApplyPage(d); // 局部更新（防闪屏）：缩略条不重建
+      resLearnTick(d);
     },
     async resComplete(v, id) {
       // 手动补记入口：滚动/播放达标后自动同步失败时由学生手动补记（正常路径已自动完成）
@@ -6498,15 +7245,16 @@
       render();
       try {
         const qs = '?classId=' + encodeURIComponent(v);
-        const [dash, students, warnings, assignments, folders, resources] = await Promise.all([
+        const [dash, students, warnings, assignments, folders, resources, projects] = await Promise.all([
           API.get('/teacher/dashboard' + qs),
           API.get('/teacher/students' + qs),
           API.get('/teacher/warnings' + qs),
           API.get('/teacher/assignments' + qs),
           API.get('/teacher/folders' + qs),
-          API.get('/teacher/resources' + qs)
+          API.get('/teacher/resources' + qs),
+          API.get('/teacher/projects' + qs)
         ]);
-        // 统一落库：看板 KPI/卡点/重点关注 + 学生列表 + 预警中心 + 作业列表 + 文件夹 + 学习资源
+        // 统一落库：看板 KPI/卡点/重点关注 + 学生列表 + 预警中心 + 作业列表 + 文件夹 + 学习资源 + 项目代码
         State.filters.classId = v;
         DB.teacherDash = dash;
         DB.classStuckPoints = dash.stuckPoints || [];
@@ -6514,6 +7262,8 @@
         DB.warnings = warnings;
         DB.assignments = assignments;
         DB.resources = resources;
+        DB.teacherProjects = projects;
+        DB.projectsLoadedClass = v;
         // 文件夹绑定班级维度：严格跟随切换后的班级（无文件夹则侧栏仅显示「其他」）
         DB.folders = folders;
         // 跨班切换时复位「发布新作业默认文件夹」（文件夹 id 已按班级隔离）
@@ -7360,6 +8110,149 @@
       render();
       toast('已清除筛选，展示完整名单', 'ok');
     },
+    /* ---------------- 项目代码板块 ---------------- */
+    // 教师端
+    projectComposeModal() {
+      State.modal = { type: 'projectCompose', data: { title: '', description: '', busy: false } };
+      renderOverlays();
+    },
+    projectEditModal(v, id) {
+      const p = (DB.teacherProjects || []).find(x => String(x.id) === String(id));
+      if (!p) return;
+      State.modal = { type: 'projectCompose', data: { id: p.id, title: p.title || '', description: p.description || '', busy: false } };
+      renderOverlays();
+    },
+    async doProjectSave() {
+      const m = State.modal;
+      const d = m && m.type === 'projectCompose' ? m.data : null;
+      if (!d || d.busy) return;
+      if (!(d.title || '').trim() || !(d.description || '').trim()) { toast('请填写项目标题与需求说明', 'warn'); return; }
+      d.busy = true;
+      renderOverlays();
+      try {
+        if (d.id) {
+          await API.put('/teacher/projects/' + d.id, { title: d.title, description: d.description });
+          toast('项目已更新', 'ok');
+        } else {
+          await API.post('/teacher/projects', { classId: Number(State.filters.classId), title: d.title, description: d.description });
+          toast('项目发布成功，学生将实时收到', 'ok');
+        }
+        State.modal = null;
+        renderOverlays();
+        reloadProjects();
+      } catch (e) {
+        d.busy = false;
+        toast(e.message, 'warn');
+        renderOverlays();
+      }
+    },
+    async projectToggleStatus(v, id) {
+      try {
+        await API.put('/teacher/projects/' + id + '/status', { status: v });
+        toast(v === 'OFFLINE' ? '项目已下架，学生端不再展示' : '项目已重新上架', 'ok');
+        reloadProjects();
+      } catch (e) { toast(e.message, 'warn'); }
+    },
+    projectDeleteModal(v, id) {
+      const p = (DB.teacherProjects || []).find(x => String(x.id) === String(id));
+      if (!p) return;
+      State.modal = { type: 'projectDelete', data: { id: p.id, title: p.title, studentCount: p.studentCount || 0, busy: false } };
+      renderOverlays();
+    },
+    async doProjectDelete() {
+      const m = State.modal;
+      const d = m && m.type === 'projectDelete' ? m.data : null;
+      if (!d || d.busy) return;
+      d.busy = true;
+      renderOverlays();
+      try {
+        await API.del('/teacher/projects/' + d.id);
+        toast('项目已删除', 'ok');
+        State.modal = null;
+        renderOverlays();
+        reloadProjects();
+      } catch (e) {
+        d.busy = false;
+        toast(e.message, 'warn');
+        renderOverlays();
+      }
+    },
+    // 左侧目录：点击项目项 → 主区立即切换聚焦视图 + 高亮同步（进度/代码详情由视图按需拉取）
+    projectPick(v) {
+      State.projectSel = v;
+      render();
+    },
+    // 目录分组折叠/展开（偏好持久化 localStorage；仅局部 DOM 更新防滚动跳动）
+    projFolderToggle(v) {
+      const st = projFoldersOpenState();
+      st[v] = st[v] === false; // 默认展开：undefined/true → false（收起），false → true（展开）
+      try { localStorage.setItem(PROJ_FOLDERS_KEY, JSON.stringify(st)); } catch (e) { /* 忽略 */ }
+      const row = document.getElementById('projFolderRow-' + v);
+      const items = document.getElementById('projFolderItems-' + v);
+      if (row && items) {
+        const open = st[v] !== false;
+        row.classList.toggle('closed', !open);
+        items.style.display = open ? '' : 'none';
+        row.title = (open ? '收起' : '展开') + '「' + row.querySelector('.asf-name').textContent + '」';
+      } else { render(); }
+    },
+    projectNavRefresh() {
+      if (State.role === 'teacher') reloadProjects();
+      else ensureMyProjects(true);
+      toast('项目目录已刷新', 'ok');
+    },
+    async projectProgressRefreshMain(v) { await refreshProjectProgress(v); },
+    // 进度/代码加载失败重试：清空聚焦视图缓存后重渲染（视图自动重新拉取）
+    projectViewRetry() {
+      State.projView = null;
+      render();
+    },
+    // 教师查看学生代码版本：v=学生姓名 id=studentProjectId
+    async projectDetailModal(v, id) {
+      State.modal = { type: 'projectDetail', data: { spId: id, name: v || '', loading: true, err: null, versions: [], openId: null, detail: null } };
+      renderOverlays();
+      try {
+        const vs = await API.get('/teacher/student-projects/' + id + '/versions');
+        const m = State.modal;
+        if (!m || m.type !== 'projectDetail' || String(m.data.spId) !== String(id)) return;
+        m.data.versions = vs || [];
+        m.data.loading = false;
+        renderOverlays();
+      } catch (e) {
+        const m = State.modal;
+        if (m && m.type === 'projectDetail' && String(m.data.spId) === String(id)) {
+          m.data.loading = false;
+          m.data.err = e.message;
+          renderOverlays();
+        }
+      }
+    },
+    // 展开收起某版本完整代码（再次点击收起）
+    async projectVersionShow(v) {
+      const m = State.modal;
+      if (!m || m.type !== 'projectDetail') return;
+      if (String(m.data.openId) === String(v)) { m.data.openId = null; renderOverlays(); return; }
+      m.data.openId = v;
+      m.data.detail = null;
+      renderOverlays();
+      try {
+        const dt = await API.get('/teacher/project-versions/' + v);
+        const m2 = State.modal;
+        if (!m2 || m2.type !== 'projectDetail' || String(m2.data.openId) !== String(v)) return;
+        m2.data.detail = dt;
+        renderOverlays(); // 重新渲染以挂载只读代码编辑器
+      } catch (e) { toast(e.message, 'warn'); }
+    },
+    // 学生端：创建项目 → 跳转独立代码工作台页（IDE 风格）
+    async projectStart(v, id) {
+      try {
+        const sp = await API.post('/projects/' + id + '/start');
+        openIdePage(sp.id);
+      } catch (e) { toast(e.message, 'warn'); }
+    },
+    projectEditorOpen(v, id) {
+      openIdePage(id);
+    },
     openSub(v) {
       const sub = DB.submissions.find(x => x.id === v);
       if (!sub) return;
@@ -7861,6 +8754,20 @@
         State.sessionId = null;
         State.activeKp = DB.knowledgePoints.slice().sort((a, b) => a.mastery - b.mastery)[0].id;
       }
+    }
+
+    // IDE 工作台「返回项目」直达定位：识别 #projects 锚点与 ?p= 项目定位参数。
+    // 锚点仅在当前角色导航存在该板块时生效（学生/教师均为 projects），
+    // 不影响正常登录与其他入口的默认板块跳转；?p= 预选项目供聚焦视图定位。
+    // 应用后立即清除 URL 参数：用户切到其他板块再刷新时不被意外拉回项目页。
+    const hashSec = (location.hash || '').slice(1);
+    if (hashSec && (NAV[State.role] || []).some(n => n.key === hashSec)) {
+      State.section = hashSec;
+    }
+    const preProject = new URLSearchParams(location.search).get('p');
+    if (preProject) State.projectSel = preProject;
+    if (hashSec || preProject) {
+      try { history.replaceState(null, '', location.pathname); } catch (e) { /* 忽略 */ }
     }
   }
 
@@ -8416,6 +9323,12 @@
     if (e.key === 'Escape') {
       if (State.modal || State.drawer) { State.modal = null; State.drawer = null; renderOverlays(); }
       return;
+    }
+    // PPT 幻灯片还原播放器：←/→ 翻页（仅弹窗打开且为播放器时拦截）
+    if (State.modal && State.modal.type === 'resPreview' && State.modal.data && State.modal.data.kind === 'pptPlayer'
+      && !/input|textarea/i.test((e.target && e.target.tagName) || '')) {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); pptTurn(-1); return; }
+      if (e.key === 'ArrowRight') { e.preventDefault(); pptTurn(1); return; }
     }
     if (e.target.id === 'composerInput' && e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();

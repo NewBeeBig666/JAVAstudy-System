@@ -189,6 +189,30 @@ public class LearningResourceController {
         return ApiResponse.ok(resourceService.content(id));
     }
 
+    @Operation(summary = "PPT 幻灯片还原预览：形状级版面模型（坐标/填充/字号/颜色/表格/图片），"
+            + "前端按原比例渲染还原排版样式；服务端 LRU 缓存，重复打开零等待")
+    @GetMapping("/api/resources/{id}/slides")
+    public ApiResponse<Map<String, Object>> slides(@PathVariable Long id) {
+        checkAccess(id);
+        return ApiResponse.ok(resourceService.slides(id));
+    }
+
+    @Operation(summary = "Word 版面还原预览：页面几何 + 段落/表格块模型（字号/加粗/颜色/字体/对齐/缩进/"
+            + "段距/行距/项目符号/表格填充/内嵌图片），前端按 1pt=1px 页面化渲染；LRU 缓存零等待")
+    @GetMapping("/api/resources/{id}/doc")
+    public ApiResponse<Map<String, Object>> doc(@PathVariable Long id) {
+        checkAccess(id);
+        return ApiResponse.ok(resourceService.docModel(id));
+    }
+
+    @Operation(summary = "PDF 版面还原预览：逐页位图模型（宽度封顶 850px），前端在自有滚动容器内逐页渲染，"
+            + "学习进度与 Word 一致按滚动覆盖口径计算；LRU 缓存零等待")
+    @GetMapping("/api/resources/{id}/pdf")
+    public ApiResponse<Map<String, Object>> pdf(@PathVariable Long id) {
+        checkAccess(id);
+        return ApiResponse.ok(resourceService.pdfModel(id));
+    }
+
     /* ==================== 鉴权与工具 ==================== */
 
     /** 学生仅能访问本班资源 */

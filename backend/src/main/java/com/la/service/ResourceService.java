@@ -63,6 +63,15 @@ public class ResourceService {
     private static final long VIDEO_MAX = 200L * 1024 * 1024;
     private static final long OTHER_MAX = 50L * 1024 * 1024;
 
+    /** PPT 幻灯片还原预览模型 LRU 缓存（最近 8 个资源；解析一次后重复打开毫秒级返回） */
+    private static final Map<Long, Map<String, Object>> SLIDE_CACHE = java.util.Collections.synchronizedMap(
+            new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<Long, Map<String, Object>> eldest) {
+                    return size() > 8;
+                }
+            });
+
     /* ==================== 教师：上传 / 列表 / 删除 / 编辑知识点 ==================== */
 
     /**
@@ -321,6 +330,106 @@ public class ResourceService {
      * - pdf：kind=pdf，前端走浏览器原生 iframe 直显原文件。
      * - image/video：kind=media，前端原生 <img>/<video> 渲染（无需内容数据）。
      */
+    /**
+     * 「PPT 幻灯片还原预览」模型：ppt/pptx → 形状级版面模型（坐标/填充/字号/颜色/表格/图片），
+     * 前端按原文件比例整体缩放渲染，还原排版与视觉效果；LRU 缓存保证重复打开零等待。
+     */
+    /** Word 版面还原预览模型 LRU 缓存（与幻灯片同模式） */
+    private static final Map<Long, Map<String, Object>> DOC_CACHE = java.util.Collections.synchronizedMap(
+            new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<Long, Map<String, Object>> eldest) {
+                    return size() > 8;
+                }
+            });
+
+    /** PDF 版面还原预览模型 LRU 缓存（与 Word/幻灯片同模式） */
+    private static final Map<Long, Map<String, Object>> PDF_CACHE = java.util.Collections.synchronizedMap(
+            new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<Long, Map<String, Object>> eldest) {
+                    return size() > 8;
+                }
+            });
+
+    /**
+     * 「Word 版面还原预览」模型：docx → 页面几何 + 按文档顺序的段落/表格块
+     *（字号/加粗/颜色/字体/对齐/缩进/段距/行距/项目符号/表格/图片），前端按 1pt=1px 页面化渲染；
+     * .doc 老格式与解析失败均回落既有结构化文本视图。
+     */
+    public Map<String, Object> docModel(Long resourceId) {
+        LearningResource r = getById(resourceId);
+        if (!"word".equals(r.getFileType())) {
+            throw new BizException("仅 Word 资源支持版面预览");
+        }
+        if (!(r.getFileName() != null && r.getFileName().toLowerCase().endsWith(".docx"))) {
+            throw new BizException("该 Word 为老版 .doc 格式，使用「下载」查看完整版式");
+        }
+        Map<String, Object> cached = DOC_CACHE.get(resourceId);
+        if (cached != null) {
+            return cached;
+        }
+        Path f = STORE_DIR.resolve(r.getFilePath());
+        if (!Files.exists(f)) {
+            throw new BizException("资源文件不存在");
+        }
+        try {
+            Map<String, Object> model = DocPageParser.parse(f);
+            DOC_CACHE.put(resourceId, model);
+            return model;
+        } catch (Exception e) {
+            throw new BizException("Word 版面解析失败，已回落文本预览");
+        }
+    }
+
+    /**
+     * 「PDF 版面还原预览」模型：pdf → 逐页位图（宽度封顶 850px），前端在自有滚动容器内
+     * 逐页渲染，学习进度复用与 Word 完全一致的滚动覆盖口径；解析失败回落浏览器原生直显。
+     */
+    public Map<String, Object> pdfModel(Long resourceId) {
+        LearningResource r = getById(resourceId);
+        if (!"pdf".equals(r.getFileType())) {
+            throw new BizException("仅 PDF 资源支持版面预览");
+        }
+        Map<String, Object> cached = PDF_CACHE.get(resourceId);
+        if (cached != null) {
+            return cached;
+        }
+        Path f = STORE_DIR.resolve(r.getFilePath());
+        if (!Files.exists(f)) {
+            throw new BizException("资源文件不存在");
+        }
+        try {
+            Map<String, Object> model = PdfPageParser.parse(f);
+            PDF_CACHE.put(resourceId, model);
+            return model;
+        } catch (Exception e) {
+            throw new BizException("PDF 版面解析失败，已回落原生预览");
+        }
+    }
+
+    public Map<String, Object> slides(Long resourceId) {
+        LearningResource r = getById(resourceId);
+        if (!"ppt".equals(r.getFileType())) {
+            throw new BizException("仅 PPT 资源支持幻灯片预览");
+        }
+        Map<String, Object> cached = SLIDE_CACHE.get(resourceId);
+        if (cached != null) {
+            return cached;
+        }
+        Path f = STORE_DIR.resolve(r.getFilePath());
+        if (!Files.exists(f)) {
+            throw new BizException("资源文件不存在");
+        }
+        try {
+            Map<String, Object> model = PptSlideParser.parse(f);
+            SLIDE_CACHE.put(resourceId, model);
+            return model;
+        } catch (Exception e) {
+            throw new BizException("PPT 版面解析失败，请使用「下载」查看原文件");
+        }
+    }
+
     public Map<String, Object> content(Long resourceId) {
         LearningResource r = getById(resourceId);
         String type = r.getFileType();
