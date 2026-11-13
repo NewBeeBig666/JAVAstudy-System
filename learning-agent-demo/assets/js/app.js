@@ -223,7 +223,7 @@
       { key: 'chat', label: '学习会话', icon: 'chat' },
       { key: 'resources', label: '学习资源', icon: 'layers' },
       { key: 'knowledge', label: '知识图谱', icon: 'target' },
-      { key: 'projects', label: '项目代码', icon: 'code' },
+      { key: 'projects', label: '项目实践', icon: 'code' },
       { key: 'homework', label: '我的作业', icon: 'clipboard' },
       { key: 'exercise', label: '练习记录', icon: 'book' },
       { key: 'report', label: '画像与报告', icon: 'chart' }
@@ -232,7 +232,7 @@
       { key: 'dashboard', label: '学情看板', icon: 'grid' },
       { key: 'resources', label: '学习资源', icon: 'layers' },
       { key: 'knowledge', label: '知识图谱', icon: 'target' },
-      { key: 'projects', label: '项目代码', icon: 'code' },
+      { key: 'projects', label: '项目实践', icon: 'code' },
       { key: 'assignments', label: '作业管理', icon: 'clipboard' },
       { key: 'submissions', label: '提交批改', icon: 'check' },
       { key: 'warnings', label: '预警中心', icon: 'alert' },
