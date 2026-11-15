@@ -2,7 +2,11 @@ package com.la.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.la.ai.ChatMessage;
+import com.la.ai.LlmClient;
+import com.la.config.DeepSeekProperties;
 import com.la.entity.CodingProject;
 import com.la.entity.ProjectVersion;
 import com.la.entity.StudentProject;
@@ -49,6 +53,8 @@ public class ProjectService {
     private final ClassMapper classMapper;
     private final ClassCoTeacherMapper classCoTeacherMapper;
     private final ObjectMapper objectMapper;
+    private final LlmClient llmClient;
+    private final DeepSeekProperties deepSeekProperties;
 
     private static final DateTimeFormatter DT = DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
@@ -78,7 +84,7 @@ public class ProjectService {
 
     /** 发布项目 */
     @Transactional
-    public Map<String, Object> publish(Long teacherId, Long classId, String title, String description) {
+    public Map<String, Object> publish(Long teacherId, Long classId, String title, String description, String roadmapJson) {
         requireManageable(teacherId, classId);
         if (title == null || title.isBlank()) {
             throw new BizException("项目标题不能为空");
@@ -95,13 +101,14 @@ public class ProjectService {
         p.setTitle(title.trim());
         p.setDescription(description.trim());
         p.setStatus("PUBLISHED");
+        p.setRoadmap(sanitizeRoadmap(roadmapJson));
         codingProjectMapper.insert(p);
         return toProjectDto(codingProjectMapper.selectById(p.getId()));
     }
 
     /** 编辑项目（不改动状态与归属） */
     @Transactional
-    public Map<String, Object> update(Long teacherId, Long projectId, String title, String description) {
+    public Map<String, Object> update(Long teacherId, Long projectId, String title, String description, String roadmapJson) {
         CodingProject p = requireOwnProject(teacherId, projectId);
         if (title != null && !title.isBlank()) {
             if (title.length() > 120) {
@@ -112,6 +119,7 @@ public class ProjectService {
         if (description != null && !description.isBlank()) {
             p.setDescription(description.trim());
         }
+        p.setRoadmap(sanitizeRoadmap(roadmapJson));
         p.setUpdatedAt(LocalDateTime.now());
         codingProjectMapper.updateById(p);
         return toProjectDto(p);
@@ -145,7 +153,7 @@ public class ProjectService {
         codingProjectMapper.deleteById(p.getId());
     }
 
-    /** 教师实时查看：项目下所有学生的完成进度（学生名/学号/状态/版本数/最后更新/代码量） */
+    /** 教师实时查看：项目下所有学生的完成进度（仅统计学生已通过「保存并提交」开放的可见版本） */
     public Map<String, Object> progress(Long teacherId, Long projectId) {
         CodingProject p = requireOwnProject(teacherId, projectId);
         List<StudentProject> sps = studentProjectMapper.selectList(new LambdaQueryWrapper<StudentProject>()
@@ -157,9 +165,9 @@ public class ProjectService {
             if (u == null) {
                 continue;
             }
-            List<ProjectVersion> vs = projectVersionMapper.selectList(new LambdaQueryWrapper<ProjectVersion>()
-                    .eq(ProjectVersion::getStudentProjectId, sp.getId())
-                    .orderByDesc(ProjectVersion::getVersionNo));
+            // 教师可见版本：仅统计水位之内（version_no <= submitted_version_no）的版本，
+            // 水位之后的未提交版本对学生保密——版本数 / 最新保存 / 代码量 / 说明均不外泄
+            List<ProjectVersion> vs = visibleVersions(sp);
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("studentProjectId", sp.getId());
             row.put("studentId", u.getId());
@@ -181,18 +189,17 @@ public class ProjectService {
         return result;
     }
 
-    /** 教师在线查看：某学生项目的版本列表（迭代记录，不含代码正文，轻量） */
+    /** 教师在线查看：某学生项目的版本列表（仅水位之内已开放版本，轻量不含代码正文） */
     public List<Map<String, Object>> studentVersions(Long teacherId, Long studentProjectId) {
         StudentProject sp = requireViewableStudentProject(teacherId, studentProjectId);
-        List<ProjectVersion> vs = projectVersionMapper.selectList(new LambdaQueryWrapper<ProjectVersion>()
-                .eq(ProjectVersion::getStudentProjectId, sp.getId())
-                .orderByDesc(ProjectVersion::getVersionNo));
         List<Map<String, Object>> result = new ArrayList<>();
-        for (ProjectVersion v : vs) {
+        for (ProjectVersion v : visibleVersions(sp)) {
             Map<String, Object> dto = new LinkedHashMap<>();
             dto.put("id", v.getId());
             dto.put("versionNo", v.getVersionNo());
             dto.put("summary", v.getSummary());
+            dto.put("reflection", v.getReflection());
+            dto.put("score", scoreDto(v));
             dto.put("codeSize", v.getCodeSize());
             dto.put("fileCount", parseFiles(v.getFiles()).size());
             dto.put("createdAt", v.getCreatedAt().format(DT));
@@ -201,22 +208,185 @@ public class ProjectService {
         return result;
     }
 
-    /** 教师在线查看：某版本完整代码文件 */
+    /** 教师在线查看：某版本完整代码文件（仅水位之内的版本，未开放版本一律拒绝） */
     public Map<String, Object> versionDetail(Long teacherId, Long versionId) {
         ProjectVersion v = projectVersionMapper.selectById(versionId);
         if (v == null) {
             throw new BizException("代码版本不存在");
         }
-        requireViewableStudentProject(teacherId, v.getStudentProjectId());
+        StudentProject sp = requireViewableStudentProject(teacherId, v.getStudentProjectId());
+        Integer watermark = sp.getSubmittedVersionNo();
+        if (watermark == null || v.getVersionNo() > watermark) {
+            throw new BizException("该版本尚未开放查看：学生点击「保存并提交」后版本才会对教师可见");
+        }
         Map<String, Object> dto = new LinkedHashMap<>();
         dto.put("id", v.getId());
         dto.put("studentProjectId", v.getStudentProjectId());
         dto.put("versionNo", v.getVersionNo());
         dto.put("summary", v.getSummary());
+        dto.put("reflection", v.getReflection());
         dto.put("codeSize", v.getCodeSize());
         dto.put("createdAt", v.getCreatedAt().format(DT));
         dto.put("files", parseFiles(v.getFiles()));
+        dto.put("score", scoreDto(v));
         return dto;
+    }
+
+    /* ==================== 版本 AI 评分（教师端触发，同步学生端） ==================== */
+
+    /** AI 评分代码长度上限：超出截断，防超长 token 打爆请求 */
+    private static final int AI_CODE_LIMIT = 6000;
+
+    /**
+     * 教师触发 AI 评分：根据项目需求（含迭代路线各阶段任务）与该版本代码、版本说明、学生反思，
+     * 评估该版本对当前阶段需求的完成度，生成 0-100 初评分与评语并写入版本行。
+     * 仅教师可见水位内的版本可评分；AI 结果仅写 ai_score/ai_comment，教师已有调整不受影响。
+     */
+    @Transactional
+    public Map<String, Object> aiScoreVersion(Long teacherId, Long versionId) {
+        ProjectVersion v = requireVisibleVersion(teacherId, versionId);
+        CodingProject p = codingProjectMapper.selectById(
+                studentProjectMapper.selectById(v.getStudentProjectId()).getProjectId());
+        StringBuilder prompt = new StringBuilder("你是 Java 课程编程项目评审老师。请根据项目需求与该学生版本的代码，");
+        prompt.append("评估该版本对项目需求（或当前迭代阶段任务）的完成度，给出 0-100 的整数分数与简短评语（100~200字，肯定完成点，指出不足与改进建议）。\n\n");
+        prompt.append("【项目需求说明】\n").append(shortenFor(p.getDescription(), 1500)).append('\n');
+        List<Map<String, String>> roadmap = parseRoadmap(p.getRoadmap());
+        if (!roadmap.isEmpty()) {
+            prompt.append("【项目迭代路线（分阶段任务）】\n");
+            for (int i = 0; i < roadmap.size(); i++) {
+                Map<String, String> it = roadmap.get(i);
+                prompt.append("阶段").append(i + 1).append("：").append(it.getOrDefault("title", ""))
+                        .append(" —— ").append(it.getOrDefault("desc", "")).append('\n');
+            }
+        }
+        if (v.getSummary() != null && !v.getSummary().isBlank()) {
+            prompt.append("【该版本学生说明】\n").append(shortenFor(v.getSummary(), 500)).append('\n');
+        }
+        if (v.getReflection() != null && !v.getReflection().isBlank()) {
+            prompt.append("【学生总结反思】\n").append(shortenFor(v.getReflection(), 800)).append('\n');
+        }
+        prompt.append("【该版本代码】\n");
+        int used = 0;
+        for (Map<String, String> f : parseFiles(v.getFiles())) {
+            String content = f.getOrDefault("content", "");
+            String part = content.length() + used > AI_CODE_LIMIT
+                    ? content.substring(0, Math.max(0, AI_CODE_LIMIT - used)) + "\n…（过长已截断）" : content;
+            used += part.length();
+            prompt.append("--- ").append(f.getOrDefault("path", "")).append(" ---\n").append(part).append('\n');
+            if (used >= AI_CODE_LIMIT) { break; }
+        }
+        prompt.append("\n严格只输出 JSON：{\"score\":0-100整数,\"comment\":\"评语\"}");
+
+        String raw;
+        try {
+            raw = llmClient.chat(List.of(ChatMessage.user(prompt.toString())),
+                    deepSeekProperties.getGradeTemperature());
+        } catch (RuntimeException e) {
+            throw new BizException("AI 评分暂不可用，请稍后重试");
+        }
+        int score;
+        String comment;
+        try {
+            JsonNode n = objectMapper.readTree(extractJson(raw));
+            score = n.path("score").asInt(-1);
+            comment = n.path("comment").asText("");
+        } catch (Exception e) {
+            throw new BizException("AI 评分结果解析失败，请重试");
+        }
+        if (score < 0 || score > 100 || comment.isBlank()) {
+            throw new BizException("AI 评分结果异常，请重试");
+        }
+        v.setAiScore(score);
+        v.setAiComment(comment.trim());
+        projectVersionMapper.updateById(v);
+        return scoreDto(v);
+    }
+
+    /**
+     * 教师调整评分：写 teacher_score/teacher_comment（覆盖展示），score 允许为空（沿用现有展示分）、
+     * comment 允许为空（清空教师评语、回显 AI 评语）；范围为 0-100、评语 ≤2000 字。
+     */
+    @Transactional
+    public Map<String, Object> teacherScoreVersion(Long teacherId, Long versionId, Integer score, String comment) {
+        ProjectVersion v = requireVisibleVersion(teacherId, versionId);
+        if (score != null && (score < 0 || score > 100)) {
+            throw new BizException("评分范围为 0-100 分");
+        }
+        String c = comment == null ? null : comment.trim();
+        if (c != null && c.isEmpty()) {
+            c = null;
+        }
+        if (c != null && c.length() > 2000) {
+            throw new BizException("评语不能超过 2000 字");
+        }
+        v.setTeacherScore(score);
+        v.setTeacherComment(c);
+        projectVersionMapper.updateById(v);
+        return scoreDto(v);
+    }
+
+    /** 权限：版本必须存在且处于教师可见水位之内（与代码查看同口径） */
+    private ProjectVersion requireVisibleVersion(Long teacherId, Long versionId) {
+        ProjectVersion v = projectVersionMapper.selectById(versionId);
+        if (v == null) {
+            throw new BizException("代码版本不存在");
+        }
+        StudentProject sp = requireViewableStudentProject(teacherId, v.getStudentProjectId());
+        Integer watermark = sp.getSubmittedVersionNo();
+        if (watermark == null || v.getVersionNo() > watermark) {
+            throw new BizException("该版本尚未开放评分：学生提交后版本才会对教师可见");
+        }
+        return v;
+    }
+
+    /**
+     * 版本评分 DTO（教师/学生端共用）：
+     * aiScore/aiComment=AI 初评；teacherScore/teacherComment=教师调整；finalScore/source 供展示端直接取用。
+     */
+    private Map<String, Object> scoreDto(ProjectVersion v) {
+        Map<String, Object> dto = new LinkedHashMap<>();
+        dto.put("aiScore", v.getAiScore());
+        dto.put("aiComment", v.getAiComment());
+        dto.put("teacherScore", v.getTeacherScore());
+        dto.put("teacherComment", v.getTeacherComment());
+        dto.put("finalScore", v.getTeacherScore() != null ? v.getTeacherScore() : v.getAiScore());
+        dto.put("teacherAdjusted", v.getTeacherScore() != null || v.getTeacherComment() != null);
+        return dto;
+    }
+
+    private String shortenFor(String s, int limit) {
+        if (s == null) {
+            return "";
+        }
+        return s.length() > limit ? s.substring(0, limit) + "…（过长已截断）" : s;
+    }
+
+    private String extractJson(String raw) {
+        if (raw == null) {
+            return "{}";
+        }
+        String t = raw.trim().replace("```json", "").replace("```", "").trim();
+        int start = t.indexOf('{');
+        int end = t.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            return t.substring(start, end + 1);
+        }
+        return t;
+    }
+
+    /**
+     * 教师可见版本清单：学生项目全部版本中 version_no <= 提交水位的子集（按版本号降序）。
+     * 水位为 NULL（从未提交）时返回空清单——教师不可感知任何版本信息。
+     */
+    private List<ProjectVersion> visibleVersions(StudentProject sp) {
+        Integer watermark = sp.getSubmittedVersionNo();
+        if (watermark == null) {
+            return List.of();
+        }
+        return projectVersionMapper.selectList(new LambdaQueryWrapper<ProjectVersion>()
+                        .eq(ProjectVersion::getStudentProjectId, sp.getId())
+                        .le(ProjectVersion::getVersionNo, watermark)
+                        .orderByDesc(ProjectVersion::getVersionNo));
     }
 
     /* ==================== 学生端 ==================== */
@@ -286,9 +456,16 @@ public class ProjectService {
         return studentProjectDto(sp, last);
     }
 
-    /** 学生保存代码：自动生成新版本（多版本留存），可同时标记提交 */
+    /**
+     * 学生保存代码：版本策略由用户在保存弹窗中选择。
+     * mode=keep  → 保留当前版本：覆盖更新最新版本内容（files/summary/codeSize/时间），版本号不变；
+     * mode=iterate 或缺省 → 迭代新版本（多版本留存，历史版本完整保留），版本号 = 最新版本号 + 1；
+     * reflection → 总结反思（≤2000 字）：仅随「保存并提交」（submit=true）写入并与本次版本绑定，
+     *              仅保存不触碰已有反思（历史反思保留）；submit=true 同时标记提交。
+     * 并发安全：行锁取最新版本 + 唯一键兜底，版本号不冲突、不重复、不跳号。
+     */
     @Transactional
-    public Map<String, Object> save(Long userId, Long studentProjectId, String filesJson, String summary, Boolean submit) {
+    public Map<String, Object> save(Long userId, Long studentProjectId, String filesJson, String summary, Boolean submit, String mode, String reflection) {
         StudentProject sp = studentProjectMapper.selectById(studentProjectId);
         if (sp == null || !Objects.equals(sp.getStudentId(), userId)) {
             throw new BizException("项目不存在或无权操作");
@@ -306,28 +483,63 @@ public class ProjectService {
                 throw new BizException("文件名不能为空");
             }
         }
+        // 总结反思：去空白、限长（与前端 maxlength=2000 一致）
+        String ref = reflection == null ? null : reflection.trim();
+        if (ref != null && ref.isEmpty()) {
+            ref = null;
+        }
+        if (ref != null && ref.length() > 2000) {
+            throw new BizException("总结反思不能超过 2000 字");
+        }
         // 序号行锁防并发保存撞号（配合唯一键）；同一学生连续保存版本号严格递增
         ProjectVersion last = projectVersionMapper.selectOne(new LambdaQueryWrapper<ProjectVersion>()
                 .eq(ProjectVersion::getStudentProjectId, sp.getId())
                 .orderByDesc(ProjectVersion::getVersionNo)
                 .last("LIMIT 1 FOR UPDATE"));
-        int nextNo = last == null ? 1 : last.getVersionNo() + 1;
         int size = files.stream().mapToInt(f -> (f.get("content") == null ? "" : f.get("content"))
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8).length + f.get("path").getBytes().length).sum();
-        ProjectVersion v = new ProjectVersion();
-        v.setStudentProjectId(sp.getId());
-        v.setVersionNo(nextNo);
-        try {
-            v.setFiles(objectMapper.writeValueAsString(files));
-        } catch (Exception e) {
-            throw new BizException("代码文件格式不正确");
+        ProjectVersion v;
+        if ("keep".equals(mode) && last != null) {
+            // 保留当前版本：覆盖更新最新版本，版本号保持不变（尚无版本时按 v1 新建）；
+            // 仅保存（非提交）不触碰反思字段——已有总结反思原样保留
+            v = last;
+            try {
+                v.setFiles(objectMapper.writeValueAsString(files));
+            } catch (Exception e) {
+                throw new BizException("代码文件格式不正确");
+            }
+            v.setSummary(summary == null ? null : summary.trim());
+            v.setCodeSize(size);
+            v.setCreatedAt(LocalDateTime.now());
+            if (Boolean.TRUE.equals(submit)) {
+                v.setReflection(ref);
+            }
+            projectVersionMapper.updateById(v);
+        } else {
+            // 迭代新版本（原自动留存逻辑）：版本号 = 最新版本号 + 1，无历史版本时为 v1；
+            // 总结反思仅随提交写入新版本，仅保存的版本反思为空
+            int nextNo = last == null ? 1 : last.getVersionNo() + 1;
+            v = new ProjectVersion();
+            v.setStudentProjectId(sp.getId());
+            v.setVersionNo(nextNo);
+            try {
+                v.setFiles(objectMapper.writeValueAsString(files));
+            } catch (Exception e) {
+                throw new BizException("代码文件格式不正确");
+            }
+            v.setSummary(summary == null ? null : summary.trim());
+            v.setReflection(Boolean.TRUE.equals(submit) ? ref : null);
+            v.setCodeSize(size);
+            v.setCreatedAt(LocalDateTime.now());
+            projectVersionMapper.insert(v);
         }
-        v.setSummary(summary == null ? null : summary.trim());
-        v.setCodeSize(size);
-        v.setCreatedAt(LocalDateTime.now());
-        projectVersionMapper.insert(v);
-        if (Boolean.TRUE.equals(submit) && !"SUBMITTED".equals(sp.getStatus())) {
-            sp.setStatus("SUBMITTED");
+        if (Boolean.TRUE.equals(submit)) {
+            if (!"SUBMITTED".equals(sp.getStatus())) {
+                sp.setStatus("SUBMITTED");
+            }
+            // 提交即开放：教师可见版本水位原子刷新为当前版本号——当前版本及全部历史版本即刻对教师可见，
+            // 后续「仅保存新版本」产生的版本仍不可见；与版本写入同事务，无延迟、无遗漏、无越界
+            sp.setSubmittedVersionNo(v.getVersionNo());
         }
         sp.setUpdatedAt(LocalDateTime.now());
         studentProjectMapper.updateById(sp);
@@ -351,6 +563,9 @@ public class ProjectService {
         result.put("project", toProjectDto(p));
         ProjectVersion last = vs.isEmpty() ? null : vs.get(0);
         result.put("mine", studentProjectDto(sp, last));
+        // 版本迭代记录逐版本附带提交状态：version_no <= 提交水位 即为「已提交」（已随提交对教师开放），
+        // 水位之后为「未提交」；从未提交（水位 NULL）时全部为未提交——状态与可见性规则同源，杜绝状态错配
+        Integer watermark = sp.getSubmittedVersionNo();
         result.put("versions", vs.stream().map(v -> {
             Map<String, Object> dto = new LinkedHashMap<>();
             dto.put("id", v.getId());
@@ -358,6 +573,9 @@ public class ProjectService {
             dto.put("summary", v.getSummary());
             dto.put("codeSize", v.getCodeSize());
             dto.put("createdAt", v.getCreatedAt().format(DT));
+            dto.put("submitted", watermark != null && v.getVersionNo() <= watermark);
+            dto.put("reflection", v.getReflection());
+            dto.put("score", scoreDto(v));
             return dto;
         }).collect(Collectors.toList()));
         return result;
@@ -605,9 +823,54 @@ public class ProjectService {
         dto.put("title", p.getTitle());
         dto.put("description", p.getDescription());
         dto.put("status", p.getStatus());
+        dto.put("roadmap", parseRoadmap(p.getRoadmap()));
         dto.put("createdAt", p.getCreatedAt() == null ? null : p.getCreatedAt().format(DT));
         dto.put("updatedAt", p.getUpdatedAt() == null ? null : p.getUpdatedAt().format(DT));
         return dto;
+    }
+
+    /**
+     * 迭代路线清洗：解析 JSON 数组 [{title,desc}] → 过滤全空项 → 限长（标题60/描述2000）→
+     * 上限 10 项；清洗后为空返回 NULL（选填，未配置不占存储）；JSON 非法按未配置处理不拦截发布。
+     */
+    private String sanitizeRoadmap(String roadmapJson) {
+        List<Map<String, String>> items = parseRoadmap(roadmapJson);
+        List<Map<String, String>> cleaned = new ArrayList<>();
+        for (Map<String, String> it : items) {
+            String title = it.getOrDefault("title", "") == null ? "" : it.getOrDefault("title", "").trim();
+            String desc = it.getOrDefault("desc", "") == null ? "" : it.getOrDefault("desc", "").trim();
+            if (title.isEmpty() && desc.isEmpty()) {
+                continue;  // 全空项不保存
+            }
+            Map<String, String> row = new LinkedHashMap<>();
+            row.put("title", title.length() > 60 ? title.substring(0, 60) : title);
+            row.put("desc", desc.length() > 2000 ? desc.substring(0, 2000) : desc);
+            cleaned.add(row);
+        }
+        if (cleaned.size() > 10) {
+            throw new BizException("项目迭代路线最多支持 10 个迭代版本");
+        }
+        if (cleaned.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(cleaned);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 迭代路线解析：JSON 字符串 → List<Map>；null/非法/非对象结构一律返回空列表 */
+    private List<Map<String, String>> parseRoadmap(String roadmapJson) {
+        if (roadmapJson == null || roadmapJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(roadmapJson, new TypeReference<List<Map<String, String>>>() {
+            });
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     private Map<String, Object> studentProjectDto(StudentProject sp, ProjectVersion last) {

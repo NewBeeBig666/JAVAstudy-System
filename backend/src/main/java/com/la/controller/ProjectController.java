@@ -35,7 +35,7 @@ public class ProjectController {
         return ApiResponse.ok(projectService.teacherProjects(CurrentUser.id(), classId));
     }
 
-    @Operation(summary = "发布新项目（标题 + 详细需求说明）")
+    @Operation(summary = "发布新项目（标题 + 详细需求说明 + 可选迭代路线 roadmap=[{title,desc}]）")
     @PostMapping("/teacher/projects")
     public ApiResponse<Map<String, Object>> publish(@RequestBody Map<String, Object> body) {
         Object classId = body.get("classId");
@@ -45,16 +45,30 @@ public class ProjectController {
         return ApiResponse.ok(projectService.publish(CurrentUser.id(),
                 Long.valueOf(String.valueOf(classId)),
                 (String) body.get("title"),
-                (String) body.get("description")));
+                (String) body.get("description"),
+                toJsonString(body.get("roadmap"))));
     }
 
-    @Operation(summary = "编辑项目需求")
+    @Operation(summary = "编辑项目需求（含可选迭代路线 roadmap=[{title,desc}]，未传或空数组则清除）")
     @PutMapping("/teacher/projects/{id}")
     public ApiResponse<Map<String, Object>> update(@PathVariable Long id,
                                                    @RequestBody Map<String, Object> body) {
         return ApiResponse.ok(projectService.update(CurrentUser.id(), id,
                 (String) body.get("title"),
-                (String) body.get("description")));
+                (String) body.get("description"),
+                toJsonString(body.get("roadmap"))));
+    }
+
+    /** 请求体中的半结构化字段（数组/对象）统一序列化为 JSON 字符串；null 原样透传 */
+    private String toJsonString(Object v) {
+        if (v == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(v);
+        } catch (Exception e) {
+            throw new BizException("数据格式不正确");
+        }
     }
 
     @Operation(summary = "上架 / 下架状态管理")
@@ -90,6 +104,22 @@ public class ProjectController {
         return ApiResponse.ok(projectService.versionDetail(CurrentUser.id(), versionId));
     }
 
+    @Operation(summary = "触发版本 AI 评分：根据项目/迭代路线需求与版本代码生成 0-100 初评分与评语")
+    @PostMapping("/teacher/project-versions/{versionId}/ai-score")
+    public ApiResponse<Map<String, Object>> aiScore(@PathVariable Long versionId) {
+        return ApiResponse.ok(projectService.aiScoreVersion(CurrentUser.id(), versionId));
+    }
+
+    @Operation(summary = "教师调整版本评分：score（0-100，可空沿用）/ comment（≤2000字，可空清空回显AI评语），保存后同步学生端")
+    @PutMapping("/teacher/project-versions/{versionId}/score")
+    public ApiResponse<Map<String, Object>> teacherScore(@PathVariable Long versionId,
+                                                         @RequestBody Map<String, Object> body) {
+        Object score = body.get("score");
+        return ApiResponse.ok(projectService.teacherScoreVersion(CurrentUser.id(), versionId,
+                score == null ? null : Integer.valueOf(String.valueOf(score)),
+                body.get("comment") == null ? null : String.valueOf(body.get("comment"))));
+    }
+
     /* ==================== 学生端 ==================== */
 
     @Operation(summary = "学生项目列表（本班全部上架项目 + 我的项目状态，实时接收教师发布）")
@@ -104,7 +134,7 @@ public class ProjectController {
         return ApiResponse.ok(projectService.start(CurrentUser.id(), id));
     }
 
-    @Operation(summary = "保存代码：自动生成新版本留存；submit=true 同时标记提交")
+    @Operation(summary = "保存代码：mode=keep 覆盖更新当前版本（版本号不变）/ mode=iterate（或缺省）迭代新版本；submit=true 同时标记提交；reflection=总结反思（≤2000字，仅随提交写入并绑定版本）")
     @PostMapping("/projects/mine/{spId}/save")
     public ApiResponse<Map<String, Object>> save(@PathVariable Long spId,
                                                   @RequestBody Map<String, Object> body) {
@@ -116,7 +146,9 @@ public class ProjectController {
         }
         return ApiResponse.ok(projectService.save(CurrentUser.id(), spId, filesJson,
                 (String) body.get("summary"),
-                Boolean.valueOf(String.valueOf(body.get("submit")))));
+                Boolean.valueOf(String.valueOf(body.get("submit"))),
+                body.get("mode") == null ? null : String.valueOf(body.get("mode")),
+                body.get("reflection") == null ? null : String.valueOf(body.get("reflection"))));
     }
 
     @Operation(summary = "打开我的项目：最新代码 + 版本列表")

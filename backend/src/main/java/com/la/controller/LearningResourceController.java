@@ -47,29 +47,55 @@ public class LearningResourceController {
 
     /* ==================== 教师端 ==================== */
 
-    @Operation(summary = "上传学习资源（PPT/视频/图片/Word/PDF），AI 识别内容并关联知识点")
+    @Operation(summary = "上传学习资源（PPT/视频/图片/Word/PDF），AI 识别内容并关联知识点；classIds 逗号分隔多班发送，缺省回退 classId 单班")
     @PostMapping(value = "/api/teacher/resources", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ApiResponse<Map<String, Object>> upload(@RequestParam("file") MultipartFile file,
                                                     @RequestParam("title") String title,
                                                     @RequestParam(required = false) Long classId,
+                                                    @RequestParam(required = false) String classIds,
                                                     @RequestParam(required = false) String kpCodes) {
         // kpCodes：教师手动选择的知识点（逗号分隔），与 AI 识别结果合并
         List<String> manual = kpCodes == null || kpCodes.isBlank()
                 ? List.of() : List.of(kpCodes.split(","));
-        // 资源归属班级校验：教师拥有可管理班级（授课 ∪ 共同管理）时，归属班级须在其中；
-        // 无任何可管理班级的教师按演示兼容口径放行（与 defaultClassId 全库回退一致）
-        Long targetClass = classId != null ? classId : defaultClassId();
-        if (targetClass != null && hasAnyManageableClass(CurrentUser.id())) {
-            ClassEntity cls = classMapper.selectById(targetClass);
-            boolean owned = cls != null && cls.getTeacherId() != null
-                    && cls.getTeacherId().equals(CurrentUser.id());
-            boolean coManaged = coTeacherService.coManagedClassIds(CurrentUser.id()).contains(targetClass);
-            if (!owned && !coManaged) {
-                throw new BizException("无权向该班级上传资源");
+        // 发送班级：优先 classIds 多班（去重保序），缺省回退单班 classId / 默认班级兜底
+        List<Long> targets = new java.util.ArrayList<>();
+        if (classIds != null && !classIds.isBlank()) {
+            for (String s : classIds.split(",")) {
+                try {
+                    Long v = Long.valueOf(s.trim());
+                    if (v > 0 && !targets.contains(v)) {
+                        targets.add(v);
+                    }
+                } catch (NumberFormatException ignored) {
+                    // 跳过非法值
+                }
             }
         }
-        return ApiResponse.ok(resourceService.upload(CurrentUser.id(),
-                targetClass, title, file, manual));
+        if (targets.isEmpty() && classId != null) {
+            targets.add(classId);
+        }
+        if (targets.isEmpty()) {
+            Long def = defaultClassId();
+            if (def != null) {
+                targets.add(def);
+            }
+        }
+        // 资源归属班级校验：教师拥有可管理班级（授课 ∪ 共同管理）时，每个发送班级均须在其中；
+        // 无任何可管理班级的教师按演示兼容口径放行（与 defaultClassId 全库回退一致）
+        if (!targets.isEmpty() && hasAnyManageableClass(CurrentUser.id())) {
+            java.util.Set<Long> manageable = new java.util.HashSet<>();
+            classMapper.selectList(new LambdaQueryWrapper<ClassEntity>()
+                            .eq(ClassEntity::getTeacherId, CurrentUser.id()))
+                    .forEach(c -> manageable.add(c.getId()));
+            manageable.addAll(coTeacherService.coManagedClassIds(CurrentUser.id()));
+            for (Long t : targets) {
+                if (!manageable.contains(t)) {
+                    throw new BizException("无权向班级 " + t + " 发送资源");
+                }
+            }
+        }
+        return ApiResponse.ok(resourceService.uploadToClasses(CurrentUser.id(),
+                targets, title, file, manual));
     }
 
     /** 教师是否拥有任何可管理班级（授课 ∪ 共同管理；均无时兼容演示账号放行） */

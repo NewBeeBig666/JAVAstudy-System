@@ -143,6 +143,47 @@ public class ResourceService {
         }
     }
 
+    /**
+     * 多班上传：首个班级走完整上传流程（文件落盘 + AI 识别仅执行一次），
+     * 其余班级复制资源记录（共享同一文件、简介与知识点关联），保证多班学生同时可见。
+     */
+    @org.springframework.transaction.annotation.Transactional
+    public Map<String, Object> uploadToClasses(Long teacherId, List<Long> classIds, String title,
+                                                MultipartFile file, List<String> manualKpCodes) {
+        if (classIds == null || classIds.isEmpty()) {
+            throw new BizException("请至少选择一个发送班级");
+        }
+        Map<String, Object> result = upload(teacherId, classIds.get(0), title, file, manualKpCodes);
+        if (classIds.size() > 1) {
+            Object mainId = result.get("id");
+            if (mainId != null) {
+                LearningResource main = resourceMapper.selectById(Long.valueOf(String.valueOf(mainId)));
+                if (main != null) {
+                    copyResourceToClasses(main, classIds.subList(1, classIds.size()));
+                }
+            }
+        }
+        return result;
+    }
+
+    /** 复制资源记录到其余班级（字段全量复制，仅归属班级不同；文件不重复落盘） */
+    void copyResourceToClasses(LearningResource main, List<Long> classIds) {
+        for (Long classId : classIds) {
+            LearningResource copy = new LearningResource();
+            copy.setClassId(classId);
+            copy.setTeacherId(main.getTeacherId());
+            copy.setTitle(main.getTitle());
+            copy.setFileName(main.getFileName());
+            copy.setFilePath(main.getFilePath());
+            copy.setFileType(main.getFileType());
+            copy.setFileSize(main.getFileSize());
+            copy.setKpCodes(main.getKpCodes());
+            copy.setAiSummary(main.getAiSummary());
+            copy.setExtractedText(main.getExtractedText());
+            resourceMapper.insert(copy);
+        }
+    }
+
     /** 教师资源列表（含每个资源已学完人数统计） */
     public List<Map<String, Object>> teacherList(Long classId) {
         List<LearningResource> list = resourceMapper.selectList(new LambdaQueryWrapper<LearningResource>()
@@ -151,7 +192,7 @@ public class ResourceService {
         return list.stream().map(r -> dto(r, null, completedCount(r.getId()))).toList();
     }
 
-    /** 删除资源：删记录 + 级联删进度 + 删磁盘文件 */
+    /** 删除资源：删记录 + 级联删进度 + 删磁盘文件（多班共享文件：仍有其他班级引用时不删文件） */
     public void delete(Long teacherId, Long resourceId) {
         LearningResource r = resourceMapper.selectById(resourceId);
         if (r == null) {
@@ -163,7 +204,13 @@ public class ResourceService {
         resourceMapper.deleteById(resourceId);
         progressMapper.delete(new LambdaQueryWrapper<ResourceProgress>()
                 .eq(ResourceProgress::getResourceId, resourceId));
-        safeDelete(STORE_DIR.resolve(r.getFilePath()));
+        // 多班共享同一物理文件：其他班级仍有该文件副本记录时保留文件，仅删本班记录
+        Long sharing = resourceMapper.selectCount(new LambdaQueryWrapper<LearningResource>()
+                .eq(LearningResource::getFilePath, r.getFilePath())
+                .ne(LearningResource::getId, resourceId));
+        if (sharing == null || sharing == 0) {
+            safeDelete(STORE_DIR.resolve(r.getFilePath()));
+        }
         log.info("[资源删除] id={} title={}", resourceId, r.getTitle());
     }
 

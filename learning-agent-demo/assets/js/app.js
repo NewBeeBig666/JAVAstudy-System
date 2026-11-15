@@ -1352,6 +1352,37 @@
     return k.mastery >= 80 ? '#34d399' : k.mastery >= 60 ? '#fbbf24' : '#f87171';
   }
 
+  // 移动目标候选：排除自身及其全部后代（前端防环，后端仍有环检测兜底），
+  // 按模块树形缩进展示，「作为一级模块」选项由弹窗固定渲染（value=''）
+  function kgMoveTargets(code) {
+    const all = DB.knowledgePoints;
+    const byParent = {};
+    all.forEach(k => { if (k.parent && k.parent !== k.id) (byParent[k.parent] = byParent[k.parent] || []).push(k); });
+    const banned = new Set([code]);
+    const walk = pid => (byParent[pid] || []).forEach(c => { banned.add(c.id); walk(c.id); });
+    walk(code);
+    const modName = id => { const m = DB.modules.find(x => x.id === id); return m ? m.name : ''; };
+    const opts = [];
+    const visit = (k, depth) => {
+      if (banned.has(k.id)) return;
+      opts.push({ code: k.id, label: '　'.repeat(Math.min(depth, 6)) + k.name + '（L' + k.level + ' · ' + modName(k.module) + '）' });
+      (byParent[k.id] || []).forEach(c => visit(c, depth + 1));
+    };
+    all.filter(k => k.level === 1).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+      .forEach(m => visit(m, 0));
+    return opts;
+  }
+
+  // 拖拽移动的非法目标集合：自身 + 全部后代（后端 move 接口另有环检测兜底）
+  function kgDragBanned(code) {
+    const banned = new Set([code]);
+    const walk = pid => DB.knowledgePoints.forEach(k => {
+      if (k.parent === pid && !banned.has(k.id)) { banned.add(k.id); walk(k.id); }
+    });
+    walk(code);
+    return banned;
+  }
+
   // 模块视图太阳图布局：二级均匀分环，子树按节点数占扇区向外辐射（椭圆坐标适配画布比例）。
   // 防重叠（V2）：① 逐环加大径向间距，为深环小节点留足空间；
   // ② 每环节点按角度排序后做"向前推进"消解，保证相邻节点弧长间距 ≥ 节点直径+间隙，
@@ -1486,24 +1517,27 @@
         links += `<line x1="${L.pos[a].x}" y1="${L.pos[a].y}" x2="${L.pos[b].x}" y2="${L.pos[b].y}" class="kg-link"/>`;
       });
       let shapes = '';
+      const batchMode = State.role === 'teacher' && State.kgBatch;
       L.nodes.forEach(k => {
         const p = L.pos[k.id];
         if (!p) return;
         const lv = k.level || 3;
         const focus = view.focus === k.id;
         const active = State.activeKp === k.id;
+        const batchSel = batchMode && (State.kgBatchSel || []).indexOf(k.id) >= 0;
         const r = lv === 1 ? 46 : lv === 2 ? 24 : lv === 3 ? 15 : 11;
-        const stroke = focus ? '#ffffff' : active ? '#c7d2fe' : kgMasteryColor(k);
-        const sw = focus ? 3.5 : active ? 3 : 2;
+        const stroke = batchSel ? '#34d399' : focus ? '#ffffff' : active ? '#c7d2fe' : kgMasteryColor(k);
+        const sw = batchSel ? 3.5 : focus ? 3.5 : active ? 3 : 2;
         const glow = lv <= 2 || focus ? 'kg-glow' : '';
         const shape = lv <= 2
           ? `<rect x="${-r}" y="${-r}" width="${r * 2}" height="${r * 2}" rx="6" transform="rotate(45)" fill="${lv === 1 ? mcolor + '66' : mcolor + '33'}" stroke="${stroke}" stroke-width="${sw}" class="${glow}"/>`
           : `<circle r="${r}" fill="${mcolor}26" stroke="${stroke}" stroke-width="${sw}" class="${glow}"/>`;
         // 末端细分节点（lv≥4）同样渲染名称标签：所有节点文字说明完整可见，杜绝"无字圆圈"
         const label = `<text y="${lv <= 2 ? (lv === 1 ? 34 : 6 + r) : r + 11}" class="kg-node-label ${lv <= 2 ? 'big' : ''}">${h(k.name)}</text>`;
-        shapes += `<g class="kg-node" transform="translate(${p.x},${p.y})" data-act="kpCell" data-val="${k.id}">
-          <title>${h(k.name)}${k.hasData ? ' · 掌握度 ' + k.mastery : ''}</title>
+        shapes += `<g class="kg-node${batchSel ? ' kg-batch-sel' : ''}" transform="translate(${p.x},${p.y})" data-act="kpCell" data-val="${k.id}">
+          <title>${h(k.name)}${k.hasData ? ' · 掌握度 ' + k.mastery : ''}${batchMode ? (batchSel ? ' · 已勾选（点击取消）' : ' · 点击勾选') : ''}</title>
           ${shape}
+          ${batchSel ? `<circle r="${r + 6}" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="4 3" class="kg-batch-ring"/>` : ''}
           ${lv === 1 ? `<text y="6" class="kg-node-level1">${h(k.name)}</text>` : ''}
           ${lv === 1 ? '' : label}
         </g>`;
@@ -1578,16 +1612,17 @@
       <button class="kg-nav-item" data-act="kgHome">${icon('grid', 14)}<span>全部显示</span></button>
       <div id="kgSearchList" class="kg-search-list"></div>`;
 
-    // 教师端节点操作菜单：选中任意知识点后出现（添加子知识点 / 删除知识点）；
-    // 一级模块节点为图谱结构根，不提供删除入口
+    // 教师端节点操作菜单：选中任意知识点后出现（添加子知识点 / 编辑信息 / 移动 / 删除）；
+    // 一级模块同样开放删除与移动（可调整为其他模块的子节点）
     const selKp = isTeacher ? kp(State.activeKp) : null;
+    const batchSel = State.kgBatchSel || [];
     const nodeMenu = !isTeacher || !selKp ? '' :
       `<div class="kg-node-menu">
         <span class="kg-nm-name" title="${h(selKp.name)}">${icon('target', 13)} ${h(selKp.name)}</span>
-        <button class="kg-nm-btn" data-act="kgAddNodeModal" data-val="${selKp.id}" title="在「${h(selKp.name)}」下添加子知识点">${icon('plus', 13)} 添加子知识点</button>
-        ${(selKp.level === 1)
-          ? '<span class="kg-nm-lock" title="一级模块为图谱结构根，不可删除">模块不可删</span>'
-          : `<button class="kg-nm-btn danger" data-act="kgDelNodeModal" data-val="${selKp.id}" title="删除「${h(selKp.name)}」及其全部子节点">${icon('trash', 13)} 删除知识点</button>`}
+        <button class="kg-nm-btn" data-act="kgAddNodeModal" data-val="${selKp.id}" title="在「${h(selKp.name)}」下添加子知识点（层级不限）">${icon('plus', 13)} 添加子知识点</button>
+        <button class="kg-nm-btn" data-act="kgEditNodeModal" data-val="${selKp.id}" title="编辑「${h(selKp.name)}」的名称与描述">${icon('edit', 13)} 编辑信息</button>
+        <button class="kg-nm-btn" data-act="kgMoveNodeModal" data-val="${selKp.id}" title="移动「${h(selKp.name)}」到其他层级或调整为一级模块">${icon('panel', 13)} 移动到…</button>
+        <button class="kg-nm-btn danger" data-act="kgDelNodeModal" data-val="${selKp.id}" title="删除「${h(selKp.name)}」及其全部子节点">${icon('trash', 13)} 删除</button>
       </div>`;
 
     const body = `
@@ -1596,8 +1631,13 @@
         <div class="kg-canvas">
           <div class="kg-toolbar">
             <button class="kg-export" data-act="kgExport">${icon('download', 13)} 导出图片</button>
-            ${isTeacher ? `<button class="kg-export" data-act="kgResetModal" title="撤销所有自定义修改，恢复系统默认图谱">${icon('refresh', 13)} 重置</button>` : ''}
+            ${isTeacher ? `
+            <button class="kg-export" data-act="kgAddModuleModal" title="新增一级模块（层级不限，子节点可继续向下扩展）">${icon('plus', 13)} 添加模块</button>
+            <button class="kg-export ${State.kgBatch ? 'kg-batch-on' : ''}" data-act="kgBatchToggle" title="进入批量管理模式，勾选多个知识点后批量删除">${State.kgBatch ? icon('x', 13) + ' 退出批量' : icon('check', 13) + ' 批量管理'}</button>
+            ${State.kgBatch ? `<button class="kg-export danger" data-act="kgBatchDelModal" ${batchSel.length ? '' : 'disabled'} title="${batchSel.length ? '删除已勾选的 ' + batchSel.length + ' 个知识点及其子树' : '请先在模块视图中勾选知识点'}">${icon('trash', 13)} 批量删除${batchSel.length ? '（' + batchSel.length + '）' : ''}</button>` : ''}
+            <button class="kg-export" data-act="kgResetModal" title="撤销所有自定义修改，恢复系统默认图谱">${icon('refresh', 13)} 重置</button>` : ''}
           </div>
+          ${isTeacher && State.kgBatch ? `<div class="kg-batch-hint">${icon('alert', 13)} 批量管理模式：在模块视图点击节点进行勾选/取消勾选，勾选完成后可批量删除；操作完成后自动同步至全部班级。</div>` : ''}
           ${nodeMenu}
           <div class="kg-zoom-bar">
             <button class="kg-zoom-btn" data-act="kgZoomIn" title="放大">＋</button>
@@ -2370,6 +2410,16 @@
         <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:6px">项目需求说明</div>
         <div style="font-size:13px;color:var(--text-2);white-space:pre-wrap;max-height:150px;overflow-y:auto;line-height:1.7">${h(sel.description || '')}</div>
         ${mine ? `<div class="note" style="margin-top:10px">我的开发状态：<b>${st} · 已留存 ${mine.versionCount} 个版本</b>${mine.lastVersionAt ? ' · 最新保存 ' + h(mine.lastVersionAt) : (mine.versionCount ? '' : '（尚未保存过代码）')}<br>每次保存自动生成新版本，可随时回看迭代记录。</div>` : ''}
+        ${(sel.roadmap && sel.roadmap.length) ? `
+        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin:14px 0 10px">${icon('layers', 15)} 项目迭代路线 <span style="font-weight:400;color:var(--text-3)">· 按阶段推进开发，完成一个迭代后提交对应版本</span></div>
+        <div class="rm-timeline">${sel.roadmap.map((r, i) => `
+          <div class="rm-node">
+            <div class="rm-rail"><span class="rm-dot">${i + 1}</span>${i < sel.roadmap.length - 1 ? '<i class="rm-line"></i>' : ''}</div>
+            <div class="rm-body">
+              <div class="rm-t">${h(r.title || ('迭代 ' + (i + 1)))}</div>
+              ${r.desc ? `<div class="rm-d">${h(r.desc)}</div>` : ''}
+            </div>
+          </div>`).join('')}</div>` : ''}
       </div></div>` + detailHtml;
     return { head, body };
   }
@@ -2422,15 +2472,76 @@
       </div>
       <div class="card-body" style="padding:0 14px 14px">
         ${versions.length ? `<div style="max-height:240px;overflow-y:auto">
-          <table class="table"><thead><tr><th>版本</th><th>本版本说明</th><th class="num">代码量</th><th>保存时间</th></tr></thead>
+          <table class="table"><thead><tr><th>版本</th><th>本版本说明</th><th class="num">代码量</th><th>保存时间</th><th>提交状态</th><th>评分</th></tr></thead>
           <tbody>${versions.map(v => `<tr>
             <td><b>v${v.versionNo}</b></td>
             <td style="max-width:260px">${h(v.summary || '—')}</td>
             <td class="num">${(v.codeSize || 0) >= 1024 ? ((v.codeSize || 0) / 1024).toFixed(1) + ' KB' : (v.codeSize || 0) + ' B'}</td>
             <td>${h(v.createdAt || '—')}</td>
+            <td style="white-space:nowrap"><span class="badge ${v.submitted ? 'ok' : ''}" title="${v.submitted ? '已随「保存并提交」对教师开放' : '尚未提交：仅本人可见，点击「保存并提交」后开放'}">${v.submitted ? '已提交' : '未提交'}</span></td>
+            <td style="white-space:nowrap">${v.score && v.score.finalScore != null
+              ? `<button class="btn sm" data-act="versionScoreModal" data-id="${v.id}" data-val="${v.versionNo}" title="查看评分详情" style="padding:0 8px;font-weight:650">${v.score.finalScore}分 · ${v.score.teacherAdjusted ? '教师' : 'AI初评'}</button>`
+              : '<span class="hint">—</span>'}</td>
           </tr>`).join('')}</tbody></table></div>`
         : '<div class="hint" style="padding:6px 2px">尚无版本记录。</div>'}
       </div></div>`;
+  }
+
+  /* ---------------- 教师查看代码弹窗 · 版本 AI 评分模块 ---------------- */
+  // 评分模块：未评分显示「AI 评分」按钮；已评分显示 AI 初评 + 教师调整（可编辑保存，同步学生端）
+  function projectVersionScoreHtml(d, ver) {
+    const s = (d.detail && String(d.detail.id) === String(ver.id)) ? d.detail.score : null;
+    if (!s) return '<div class="hint" style="margin-top:10px">评分随代码加载后展示。</div>';
+    const editing = String(d.editingScore) === String(ver.id);
+    const aiBlock = s.aiScore != null
+      ? `<div class="note" style="margin-bottom:8px"><b>AI 初评：${s.aiScore} 分</b><div style="white-space:pre-wrap;margin-top:4px;line-height:1.7">${h(s.aiComment || '')}</div></div>` : '';
+    const teacherBlock = s.teacherAdjusted
+      ? `<div class="note" style="margin-bottom:8px;border-left:3px solid #499c54"><b>教师评分：${s.teacherScore != null ? s.teacherScore + ' 分' : '（沿用 AI 分数）'} · 教师已调整</b><div style="white-space:pre-wrap;margin-top:4px;line-height:1.7">${h(s.teacherComment || '（未修改评语）')}</div></div>` : '';
+    if (editing) {
+      const curScore = s.teacherScore != null ? s.teacherScore : s.aiScore;
+      const curComment = s.teacherComment != null ? s.teacherComment : (s.aiComment || '');
+      return `${aiBlock}<div class="note" style="border-left:3px solid #5a5fd4">
+          <b>调整评分</b>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            <input class="input" id="pvScoreInput" type="number" min="0" max="100" step="1" value="${curScore != null ? curScore : ''}" placeholder="0-100" style="width:110px">
+            <span class="hint">分（0-100）</span>
+          </div>
+          <textarea class="textarea" id="pvCommentTa" style="min-height:84px;margin-top:8px" maxlength="2000" placeholder="教师评语：可基于 AI 初评修改，也可完全重写…">${h(curComment)}</textarea>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="btn sm primary" data-act="projectScoreSave" data-id="${ver.id}" data-val="${ver.versionNo}">${icon('check', 13)} 保存评分</button>
+            <button class="btn sm" data-act="projectScoreCancel">取消</button>
+          </div>
+        </div>`;
+    }
+    return `${aiBlock}${teacherBlock}
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn sm" data-act="projectScoreEdit" data-id="${ver.id}" ${d.scoring ? 'disabled' : ''}>${icon('edit', 13)} 调整评分</button>
+        <button class="btn sm" data-act="projectAiScore" data-id="${ver.id}" ${d.scoring ? 'disabled' : ''}>${d.scoring ? '<span class="spinner"></span> AI 评分生成中…' : icon('sparkles', 13) + (s.aiScore != null ? ' 重新 AI 评分' : ' AI 评分')}</button>
+        <span class="hint" style="align-self:center">AI 按项目需求与迭代路线自动评估；调整保存后学生端实时可见</span>
+      </div>`;
+  }
+
+  /* ---------------- 发布/编辑项目 · 项目迭代路线编辑器（选填，默认1项，≤10项，可增删排序） ---------------- */
+  // 单个迭代项：阶段标题（选填）+ 需求描述（任务/验收标准/时间节点）；输入经 data-bind="roadmap" 只写数据不重渲染（防丢焦点）
+  function projectRoadmapEditorHtml(items) {
+    items = items && items.length ? items : [{ title: '', desc: '' }];
+    return items.map((it, i) => `<div class="rm-item" data-rm="${i}">
+        <div class="rm-item-head">
+          <span class="rm-no">迭代 ${i + 1}</span>
+          <div class="spacer"></div>
+          <button type="button" class="btn sm" data-act="rmUp" data-val="${i}" ${i === 0 ? 'disabled' : ''} title="上移一位">上移</button>
+          <button type="button" class="btn sm" data-act="rmDown" data-val="${i}" ${i === items.length - 1 ? 'disabled' : ''} title="下移一位">下移</button>
+          ${items.length > 1 ? `<button type="button" class="btn sm danger" data-act="rmDel" data-val="${i}" title="删除该迭代版本">删除</button>` : ''}
+        </div>
+        <input class="input" placeholder="阶段标题（选填，如：第1周 · 基础搭建与菜单）" value="${h(it.title || '')}"
+          data-bind="roadmap" data-idx="${i}" data-field="title" maxlength="60" autocomplete="off">
+        <textarea class="textarea" style="min-height:64px" placeholder="该版本要求学生完成的具体任务、验收标准与时间节点，如：完成菜单与增删改查；控制台可稳定运行；第 1~2 周完成。"
+          data-bind="roadmap" data-idx="${i}" data-field="desc" maxlength="2000">${h(it.desc || '')}</textarea>
+      </div>`).join('')
+      + `<div class="rm-foot">
+          <button type="button" class="btn sm" data-act="rmAdd" ${items.length >= 10 ? 'disabled' : ''}>${icon('plus', 13)} 添加迭代版本</button>
+          <span class="hint">${items.length} / 10 个迭代版本${items.length >= 10 ? ' · 已达上限' : ''}</span>
+        </div>`;
   }
 
   /* ---------------- 教师进度主区内容（项目聚焦视图内联 + 4 秒轮询局部刷新） ---------------- */
@@ -2447,6 +2558,7 @@
     return `
       <div class="note" style="margin-bottom:12px">
         <b>${h((g.project && g.project.title) || '')}</b> · 已参与 <b>${rows.length}</b> 人 · 已提交 <b>${rows.filter(r => r.status === 'SUBMITTED').length}</b> 人 · 进度每 4 秒自动刷新
+        <span style="color:var(--text-3)">· 仅统计学生已通过「保存并提交」开放的版本，学生仅保存未提交的版本不对教师可见</span>
       </div>
       ${rows.length ? `<div style="max-height:320px;overflow-y:auto">
         <table class="table"><thead><tr><th>学生</th><th>状态</th><th class="num">版本数</th><th>最新保存</th><th class="num">代码量</th><th>本版本说明</th><th></th></tr></thead>
@@ -2628,6 +2740,49 @@
   const resExtAllowed = ['ppt', 'pptx', 'mp4', 'jpg', 'jpeg', 'png', 'doc', 'docx', 'pdf'];
   const resTypeLabel = t => (RES_META[t] && RES_META[t].label) || '资源';
   const resSizeText = n => n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+
+  /* ---------------- 上传学习资源 · 发送班级多选模块（默认全选，结果随上传一并提交） ---------------- */
+  function resClassSummaryText(d) {
+    const total = (d.classes || []).length;
+    const sel = (d.resClasses || []).length;
+    if (!total) return '（暂无可管理班级）';
+    return sel === total ? `（已选全部 ${sel} 个班级）` : `（已选 ${sel} / ${total} 个班级）`;
+  }
+  // 模块整体：摘要条（点击展开/收起）+ 展开态班级 chips（复用作业确认弹窗同款样式）+ 全选/清空快捷操作
+  function resClassAreaHtml(d) {
+    const cls = d.classes || [];
+    const sel = d.resClasses || [];
+    if (!cls.length) {
+      return `<div class="note warn" style="margin-bottom:0">当前账号暂无可管理班级，无法上传资源。请先在「学情看板」创建或被授权管理班级。</div>`;
+    }
+    const names = sel.map(id => (cls.find(x => x.id === id) || {}).name || id);
+    return `<div class="import-file has" data-act="resClassToggleOpen" style="cursor:pointer;${d.classOpen ? '' : 'margin-bottom:0'}">
+        ${icon('users', 14)}<span class="if-name">${sel.length === cls.length ? '全部班级（' + cls.length + ' 个）' : (sel.length ? '已选：' + h(names.join('、')) : '未选择任何班级')}</span>
+        <span style="margin-left:auto;color:var(--text-3);font-size:12px">${d.classOpen ? '收起 ▲' : '选择班级 ▼'}</span>
+      </div>
+      ${d.classOpen ? `<div class="compose-confirm-classes" style="margin-top:8px">
+        ${cls.map(x => `<div class="compose-class-pick${sel.indexOf(x.id) >= 0 ? ' on' : ''}"
+          data-act="resClassPick" data-val="${h(x.id)}" title="${sel.indexOf(x.id) >= 0 ? '点击取消选择' : '点击选择该班级'}">
+          <span class="ccp-check"></span><span>${h(x.name)}</span>
+          ${sel.indexOf(x.id) >= 0 ? '<span class="badge brand" style="margin-left:auto">已选</span>' : ''}
+        </div>`).join('')}
+        <div style="display:flex;gap:8px;width:100%">
+          <button type="button" class="btn sm" data-act="resClassAll">全选</button>
+          <button type="button" class="btn sm" data-act="resClassNone" ${sel.length ? '' : 'disabled'}>清空</button>
+        </div>
+      </div>` : ''}`;
+  }
+  // 局部刷新：仅重绘班级模块 + 摘要行 + 同步底部上传按钮禁用态——不整窗重渲染（防弹窗动画重放闪屏）
+  function resClassRefresh() {
+    const d = State.modal && State.modal.type === 'resUpload' ? State.modal.data : null;
+    if (!d) return;
+    const area = document.getElementById('resClassArea');
+    if (area) area.innerHTML = resClassAreaHtml(d);
+    const sum = document.getElementById('resClassSummary');
+    if (sum) sum.textContent = resClassSummaryText(d);
+    const btn = document.querySelector('.modal-foot [data-act="doResUpload"]');
+    if (btn) btn.disabled = !(d.file && !d.uploading && (d.classes || []).length && (d.resClasses || []).length);
+  }
 
   // 懒加载资源列表：null=加载中 / undefined=未开始。加载完成若停留在本视图则重渲染
   function ensureResources() {
@@ -3976,6 +4131,9 @@
             <span class="if-name">${f ? h(f.name) + '（' + resSizeText(f.size) + '）' : '未选择文件'}</span>
           </div>
           <div class="hint">视频 ≤ 200MB，其余 ≤ 50MB</div></div>
+        <div class="form-row"><label>发送班级 <span style="font-weight:400;color:var(--text-3)" id="resClassSummary">${resClassSummaryText(d)}</span></label>
+          <div id="resClassArea">${resClassAreaHtml(d)}</div>
+          <div class="hint">${(d.classes || []).length ? '资源将发送给勾选班级的学生，默认全选可调整' : ''}</div></div>
         <div class="form-row"><label>关联知识点 <span id="resKpCount" style="font-weight:400;color:var(--text-3)">${n ? '已选 ' + n + ' 个' : '未选择（AI 会自动识别关联）'}</span></label>
           <div class="field" style="margin-bottom:8px">${icon('search', 15)}
             <input placeholder="搜索知识点…" value="${h(d.q || '')}" data-bind="reskpq"></div>
@@ -3986,7 +4144,7 @@
           <div id="resUploadText" style="font-size:12px;color:var(--text-3)">${(d.progress || 0) >= 100 ? 'AI 识别内容中…（约需十几秒，请勿关闭）' : '上传中 ' + (d.progress || 0) + '%'}</div>
         </div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.uploading ? 'disabled' : ''}>取消</button>
-        <button class="btn primary" data-act="doResUpload" ${f && !d.uploading ? '' : 'disabled'}>${icon('send', 15)} ${d.uploading ? '上传中…' : '上传并识别'}</button>`;
+        <button class="btn primary" data-act="doResUpload" ${f && !d.uploading && (d.classes || []).length && (d.resClasses || []).length ? '' : 'disabled'}>${icon('send', 15)} ${d.uploading ? '上传中…' : '上传并识别'}</button>`;
 
     } else if (m.type === 'labUpload') {
       title = '上传实验报告模板（Word）';
@@ -4015,18 +4173,66 @@
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn primary" data-act="doAsFolderCreate" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 创建中…' : icon('folderPlus', 15) + ' 创建文件夹'}</button>`;
 
+    } else if (m.type === 'kgAddModule') {
+      title = '添加一级模块';
+      body = `<div class="note" style="margin-bottom:12px">新增一级模块将出现在模块导航与图谱首页气泡中；模块下可继续添加子知识点，<b>层级数量不限</b>。保存后立即同步至你管理的全部班级。</div>
+        <div class="form-row"><label>模块名称</label>
+          <input class="input" placeholder="如：项目实战（必填，50 字以内）" value="${h(d.name || '')}" data-bind="modal" data-key="name" maxlength="50">
+          <div class="hint">不能为空；不可与现有一级模块重名</div></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doKgAddModule" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 添加中…' : icon('plus', 15) + ' 添加模块'}</button>`;
+
     } else if (m.type === 'kgAddNode') {
       title = '添加子知识点 · ' + (d.parentName || '');
-      body = `<div class="note" style="margin-bottom:12px">将在 <b>${h(d.parentName)}</b> 下新增子知识点，保存后立即同步至后端，学生端知识图谱刷新后可见。</div>
+      body = `<div class="note" style="margin-bottom:12px">将在 <b>${h(d.parentName)}</b> 下新增子知识点，<b>层级数量不限</b>；保存后立即同步至你管理的全部班级。</div>
         <div class="form-row"><label>知识点名称</label>
           <input class="input" placeholder="如：可变参数（必填，50 字以内）" value="${h(d.name || '')}" data-bind="modal" data-key="name" maxlength="50">
           <div class="hint">不能为空；同一父节点下不可与已有子知识点重名</div></div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn primary" data-act="doKgAddNode" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 保存中…' : icon('plus', 15) + ' 添加'}</button>`;
 
+    } else if (m.type === 'kgEditNode') {
+      title = '编辑知识点 · ' + (d.origName || '');
+      body = `<div class="note" style="margin-bottom:12px">修改将立即生效，并自动同步至你管理的全部班级。</div>
+        <div class="form-row"><label>知识点名称</label>
+          <input class="input" placeholder="必填，50 字以内" value="${h(d.name || '')}" data-bind="modal" data-key="name" maxlength="50">
+          <div class="hint">不能为空；不可与同级其他知识点重名</div></div>
+        <div class="form-row"><label>知识点描述</label>
+          <textarea class="input" rows="3" placeholder="选填，500 字以内（可在此补充教学说明）" data-bind="modal" data-key="desc" maxlength="500">${h(d.desc || '')}</textarea></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doKgEditNode" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 保存中…' : icon('check', 15) + ' 保存'}</button>`;
+
+    } else if (m.type === 'kgMoveNode') {
+      const opts = d.opts || [];
+      title = '移动知识点 · ' + (d.name || '');
+      body = `<div class="note" style="margin-bottom:12px">将 <b>${h(d.name)}</b> 移动到新位置（其子树整体随迁）；保存后立即同步至你管理的全部班级。</div>
+        <div class="form-row"><label>目标位置</label>
+          <select class="input" data-bind="modal" data-key="target">
+            <option value="" ${!d.target ? 'selected' : ''}>作为一级模块</option>
+            ${opts.map(o => `<option value="${h(o.code)}" ${d.target === o.code ? 'selected' : ''}>${h(o.label)}</option>`).join('')}
+          </select>
+          <div class="hint">目标不能是自身或自己的子节点；「作为一级模块」= 移出当前模块，成为新的顶层模块</div></div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doKgMoveNode" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 移动中…' : icon('panel', 15) + ' 确认移动'}</button>`;
+
+    } else if (m.type === 'kgMoveRoot') {
+      title = '移为一级模块';
+      body = `<div class="note warn" style="margin-bottom:12px">将 <b>${h(d.name)}</b> 移为一级模块？该节点及其子树会脱离当前模块，成为新的顶层模块。</div>
+        <div class="hint">操作即时生效并同步至全部班级；如需移回，可用节点菜单「移动到…」。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn primary" data-act="doKgMoveRoot" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 移动中…' : icon('panel', 15) + ' 确认移动'}</button>`;
+
+    } else if (m.type === 'kgBatchDel') {
+      title = '批量删除知识点';
+      body = `<div class="note warn" style="margin-bottom:12px">确定要删除已勾选的 <b>${d.count}</b> 个知识点吗？<b style="color:var(--danger)">每个知识点对应的全部子节点将一并删除</b>。</div>
+        <div class="hint">删除在单次事务内原子完成：要么全部成功，要么全部回滚；学生练习记录与掌握度数据不受影响，点击画布「重置」可恢复。</div>`;
+      foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn danger" data-act="doKgBatchDel" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 删除中…' : icon('trash', 15) + ' 确认批量删除'}</button>`;
+
     } else if (m.type === 'kgDelNode') {
       title = '删除知识点';
-      body = `<div class="note warn" style="margin-bottom:12px">确定要删除知识点 <b>${h(d.name)}</b> 吗？<b style="color:var(--danger)">操作将同时删除其全部 ${d.children} 个子节点</b>。</div>
+      body = `<div class="note warn" style="margin-bottom:12px">确定要删除 <b>${h(d.name)}</b> 吗？${d.children ? `<b style="color:var(--danger)">操作将同时删除其全部 ${d.children} 个子节点</b>。` : ''}
+        ${d.level === 1 ? '<div style="margin-top:6px">注意：这是一级模块，删除后整个模块（含其下全部知识点）将从图谱中移除。</div>' : ''}</div>
         <div class="hint">删除为可恢复操作：点击画布「重置」可将图谱还原为系统默认状态；学生练习记录与掌握度数据不受影响。</div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn danger" data-act="doKgDelNode" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 删除中…' : icon('trash', 15) + ' 确认删除'}</button>`;
@@ -4076,12 +4282,15 @@
         <button class="btn primary" data-act="labGroupsRefresh">${icon('refresh', 14)} 立即刷新</button>`;
 
     } else if (m.type === 'projectCompose') {
-      // 发布 / 编辑项目：标题 + 详细需求说明（data-bind 双向写回弹窗数据）
+      // 发布 / 编辑项目：标题 + 详细需求说明 + 可选「项目迭代路线」（data-bind 双向写回弹窗数据）
       title = d.id ? '编辑项目' : '发布新项目';
       body = `<div class="form-row"><label>项目标题（必填，120 字以内）</label>
           <input class="input" placeholder="如：控制台版学生成绩管理系统" value="${h(d.title || '')}" data-bind="modal" data-key="title" maxlength="120" autocomplete="off"></div>
         <div class="form-row"><label>项目需求说明（必填）</label>
           <textarea class="textarea" style="min-height:180px" placeholder="详细描述项目需求：功能点、技术要求、验收标准等，学生将按此需求开发…" data-bind="modal" data-key="description">${h(d.description || '')}</textarea></div>
+        <div class="form-row"><label>项目迭代路线 <span style="font-weight:400;color:var(--text-3)">（选填，最多 10 个迭代版本）</span></label>
+          <div class="rm-box">${projectRoadmapEditorHtml(d.roadmap)}</div>
+          <div class="hint">按阶段填写各迭代版本要求学生完成的任务、验收标准与时间节点；未填写不影响项目发布，填写后学生端将以时间线形式展示分阶段迭代路径。</div></div>
         <div class="hint">发布后本班学生将在「项目代码」板块实时收到；支持随时编辑、下架与状态管理。</div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn primary" data-act="doProjectSave" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 保存中…' : icon('check', 15) + (d.id ? ' 保存修改' : ' 发布项目')}</button>`;
@@ -4102,6 +4311,8 @@
               return `<div class="card" style="margin-bottom:10px"><div class="card-head">${icon('layers', 14)}
                 <h3>v${ver.versionNo}</h3>
                 <span class="badge">${ver.fileCount || 0} 个文件</span>
+                ${ver.reflection ? '<span class="badge brand" title="该版本附有学生总结反思">总结反思</span>' : ''}
+                ${ver.score && ver.score.finalScore != null ? `<span class="badge ${ver.score.teacherAdjusted ? 'ok' : ''}" title="${ver.score.teacherAdjusted ? '教师已调整评分' : 'AI 初评'}">评分 ${ver.score.finalScore}</span>` : ''}
                 <span class="badge">${(ver.codeSize || 0) >= 1024 ? ((ver.codeSize || 0) / 1024).toFixed(1) + ' KB' : (ver.codeSize || 0) + ' B'}</span>
                 <span class="hint" style="margin-left:4px">${h(ver.createdAt || '')}</span>
                 <div class="spacer"></div>
@@ -4109,17 +4320,33 @@
               </div>
               ${open ? `<div class="card-body" style="padding:12px 14px">
                 ${ver.summary ? `<div class="note" style="margin-bottom:10px">本版本说明：${h(ver.summary)}</div>` : ''}
+                ${ver.reflection ? `<div class="note" style="margin-bottom:10px;border-left:3px solid #5a5fd4"><b>总结与反思：</b><div style="white-space:pre-wrap;margin-top:4px;line-height:1.7">${h(ver.reflection)}</div></div>` : ''}
                 ${(d.detail && String(d.detail.id) === String(ver.id))
                   ? ((d.detail.files || []).map(f => `<div style="margin-bottom:10px">
                       <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:5px">${icon('file', 12)} ${h(f.path)}</div>
                       ${codeEditorHtml('', f.content || '', { ro: true, minHeight: 120 })}
                     </div>`).join('') || '<div class="hint">该版本无代码文件</div>')
                   : '<div class="hint">代码加载中…</div>'}
+                <div style="margin-top:12px;border-top:1px dashed var(--border,#e4e6ee);padding-top:10px">
+                  <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">${icon('sparkles', 14)} 版本评分</div>
+                  ${(d.detail && String(d.detail.id) === String(ver.id)) ? projectVersionScoreHtml(d, ver) : '<div class="hint">展开代码后可进行 AI 评分与教师调整。</div>'}
+                </div>
               </div>` : ''}
               </div>`;
             }).join('')
-          : '<div class="empty"><div class="empty-title">该学生尚未保存过代码</div><div class="empty-desc">学生每次保存都会自动生成新版本并出现在这里。</div></div>');
+          : '<div class="empty"><div class="empty-title">暂无对学生开放的可见版本</div><div class="empty-desc">学生每次「保存并提交」时，当前版本及全部历史版本才会开放给教师查看；仅「保存新版本」的迭代不对教师开放。</div></div>');
       }
+      foot = `<button class="btn" data-act="closeModal">关闭</button>`;
+
+    } else if (m.type === 'versionScore') {
+      // 学生端查看某版本评分详情：AI 初评与教师调整分区展示、来源标注清晰
+      const s = d.score || {};
+      title = '版本评分 · v' + (d.versionNo || '');
+      body = `<div class="note" style="margin-bottom:10px">当前评分：<b style="font-size:16px">${s.finalScore != null ? s.finalScore + ' 分' : '未评分'}</b>
+          ${s.teacherAdjusted ? '<span class="badge ok">教师已调整</span>' : (s.finalScore != null ? '<span class="badge brand">AI 初评</span>' : '')}</div>`
+        + (s.aiScore != null ? `<div class="note" style="margin-bottom:10px"><b>AI 初评：${s.aiScore} 分</b><div style="white-space:pre-wrap;margin-top:4px;line-height:1.7">${h(s.aiComment || '')}</div></div>` : '')
+        + (s.teacherAdjusted ? `<div class="note" style="margin-bottom:10px;border-left:3px solid #499c54"><b>教师评分：${s.teacherScore != null ? s.teacherScore + ' 分' : '（沿用 AI 分数）'} · 教师已调整</b><div style="white-space:pre-wrap;margin-top:4px;line-height:1.7">${h(s.teacherComment || '（未修改评语）')}</div></div>` : '')
+        + (s.finalScore == null ? '<div class="hint">教师尚未对该版本评分：教师在查看代码时进行 AI 评分与人工调整，完成后你可在项目详情与代码工作台的版本记录中查看。</div>' : '');
       foot = `<button class="btn" data-act="closeModal">关闭</button>`;
 
     } else if (m.type === 'projectDelete') {
@@ -4383,7 +4610,7 @@
       </div>`;
       foot = '<button class="btn primary" data-act="closeModal">关闭</button>';
     }
-    return `<div class="mask"><div class="modal${m.type === 'resPreview' ? ' wide' : ''}">
+    return `<div class="mask"><div class="modal${m.type === 'resPreview' ? ' wide' : (m.type === 'projectDetail' ? ' xl' : '')}">
       <div class="modal-head">${icon('sparkles', 16)}<h3>${h(title)}</h3><div class="spacer"></div>
         <button class="icon-btn" data-act="closeModal">${icon('x', 16)}</button></div>
       <div class="modal-body">${body}</div>
@@ -4621,6 +4848,8 @@
           }, []);
       State.compose = {
         id: a.id, title: a.title || '',
+        // 编辑场景记录原归属班级：确认发布弹窗中固定展示（编辑不改变作业归属）
+        classId: a.classId != null ? String(a.classId) : (State.filters.classId != null ? String(State.filters.classId) : null),
         scoreMode: (a.scoreMode || 'average').toUpperCase(),
         startAt: a.startAt || '', endAt: a.due || '',
         allowLate: !!a.allowLate,
@@ -4653,6 +4882,7 @@
       const d = new Date(), p = n => String(n).padStart(2, '0');
       State.compose = {
         id: null,
+        classId: null,   // 新建：归属班级由「保存并发布」确认弹窗中多选决定
         title: '新建作业' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()),
         scoreMode: 'AVERAGE',
         startAt: composeNowStr(), endAt: '', allowLate: false,
@@ -4675,6 +4905,7 @@
     if (!c) return '';
     if (c.preview) return composePreviewHtml();
     if (c.import) return composeImportHtml();
+    if (c.confirm) return composeConfirmHtml();
     const avg = c.scoreMode !== 'CUSTOM';
     return `<div class="compose-mask">
       <div class="compose-top">
@@ -4715,6 +4946,60 @@
           </div>
           ${c._kpOpen ? composeKpPanelHtml() : ''}
           <div id="composeQList">${composeQListHtml()}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  /* 保存并发布 · 二次确认面板（盖在组卷编辑器上）：确认文案 + 发布班级多选（默认当前看板班级） */
+  // 班级 chips / 计数 / 按钮行为独立片段：勾选切换时仅局部重绘对应容器，
+  // 不整层 renderOverlays 重建面板——避免确认卡片 pop 入场动画重放造成闪屏
+  function composeConfirmClassesHtml(cf) {
+    const cls = cf.classes || [];
+    const sel = cf.selected || [];
+    return cls.length ? cls.map(x => {
+      const on = sel.indexOf(x.id) >= 0;
+      return `<div class="compose-class-pick${on ? ' on' : ''}${cf.editing || cf.busy ? ' lock' : ''}"
+        ${cf.editing || cf.busy ? '' : 'data-act="composeConfirmToggle" data-val="' + h(x.id) + '"'}
+        title="${cf.editing ? '编辑作业不改变归属班级' : (on ? '点击取消选择' : '点击选择该班级')}">
+        <span class="ccp-check"></span><span>${h(x.name)}</span>
+        ${on ? '<span class="badge brand" style="margin-left:auto">已选</span>' : ''}
+      </div>`;
+    }).join('') : '<div class="hint">暂无可授课班级</div>';
+  }
+  function composeConfirmCountHtml(cf) {
+    const sel = cf.selected || [];
+    const names = sel.map(id => ((cf.classes || []).find(x => x.id === id) || {}).name || id);
+    return `已选 <b>${sel.length}</b> 个班级${sel.length ? '：' + h(names.join('、')) : ''}${cf.busy ? ' · 正在发布…' : ''}`;
+  }
+  function composeConfirmActionsHtml(cf) {
+    return `<button class="btn" data-act="composeConfirmCancel" ${cf.busy ? 'disabled' : ''}>取消</button>
+      <button class="btn primary" data-act="composeConfirmOk" ${cf.busy ? 'disabled' : ''}>${cf.busy ? '<span class="spinner"></span> 发布中…' : icon('check', 14) + ' 确认发布'}</button>`;
+  }
+  // 勾选/发布进行中状态变化的局部刷新（不重放卡片动画）
+  function composeConfirmRefresh() {
+    const c = State.compose, cf = c && c.confirm;
+    if (!cf) return;
+    const box = document.getElementById('composeConfirmClasses');
+    if (box) box.innerHTML = composeConfirmClassesHtml(cf);
+    const cnt = document.getElementById('composeConfirmCount');
+    if (cnt) cnt.innerHTML = composeConfirmCountHtml(cf);
+    const act = document.getElementById('composeConfirmActions');
+    if (act) act.innerHTML = composeConfirmActionsHtml(cf);
+  }
+  function composeConfirmHtml() {
+    const c = State.compose, cf = c.confirm;
+    return `<div class="compose-mask">
+      <div class="compose-confirm">
+        <div class="compose-confirm-card">
+        <div class="compose-confirm-head">${icon('send', 15)} 确认发布作业</div>
+        <div class="note" style="margin:12px 0 10px">即将发布作业 <b>「${h(c.title || '未命名作业')}」</b>，${cf.editing
+          ? '将保存修改并发布至原归属班级，学生端实时收到。'
+          : '选择需发布的班级后确认，作业将关联所选班级逐一发布，学生端实时收到。'}</div>
+        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">发布班级${cf.editing ? ' <span style="font-weight:400;color:var(--text-3)">（编辑作业不改变归属班级）</span>' : ' <span style="font-weight:400;color:var(--text-3)">（可多选）</span>'}</div>
+        <div class="compose-confirm-classes" id="composeConfirmClasses">${composeConfirmClassesHtml(cf)}</div>
+        <div class="hint" id="composeConfirmCount" style="margin-top:10px">${composeConfirmCountHtml(cf)}</div>
+        <div id="composeConfirmActions" style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">${composeConfirmActionsHtml(cf)}</div>
         </div>
       </div>
     </div>`;
@@ -5293,73 +5578,85 @@
   }
 
   // 出题保存/发布：前端校验 + 提交 + 刷新
-  async function composeSubmit(status) {
-    const c = State.compose;
-    if (!c || c.busy) return;
-    if (!c.title || !c.title.trim()) { toast('请填写作业标题'); return; }
+  /** 组卷校验：必填项检查（标题/题目/答案/总分/时间），未通过 toast 原文案并返回 false */
+  function composeValidate(c) {
+    if (!c.title || !c.title.trim()) { toast('请填写作业标题'); return false; }
     // 实验报告型：不组卷，仅需上传模板；其余校验照旧
     const isLab = !!(c.lab && c.lab.templateId);
-    if (!isLab && !c.questions.length) { toast('请至少添加一道题目'); return; }
+    if (!isLab && !c.questions.length) { toast('请至少添加一道题目'); return false; }
     if (isLab) {
-      if (!c.lab.templateId) { toast('实验报告作业需先上传 Word 报告模板'); return; }
+      if (!c.lab.templateId) { toast('实验报告作业需先上传 Word 报告模板'); return false; }
     }
     // 分组实验（实验报告作业）：分组数量校验
     const groupOn = isLab && !!c.groupEnabled;
     if (groupOn) {
       const gc = parseInt(c.groupCount, 10);
-      if (!gc || gc < 1 || gc > 99) { toast('分组数量须为 1~99 之间的整数'); return; }
+      if (!gc || gc < 1 || gc > 99) { toast('分组数量须为 1~99 之间的整数'); return false; }
     }
     for (let i = 0; i < c.questions.length; i++) {
       const q = c.questions[i], no = '第 ' + (i + 1) + ' 题';
-      if (!q.title.trim()) { toast(no + '缺少题干'); return; }
+      if (!q.title.trim()) { toast(no + '缺少题干'); return false; }
       if (q.type === 'SINGLE' || q.type === 'MULTI') {
-        if (q.options.filter(o => o.text.trim()).length < 2) { toast(no + '至少需要 2 个非空选项'); return; }
-        if (!q.answer.length) { toast(no + '请设置正确答案'); return; }
+        if (q.options.filter(o => o.text.trim()).length < 2) { toast(no + '至少需要 2 个非空选项'); return false; }
+        if (!q.answer.length) { toast(no + '请设置正确答案'); return false; }
       }
-      if (q.type === 'JUDGE' && q.answer.length === 0) { toast(no + '请设置正确答案'); return; }
+      if (q.type === 'JUDGE' && q.answer.length === 0) { toast(no + '请设置正确答案'); return false; }
     }
     if (c.scoreMode === 'CUSTOM') {
       const sum = c.questions.reduce((s, q) => s + (Number(q.score) || 0), 0);
-      if (Math.abs(sum - 100) > 0.01) { toast('自定义评分总分须为 100 分，当前 ' + Math.round(sum * 10) / 10); return; }
+      if (Math.abs(sum - 100) > 0.01) { toast('自定义评分总分须为 100 分，当前 ' + Math.round(sum * 10) / 10); return false; }
     }
-    if (!c.endAt) { toast('请选择结束时间'); return; }
-    if (c.startAt && c.endAt <= c.startAt) { toast('结束时间必须晚于开始时间'); return; }
+    if (!c.endAt) { toast('请选择结束时间'); return false; }
+    if (c.startAt && c.endAt <= c.startAt) { toast('结束时间必须晚于开始时间'); return false; }
+    return true;
+  }
 
+  /** 组卷提交载荷构造（草稿/发布共用；classId 由调用方按发布班级注入） */
+  function composePayload(c, status) {
+    const isLab = !!(c.lab && c.lab.templateId);
+    const groupOn = isLab && !!c.groupEnabled;
+    return {
+      id: c.id != null ? Number(c.id) : null,
+      title: c.title, scoreMode: isLab ? 'LAB' : c.scoreMode,
+      classId: null,
+      startAt: c.startAt || null, endAt: c.endAt, allowLate: !!c.allowLate,
+      status: status,
+      // 所属文件夹：编辑预填原值，新建取顶栏「选择文件夹」下拉（未选 = 其他）
+      folderId: c.folderId != null ? Number(c.folderId) : null,
+      // 实验报告型：模板资源 ID（模板上传时已入学习资源板块）
+      labTemplateId: isLab ? Number(c.lab.templateId) : null,
+      labTemplateTitle: isLab ? (c.lab.templateTitle || '') : null,
+      // 分组实验配置（实验报告作业）：模式 RANDOM=随机分组 / SELF=学生自行组队
+      groupEnabled: groupOn,
+      groupMode: groupOn ? (c.groupMode || 'RANDOM') : null,
+      groupCount: groupOn ? parseInt(c.groupCount, 10) : null,
+      // 成果物上传配置（实验报告作业）：开启后学生须同时提交报告与成果物
+      deliverableEnabled: isLab && !!c.deliverableEnabled,
+      // 作业级知识点：教师在「关联知识点」面板的选择（作业卡与学生端展示以此为准）
+      kps: c.kps || [],
+      questions: c.questions.map(q => ({
+        // 编辑场景携带原题目 id（后端按 id 差量更新保持稳定）；新题无 id
+        id: q.id != null ? Number(q.id) : null,
+        type: q.type, title: q.title,
+        options: (q.options || []).filter(o => o.text.trim()).map(o => ({ key: o.key, text: o.text })),
+        answer: q.answer || [],
+        analysis: q.analysis || null,
+        difficulty: Number(q.difficulty) || 0.5,
+        kpCode: (q.kpCodes || []).join(',') || null,
+        score: c.scoreMode === 'CUSTOM' ? (Number(q.score) || 0) : null
+      }))
+    };
+  }
+
+  async function composeSubmit(status) {
+    const c = State.compose;
+    if (!c || c.busy) return;
+    if (!composeValidate(c)) return;
     c.busy = true; renderOverlays();
     try {
-      const r = await API.post('/teacher/compose', {
-        id: c.id != null ? Number(c.id) : null,
-        title: c.title, scoreMode: isLab ? 'LAB' : c.scoreMode,
-        // 归属班级：携带教师当前选中的班级（共同管理教师/多班所有者切班发布均落所选班级；
-        // 此前缺省由后端兜底为发布者自己授课的第一个班级，导致共同管理班级收不到作业）
-        classId: State.filters.classId != null ? Number(State.filters.classId) : null,
-        startAt: c.startAt || null, endAt: c.endAt, allowLate: !!c.allowLate,
-        status: status,
-        // 所属文件夹：编辑预填原值，新建取顶栏「选择文件夹」下拉（未选 = 其他）
-        folderId: c.folderId != null ? Number(c.folderId) : null,
-        // 实验报告型：模板资源 ID（模板上传时已入学习资源板块）
-        labTemplateId: isLab ? Number(c.lab.templateId) : null,
-        labTemplateTitle: isLab ? (c.lab.templateTitle || '') : null,
-        // 分组实验配置（实验报告作业）：模式 RANDOM=随机分组 / SELF=学生自行组队
-        groupEnabled: groupOn,
-        groupMode: groupOn ? (c.groupMode || 'RANDOM') : null,
-        groupCount: groupOn ? parseInt(c.groupCount, 10) : null,
-        // 成果物上传配置（实验报告作业）：开启后学生须同时提交报告与成果物
-        deliverableEnabled: isLab && !!c.deliverableEnabled,
-        // 作业级知识点：教师在「关联知识点」面板的选择（作业卡与学生端展示以此为准）
-        kps: c.kps || [],
-        questions: c.questions.map(q => ({
-          // 编辑场景携带原题目 id（后端按 id 差量更新保持稳定）；新题无 id
-          id: q.id != null ? Number(q.id) : null,
-          type: q.type, title: q.title,
-          options: (q.options || []).filter(o => o.text.trim()).map(o => ({ key: o.key, text: o.text })),
-          answer: q.answer || [],
-          analysis: q.analysis || null,
-          difficulty: Number(q.difficulty) || 0.5,
-          kpCode: (q.kpCodes || []).join(',') || null,
-          score: c.scoreMode === 'CUSTOM' ? (Number(q.score) || 0) : null
-        }))
-      });
+      const payload = composePayload(c, status);
+      payload.classId = State.filters.classId != null ? Number(State.filters.classId) : null;
+      const r = await API.post('/teacher/compose', payload);
       State.compose = null; renderOverlays();
       // 发布后按当前选中班级刷新（与 classPick 切换同一口径，避免跳到默认班级列表）
       DB.assignments = await API.get('/teacher/assignments'
@@ -6512,6 +6809,15 @@
     },
     reportTab(v) { State.filters.report = v; render(); },
     kpCell(v) {
+      // 教师批量管理模式：点击节点=勾选/取消勾选（不改选中态，弹窗/资源卡不受影响）
+      if (State.role === 'teacher' && State.kgBatch) {
+        const sel = State.kgBatchSel || [];
+        const i = sel.indexOf(v);
+        if (i >= 0) sel.splice(i, 1); else sel.push(v);
+        State.kgBatchSel = sel;
+        render();
+        return;
+      }
       // 修复：render() 全量重建 main 区会令 .main-body 的 scrollTop 归零，
       // 表现为点击图谱卡片后内容区自动滚回顶部；渲染前记录位置、渲染后恢复。
       const keepMain = document.querySelector('.main-body');
@@ -6568,7 +6874,33 @@
       State.kgPan = { x: 0, y: 0 };
       Actions.kgApplyZoom();
     },
-    /* --- 教师端图谱维护：添加子知识点 / 删除（二次确认）/ 重置（提示+确认） --- */
+    /* --- 教师端图谱维护：增（模块/子节点）/ 删（单个/批量）/ 改（属性）/ 移动（层级调整）/ 重置 ---
+       全部操作即时生效并同步全部班级（后端单事务写入 + 返回最新图谱，refresh 即时应用）；
+       失败保留弹窗与输入，可修改后重试 */
+    kgAddModuleModal() {
+      State.modal = { type: 'kgAddModule', data: { name: '', busy: false } };
+      renderOverlays();
+      setTimeout(() => {
+        const i = document.querySelector('.modal input[data-key="name"]');
+        if (i) i.focus();
+      }, 60);
+    },
+    async doKgAddModule() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      const name = (d.name || '').trim();
+      if (!name) { toast('请输入模块名称'); return; }
+      d.busy = true; renderOverlays();
+      try {
+        const g = await API.post('/teacher/graph/nodes', { name: name });
+        State.modal = null; renderOverlays();
+        await refreshKnowledgeGraph(g);
+        toast('模块「' + name + '」已添加，已同步至全部班级', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('添加模块失败：' + e.message + '（可修改后重试）');
+      }
+    },
     kgAddNodeModal(v) {
       const k = kp(v);
       if (!k) { toast('知识点不存在'); return; }
@@ -6593,17 +6925,129 @@
         if (created) State.activeKp = created.code;
         State.modal = null; renderOverlays();
         await refreshKnowledgeGraph(g);
-        toast('子知识点「' + name + '」已添加并同步', 'ok');
+        toast('子知识点「' + name + '」已添加，已同步至全部班级', 'ok');
       } catch (e) {
         d.busy = false; renderOverlays();
         toast('添加失败：' + e.message + '（可修改后重试）');
       }
     },
+    kgEditNodeModal(v) {
+      const k = kp(v);
+      if (!k) { toast('知识点不存在'); return; }
+      State.modal = { type: 'kgEditNode', data: { code: v, origName: k.name, name: k.name, desc: k.desc || '', busy: false } };
+      renderOverlays();
+      setTimeout(() => {
+        const i = document.querySelector('.modal input[data-key="name"]');
+        if (i) { i.focus(); i.select(); }
+      }, 60);
+    },
+    async doKgEditNode() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      const name = (d.name || '').trim();
+      if (!name) { toast('知识点名称不能为空'); return; }
+      d.busy = true; renderOverlays();
+      try {
+        const g = await API.put('/teacher/graph/nodes/' + encodeURIComponent(d.code),
+          { name: name, description: d.desc || '' });
+        State.modal = null; renderOverlays();
+        await refreshKnowledgeGraph(g);
+        toast('「' + name + '」信息已更新，已同步至全部班级', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('保存失败：' + e.message + '（可修改后重试）');
+      }
+    },
+    kgMoveNodeModal(v) {
+      const k = kp(v);
+      if (!k) { toast('知识点不存在'); return; }
+      State.modal = { type: 'kgMoveNode', data: { code: v, name: k.name, target: '', opts: kgMoveTargets(v), busy: false } };
+      renderOverlays();
+    },
+    async doKgMoveNode() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        const g = await API.post('/teacher/graph/nodes/' + encodeURIComponent(d.code) + '/move',
+          { targetCode: d.target || null });
+        State.modal = null; renderOverlays();
+        await refreshKnowledgeGraph(g);
+        const tn = d.target ? (kp(d.target) || {}).name : '一级模块';
+        toast('「' + d.name + '」已移动至「' + tn + '」，已同步至全部班级', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('移动失败：' + e.message + '（可重新选择目标后重试）');
+      }
+    },
+    /* 拖拽落点确认（拖到空白画布）：移为一级模块 */
+    kgDropRootConfirm(v) {
+      const k = kp(v);
+      if (!k) return;
+      State.modal = { type: 'kgMoveRoot', data: { code: v, name: k.name, busy: false } };
+      renderOverlays();
+    },
+    /* 拖拽落点为其他节点：直接移为其子节点（后端校验防环，失败可重试） */
+    async kgDropMove(code, targetCode) {
+      const kn = kp(code);
+      try {
+        const g = await API.post('/teacher/graph/nodes/' + encodeURIComponent(code) + '/move',
+          { targetCode: targetCode });
+        await refreshKnowledgeGraph(g);
+        const tn = (kp(targetCode) || {}).name || targetCode;
+        toast('「' + ((kn || {}).name || code) + '」已移动至「' + tn + '」下，已同步至全部班级', 'ok');
+      } catch (e) {
+        toast('移动失败：' + e.message + '（可重新拖拽，或用节点菜单「移动到…」完成）');
+      }
+    },
+    async doKgMoveRoot() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        const g = await API.post('/teacher/graph/nodes/' + encodeURIComponent(d.code) + '/move', { targetCode: null });
+        State.modal = null; renderOverlays();
+        await refreshKnowledgeGraph(g);
+        toast('「' + d.name + '」已移为一级模块，已同步至全部班级', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('移动失败：' + e.message + '（可重试）');
+      }
+    },
+    kgBatchToggle() {
+      State.kgBatch = !State.kgBatch;
+      if (State.kgBatch) {
+        if (!Array.isArray(State.kgBatchSel)) State.kgBatchSel = [];
+      } else {
+        State.kgBatchSel = [];
+      }
+      render();
+    },
+    kgBatchDelModal() {
+      const sel = State.kgBatchSel || [];
+      if (!sel.length) { toast('请先勾选要删除的知识点'); return; }
+      State.modal = { type: 'kgBatchDel', data: { codes: sel.slice(), count: sel.length, busy: false } };
+      renderOverlays();
+    },
+    async doKgBatchDel() {
+      const d = State.modal && State.modal.data;
+      if (!d || d.busy) return;
+      d.busy = true; renderOverlays();
+      try {
+        const g = await API.post('/teacher/graph/nodes/batch-delete', { codes: d.codes });
+        State.modal = null; renderOverlays();
+        State.kgBatchSel = [];
+        await refreshKnowledgeGraph(g);
+        toast('已批量删除 ' + d.count + ' 个知识点及其子树，已同步至全部班级', 'ok');
+      } catch (e) {
+        d.busy = false; renderOverlays();
+        toast('批量删除失败：' + e.message + '（可重试）');
+      }
+    },
     kgDelNodeModal(v) {
       const k = kp(v);
       if (!k) { toast('知识点不存在'); return; }
-      if (k.level === 1) { toast('一级模块不可删除'); return; }
-      State.modal = { type: 'kgDelNode', data: { code: v, name: k.name, children: 0, busy: false } };
+      State.modal = { type: 'kgDelNode', data: { code: v, name: k.name, level: k.level, children: 0, busy: false } };
       renderOverlays();
       // 子树规模异步补齐（弹窗先出，数字到位后重渲染弹窗）
       API.get('/teacher/graph/nodes/' + encodeURIComponent(v) + '/subtree-size')
@@ -6622,7 +7066,7 @@
         const g = await API.del('/teacher/graph/nodes/' + encodeURIComponent(d.code));
         State.modal = null; renderOverlays();
         await refreshKnowledgeGraph(g);
-        toast('知识点「' + d.name + '」及其子节点已删除（重置可恢复）', 'ok');
+        toast('「' + d.name + '」' + (d.children ? '及其 ' + d.children + ' 个子节点 ' : '') + '已删除，已同步至全部班级（重置可恢复）', 'ok');
       } catch (e) {
         d.busy = false; renderOverlays();
         toast('删除失败：' + e.message + '（可重试）');
@@ -6639,8 +7083,22 @@
       try {
         const g = await API.post('/teacher/graph/reset');
         State.modal = null; renderOverlays();
+        /* 完整还原到页面首次加载状态（与初始渲染逻辑一致）：
+           - 视图回首页气泡图（参考初始态）；缩放 100%、平移居中
+           - 搜索关键词清空（左侧搜索框与结果列表复位）
+           - 批量管理开关与勾选集全部复位
+           - 选中节点清空后由 refreshKnowledgeGraph 按首载逻辑回落到首个知识点 */
         State.kgView = { mode: 'home', module: null, focus: null };
+        State.kgZoom = 1;
+        State.kgPan = { x: 0, y: 0 };
+        State.kgQ = '';
+        State.kgBatch = false;
+        State.kgBatchSel = [];
+        State.activeKp = null;
         await refreshKnowledgeGraph(g);
+        // 滚动位置复位到顶部（首载即顶部），保证界面展示与初始状态完全一致
+        const mb = document.querySelector('.main-body');
+        if (mb) mb.scrollTop = 0;
         toast('图谱已重置为系统默认状态', 'ok');
       } catch (e) {
         d.busy = false; renderOverlays();
@@ -6843,13 +7301,42 @@
 
     /* --- 学习资源：教师上传 / 编辑知识点 / 删除 / 学生查看与学完 --- */
     resUploadModal() {
-      // nav/scrolls：分层知识点选择组件（与学生端新建会话同款）的导航层级与滚动记忆
-      State.modal = { type: 'resUpload', data: { title: '', file: null, uploading: false, progress: 0, kps: [], q: '', nav: [], scrolls: {} } };
+      // nav/scrolls：分层知识点选择组件（与学生端新建会话同款）的导航层级与滚动记忆；
+      // classes/resClasses：发送班级多选（接口拉取的教师可管理班级，默认全选）
+      const classes = (DB.classes || []).map(x => ({ id: String(x.id), name: x.name || ('班级 ' + x.id) }));
+      State.modal = { type: 'resUpload', data: { title: '', file: null, uploading: false, progress: 0, kps: [], q: '', nav: [], scrolls: {}, classes, resClasses: classes.map(x => x.id), classOpen: false } };
       renderOverlays();
     },
     resPickFile() {
       const input = document.getElementById('resFileInput');
       if (input) input.click();
+    },
+    // 发送班级模块交互：展开/收起、勾选切换、全选/清空——全部局部刷新，不打断弹窗其他输入
+    resClassToggleOpen() {
+      const d = State.modal && State.modal.type === 'resUpload' ? State.modal.data : null;
+      if (!d || d.uploading) return;
+      d.classOpen = !d.classOpen;
+      resClassRefresh();
+    },
+    resClassPick(v) {
+      const d = State.modal && State.modal.type === 'resUpload' ? State.modal.data : null;
+      if (!d || d.uploading) return;
+      const i = (d.resClasses || []).indexOf(String(v));
+      if (i >= 0) d.resClasses.splice(i, 1);
+      else (d.resClasses = d.resClasses || []).push(String(v));
+      resClassRefresh();
+    },
+    resClassAll() {
+      const d = State.modal && State.modal.type === 'resUpload' ? State.modal.data : null;
+      if (!d || d.uploading) return;
+      d.resClasses = (d.classes || []).map(x => x.id);
+      resClassRefresh();
+    },
+    resClassNone() {
+      const d = State.modal && State.modal.type === 'resUpload' ? State.modal.data : null;
+      if (!d || d.uploading) return;
+      d.resClasses = [];
+      resClassRefresh();
     },
     // 实验报告作业：打开模板上传弹窗（复用资源上传接口，模板自动进学习资源板块）
     composeLab() {
@@ -6903,6 +7390,8 @@
       if (!d.title || !d.title.trim()) { toast('请填写资源标题'); return; }
       const file = d.file;
       if (!file) { toast('请选择要上传的文件'); return; }
+      if (!(d.classes || []).length) { toast('当前账号暂无可管理班级，无法上传'); return; }
+      if (!(d.resClasses || []).length) { toast('请至少选择一个发送班级'); return; }
       const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();
       if (resExtAllowed.indexOf(ext) < 0) { toast('仅支持 PPT / MP4 视频 / JPG、PNG 图片 / Word / PDF 格式'); return; }
       const isVideo = ext === 'mp4';
@@ -6971,8 +7460,8 @@
       fd.append('file', file, file.name);
       fd.append('title', d.title.trim());
       fd.append('kpCodes', (d.kps || []).join(','));
-      // 资源归属教师当前选中班级（不带 classId 会落到后端默认班级兜底，导致所选班级学生不可见）
-      if (State.filters.classId != null) fd.append('classId', String(State.filters.classId));
+      // 发送班级：上传弹窗多选结果（逗号分隔，后端逐班创建资源记录；缺省回退当前选中班级）
+      fd.append('classIds', (d.resClasses || []).join(','));
       xhr.send(fd);
     },
     resEditMenu(v, id) {
@@ -7724,7 +8213,80 @@
       renderOverlays();
     },
     composeSave() { composeSubmit('DRAFT'); },
-    composePublish() { composeSubmit('ONGOING'); },
+    // 保存并发布：先走原表单必填校验（不通过不弹窗），再弹二次确认弹窗选择发布班级
+    composePublish() {
+      const c = State.compose;
+      if (!c || c.busy || (c.confirm && c.confirm.busy)) return;
+      if (!composeValidate(c)) return;                        // 需求6：必填校验失败不弹确认窗
+      const classes = (DB.classes || []).map(x => ({ id: String(x.id), name: x.name || ('班级 ' + x.id) }));
+      // 默认选中：编辑作业固定原归属班级（不可改）；新建默认勾选当前学情看板左侧栏已选班级
+      const editing = c.id != null;
+      const def = editing
+        ? (c.classId != null ? c.classId : (State.filters.classId != null ? String(State.filters.classId) : null))
+        : (State.filters.classId != null ? String(State.filters.classId) : (classes[0] ? classes[0].id : null));
+      c.confirm = { selected: def != null ? [def] : [], classes, editing, busy: false };
+      renderOverlays();
+    },
+    // 确认弹窗班级多选切换（编辑作业不改变归属班级，选择器为禁用态）：
+    // 局部刷新 chips/计数/按钮，不整层重渲染——修复勾选切换时确认卡片动画重放导致的闪屏
+    composeConfirmToggle(v) {
+      const cf = State.compose && State.compose.confirm;
+      if (!cf || cf.editing || cf.busy) return;
+      const i = cf.selected.indexOf(String(v));
+      if (i >= 0) cf.selected.splice(i, 1);
+      else cf.selected.push(String(v));
+      composeConfirmRefresh();
+    },
+    composeConfirmCancel() {
+      const c = State.compose;
+      if (!c || !c.confirm) return;
+      if (c.confirm.busy) return;                            // 发布进行中不允许取消
+      c.confirm = null;                                      // 关闭弹窗，保留编辑状态不做任何修改
+      renderOverlays();
+    },
+    // 确认发布：校验至少 1 个班级 → 逐班关联当前作业内容发布；部分失败保留编辑器仅重发失败班级
+    async composeConfirmOk() {
+      const c = State.compose;
+      const cf = c && c.confirm;
+      if (!cf || cf.busy) return;
+      if (!cf.selected.length) { toast('请至少选择一个班级'); return; }   // 需求4：友好校验提示
+      cf.busy = true;
+      composeConfirmRefresh();                               // 局部切换为发布中态（不重放卡片动画）
+      const payload = composePayload(c, 'ONGOING');
+      if (c.id != null) payload.id = Number(c.id);
+      const failed = [];
+      for (const classId of cf.selected) {
+        try {
+          const p = Object.assign({}, payload, { classId: Number(classId) });
+          await API.post('/teacher/compose', p);
+        } catch (e) {
+          failed.push({ classId, msg: e.message });
+        }
+      }
+      if (failed.length === cf.selected.length) {
+        // 全部失败：保留弹窗与编辑状态，提示后可重试
+        cf.busy = false;
+        composeConfirmRefresh();
+        toast('发布失败：' + failed[0].msg);
+        return;
+      }
+      if (failed.length) {
+        // 部分成功：只保留失败班级供重试（避免重复发布已成功班级）
+        const failedNames = failed.map(f => (cf.classes.find(x => x.id === f.classId) || {}).name || f.classId).join('、');
+        cf.selected = failed.map(f => f.classId);
+        cf.busy = false;
+        composeConfirmRefresh();
+        toast('部分班级发布失败（' + failedNames + '），可点击确认发布重试', 'warn');
+        return;
+      }
+      // 全部成功：关闭编辑器并刷新当前班级作业列表
+      State.compose = null; renderOverlays();
+      DB.assignments = await API.get('/teacher/assignments'
+        + (State.filters.classId != null ? '?classId=' + encodeURIComponent(State.filters.classId) : ''));
+      render();
+      const n = cf.selected.length;
+      toast(n > 1 ? '作业已发布到 ' + n + ' 个班级，学生侧已同步收到' : '作业「' + c.title + '」已发布，学生侧已同步收到', 'ok');
+    },
     composePreview() { State.compose.preview = true; renderOverlays(); },
     backFromPreview() { State.compose.preview = false; renderOverlays(); },
     previewSubmit() { toast('预览模式：此操作不会真正提交'); },
@@ -8113,13 +8675,17 @@
     /* ---------------- 项目代码板块 ---------------- */
     // 教师端
     projectComposeModal() {
-      State.modal = { type: 'projectCompose', data: { title: '', description: '', busy: false } };
+      State.modal = { type: 'projectCompose', data: { title: '', description: '', roadmap: [{ title: '', desc: '' }], busy: false } };
       renderOverlays();
     },
     projectEditModal(v, id) {
       const p = (DB.teacherProjects || []).find(x => String(x.id) === String(id));
       if (!p) return;
-      State.modal = { type: 'projectCompose', data: { id: p.id, title: p.title || '', description: p.description || '', busy: false } };
+      // 编辑回填迭代路线：已配置则逐项回填，未配置默认 1 个空项（保持与发布弹窗一致的初始形态）
+      const rm = (p.roadmap && p.roadmap.length)
+        ? p.roadmap.map(x => ({ title: x.title || '', desc: x.desc || '' }))
+        : [{ title: '', desc: '' }];
+      State.modal = { type: 'projectCompose', data: { id: p.id, title: p.title || '', description: p.description || '', roadmap: rm, busy: false } };
       renderOverlays();
     },
     async doProjectSave() {
@@ -8130,11 +8696,16 @@
       d.busy = true;
       renderOverlays();
       try {
+        // 迭代路线选填：全空项不提交；非空项（标题或描述有内容）随项目绑定保存
+        const roadmap = (d.roadmap || [])
+          .map(x => ({ title: (x.title || '').trim(), desc: (x.desc || '').trim() }))
+          .filter(x => x.title || x.desc);
+        const payload = { title: d.title, description: d.description, roadmap: roadmap.length ? roadmap : null };
         if (d.id) {
-          await API.put('/teacher/projects/' + d.id, { title: d.title, description: d.description });
+          await API.put('/teacher/projects/' + d.id, payload);
           toast('项目已更新', 'ok');
         } else {
-          await API.post('/teacher/projects', { classId: Number(State.filters.classId), title: d.title, description: d.description });
+          await API.post('/teacher/projects', Object.assign({ classId: Number(State.filters.classId) }, payload));
           toast('项目发布成功，学生将实时收到', 'ok');
         }
         State.modal = null;
@@ -8145,6 +8716,39 @@
         toast(e.message, 'warn');
         renderOverlays();
       }
+    },
+    // 迭代路线编辑：添加（≤10）/ 删除（>1 时显示）/ 上移下移排序
+    rmAdd() {
+      const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
+      if (!d) return;
+      d.roadmap = d.roadmap || [];
+      if (d.roadmap.length >= 10) { toast('最多支持 10 个迭代版本', 'warn'); return; }
+      d.roadmap.push({ title: '', desc: '' });
+      renderOverlays();
+    },
+    rmDel(v) {
+      const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
+      if (!d || !d.roadmap) return;
+      const i = Number(v);
+      if (d.roadmap.length <= 1) return;                 // 仅保留 1 个时不允许删除
+      d.roadmap.splice(i, 1);
+      renderOverlays();
+    },
+    rmUp(v) {
+      const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
+      if (!d || !d.roadmap) return;
+      const i = Number(v);
+      if (i <= 0) return;
+      [d.roadmap[i - 1], d.roadmap[i]] = [d.roadmap[i], d.roadmap[i - 1]];
+      renderOverlays();
+    },
+    rmDown(v) {
+      const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
+      if (!d || !d.roadmap) return;
+      const i = Number(v);
+      if (i >= d.roadmap.length - 1) return;
+      [d.roadmap[i], d.roadmap[i + 1]] = [d.roadmap[i + 1], d.roadmap[i]];
+      renderOverlays();
     },
     async projectToggleStatus(v, id) {
       try {
@@ -8234,6 +8838,8 @@
       if (String(m.data.openId) === String(v)) { m.data.openId = null; renderOverlays(); return; }
       m.data.openId = v;
       m.data.detail = null;
+      m.data.editingScore = null;
+      m.data.scoring = null;
       renderOverlays();
       try {
         const dt = await API.get('/teacher/project-versions/' + v);
@@ -8242,6 +8848,76 @@
         m2.data.detail = dt;
         renderOverlays(); // 重新渲染以挂载只读代码编辑器
       } catch (e) { toast(e.message, 'warn'); }
+    },
+    // 触发版本 AI 评分（生成中防重复点击；完成后同步徽章与评分模块）
+    async projectAiScore(v, id) {
+      const m = State.modal;
+      if (!m || m.type !== 'projectDetail') return;
+      if (m.data.scoring) return;
+      m.data.scoring = id;
+      m.data.editingScore = null;
+      renderOverlays();
+      try {
+        const s = await API.post('/teacher/project-versions/' + id + '/ai-score', {}, 120000);
+        const m2 = State.modal;
+        if (!m2 || m2.type !== 'projectDetail') return;
+        m2.data.scoring = null;
+        if (m2.data.detail && String(m2.data.detail.id) === String(id)) m2.data.detail.score = s;
+        const ver = (m2.data.versions || []).find(x => String(x.id) === String(id));
+        if (ver) ver.score = s;
+        toast('AI 评分完成：' + (s.finalScore != null ? s.finalScore + ' 分' : ''), 'ok');
+        renderOverlays();
+      } catch (e) {
+        const m2 = State.modal;
+        if (m2 && m2.type === 'projectDetail') { m2.data.scoring = null; renderOverlays(); }
+        toast(e.message, 'warn');
+      }
+    },
+    // 进入教师调整评分编辑态（输入框预填当前展示分与评语）
+    projectScoreEdit(v, id) {
+      const m = State.modal;
+      if (!m || m.type !== 'projectDetail') return;
+      m.data.editingScore = id;
+      m.data.scoring = null;
+      renderOverlays();
+    },
+    projectScoreCancel() {
+      const m = State.modal;
+      if (!m || m.type !== 'projectDetail') return;
+      m.data.editingScore = null;
+      renderOverlays();
+    },
+    // 保存教师调整评分：实时落库并同步学生端；同时更新弹窗内版本列表徽章
+    async projectScoreSave(v, id) {
+      const m = State.modal;
+      if (!m || m.type !== 'projectDetail') return;
+      const sEl = document.getElementById('pvScoreInput');
+      const cEl = document.getElementById('pvCommentTa');
+      let score = sEl && sEl.value !== '' ? Number(sEl.value) : null;
+      if (score != null && (!Number.isInteger(score) || score < 0 || score > 100)) { toast('评分需为 0-100 的整数', 'warn'); return; }
+      const comment = cEl ? cEl.value : '';
+      try {
+        const s = await API.put('/teacher/project-versions/' + id + '/score',
+          { score: score, comment: comment || null });
+        const m2 = State.modal;
+        if (!m2 || m2.type !== 'projectDetail') return;
+        m2.data.editingScore = null;
+        if (m2.data.detail && String(m2.data.detail.id) === String(id)) m2.data.detail.score = s;
+        const ver = (m2.data.versions || []).find(x => String(x.id) === String(id));
+        if (ver) ver.score = s;
+        toast('评分已保存，学生端可查看', 'ok');
+        renderOverlays();
+      } catch (e) {
+        toast(e.message, 'warn');
+      }
+    },
+    // 学生端：查看某版本评分详情（数据取自当前项目详情已加载的版本列表）
+    versionScoreModal(v, id) {
+      const d = State.projView && State.projView.data;
+      const ver = d && (d.versions || []).find(x => String(x.id) === String(id));
+      if (!ver) return;
+      State.modal = { type: 'versionScore', data: { versionNo: ver.versionNo, score: ver.score || {} } };
+      renderOverlays();
     },
     // 学生端：创建项目 → 跳转独立代码工作台页（IDE 风格）
     async projectStart(v, id) {
@@ -8803,12 +9479,14 @@
     sc.scrollTop = 1e9;
   }
 
-  /* ---------------- 知识图谱画布拖拽平移 ----------------
+  /* ---------------- 知识图谱画布拖拽平移 + 教师节点拖拽移动 ----------------
      Pointer Events 统一鼠标/触摸；生命周期：pointerdown（记录起点、取消惯性）
      → pointermove（超 6px 阈值才进入拖拽，实时钳制边界）→ pointerup/cancel（惯性衰减、
-     抑制误触 click）。6px 阈值内的位移视为点击，保证节点点击/气泡跳转不受影响。 */
+     抑制误触 click）。6px 阈值内的位移视为点击，保证节点点击/气泡跳转不受影响。
+     教师在模块视图下按住节点拖动（非批量模式）= 节点移动：命中其他节点 = 移为其子节点，
+     落到空白画布 = 移为一级模块（弹确认窗）；自身与后代不可作为目标（前端防环）。 */
   function kgBindPan(svg) {
-    let drag = null;    // { sx, sy, px, py, moved, lastT, lastX, lastY, vx, vy }
+    let drag = null;    // { sx, sy, px, py, moved, lastT, lastX, lastY, vx, vy, nodeEl?, nodeCode?, nodeMode?, banned?, drop? }
     let inertiaRaf = 0;
 
     const stopInertia = () => { if (inertiaRaf) { cancelAnimationFrame(inertiaRaf); inertiaRaf = 0; } };
@@ -8818,13 +9496,23 @@
       const k = Math.min((r.width || 1) / 1660, (r.height || 1) / 1000);
       return k > 0 ? k : 1;
     };
+    const clearDropHl = () => svg.querySelectorAll('.kg-drop-target')
+      .forEach(el => el.classList.remove('kg-drop-target'));
 
     svg.addEventListener('pointerdown', e => {
       if (e.button != null && e.button !== 0) return; // 仅主键/触摸
       stopInertia();
       const pan = State.kgPan || { x: 0, y: 0 };
+      // 教师节点拖拽候选：模块视图、非批量模式下从节点起手
+      let nodeEl = null;
+      if (State.role === 'teacher' && !State.kgBatch
+          && State.kgView && State.kgView.mode === 'module'
+          && e.target && e.target.closest) {
+        nodeEl = e.target.closest('.kg-node');
+      }
       drag = { sx: e.clientX, sy: e.clientY, px: pan.x, py: pan.y, moved: false,
-        lastT: performance.now(), lastX: e.clientX, lastY: e.clientY, vx: 0, vy: 0 };
+        lastT: performance.now(), lastX: e.clientX, lastY: e.clientY, vx: 0, vy: 0,
+        nodeEl: nodeEl, nodeCode: nodeEl ? nodeEl.dataset.val : null };
       // 注意：此处不能 setPointerCapture——捕获会把后续兼容鼠标事件（含 click）
       // 重定向到 svg 根元素，导致节点点击（data-act 委托）失效、详情卡片不刷新。
       // 捕获延迟到真正进入拖拽（位移超阈值）时才设置，纯点击全程无捕获。
@@ -8836,10 +9524,39 @@
       if (!drag.moved && Math.sqrt(dx * dx + dy * dy) < 6) return; // 阈值内视为点击
       if (!drag.moved) {
         drag.moved = true;
-        svg.classList.add('kg-dragging');
-        // 拖拽确认后才捕获指针：即使拖出画布仍持续接收事件；此时 click 已被
-        // _kgDragged 抑制，捕获重定向不再影响节点点击。
-        try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+        if (drag.nodeEl) {
+          // 教师节点拖拽模式：不进入画布平移
+          drag.nodeMode = true;
+          drag.banned = kgDragBanned(drag.nodeCode);
+          drag.drop = null;
+          drag.nodeEl.classList.add('kg-node-dragging');
+        } else {
+          svg.classList.add('kg-dragging');
+          // 拖拽确认后才捕获指针：即使拖出画布仍持续接收事件；此时 click 已被
+          // _kgDragged 抑制，捕获重定向不再影响节点点击。
+          try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+        }
+      }
+      if (drag.nodeMode) {
+        // 命中检测：指针下方的节点即移动目标（自身/后代除外）；空白画布 = 移为一级模块
+        const hit = document.elementFromPoint(e.clientX, e.clientY);
+        const t = hit && hit.closest ? hit.closest('.kg-node') : null;
+        let drop = null;
+        if (t) {
+          const tc = t.dataset ? t.dataset.val : null;
+          if (tc && tc !== drag.nodeCode && !drag.banned.has(tc)) drop = tc;
+        } else {
+          drop = '__ROOT__';
+        }
+        if (drop !== drag.drop) {
+          clearDropHl();
+          if (drop && drop !== '__ROOT__') {
+            const tel = svg.querySelector('.kg-node[data-val="' + (window.CSS && CSS.escape ? CSS.escape(drop) : drop) + '"]');
+            if (tel) tel.classList.add('kg-drop-target');
+          }
+          drag.drop = drop;
+        }
+        return;
       }
       const now = performance.now(), dt = now - drag.lastT;
       if (dt > 0) { drag.vx = (e.clientX - drag.lastX) / dt; drag.vy = (e.clientY - drag.lastY) / dt; }
@@ -8852,6 +9569,20 @@
     const end = e => {
       if (!drag) return;
       const moved = drag.moved, vx = drag.vx, vy = drag.vy;
+      if (drag.nodeMode) {
+        // 教师节点拖拽落点：目标节点 = 移为其子节点；空白 = 确认移为一级模块
+        clearDropHl();
+        if (drag.nodeEl) drag.nodeEl.classList.remove('kg-node-dragging');
+        const code = drag.nodeCode, drop = drag.drop;
+        drag = null;
+        if (moved && code) {
+          State._kgDragged = true;
+          setTimeout(() => { State._kgDragged = false; }, 0);
+          if (drop === '__ROOT__') Actions.kgDropRootConfirm(code);
+          else if (drop) Actions.kgDropMove(code, drop);
+        }
+        return;
+      }
       svg.classList.remove('kg-dragging');
       try { svg.releasePointerCapture(e.pointerId); } catch (_) {}
       drag = null;
@@ -9107,6 +9838,14 @@
         State.modal.data.q = t.value;
         const area = document.getElementById('nsPickArea');
         if (area) { area.innerHTML = newSessionPickArea(); }
+      }
+    }
+    else if (b === 'roadmap') {
+      // 项目迭代路线编辑：逐项写回 State.modal.data.roadmap[idx][field]，只写数据不重渲染（防丢焦点）
+      const d = State.modal && State.modal.data;
+      if (d && Array.isArray(d.roadmap)) {
+        const it = d.roadmap[Number(t.dataset.idx)];
+        if (it) it[t.dataset.field] = t.value;
       }
     }
     else if (b === 'modal') {

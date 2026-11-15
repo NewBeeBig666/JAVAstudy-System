@@ -374,9 +374,11 @@
       const vs = S.versions || [];
       body.innerHTML = vs.length
         ? vs.map(v => `<div class="ver-item"><span class="ver-no">v${v.versionNo}</span>
+            ${v.reflection ? '<span class="badge" style="flex:none" title="该版本附有总结反思">反思</span>' : ''}
+            ${v.score && v.score.finalScore != null ? `<span class="badge" style="flex:none;color:#499c54" title="版本评分（${v.score.teacherAdjusted ? '教师已调整' : 'AI 初评'}）">评分 ${v.score.finalScore}</span>` : ''}
             <span class="ver-summary">${h(v.summary || '—')}</span>
             <span class="ver-meta">${v.codeSize >= 1024 ? (v.codeSize / 1024).toFixed(1) + ' KB' : v.codeSize + ' B'} · ${h(v.createdAt || '')}</span></div>`).join('')
-        : '<div class="out-line out-hint">暂无版本 · 每次保存自动生成新版本并记录在这里</div>';
+        : '<div class="out-line out-hint">暂无版本 · 保存时可选择「迭代新版本」或「保留当前版本」，版本记录将显示在这里</div>';
     }
     $('#btnClearOut').style.display = S.bottomTab === 'output' ? '' : 'none';
   }
@@ -845,24 +847,166 @@
     }
   }
 
-  /* ---------------- 保存 / 提交 ---------------- */
-  async function save(submit) {
+  /* ---------------- 保存 / 提交（版本选择弹窗 + 执行） ---------------- */
+  // 当前最新版本号（versions 按 versionNo 降序，首条即最新；尚无版本返回 0）
+  function currentVersionNo() {
+    return (S.versions && S.versions.length) ? S.versions[0].versionNo : 0;
+  }
+
+  /* ---------------- 总结反思草稿暂存（localStorage 按项目隔离，随输入即时保存，提交成功后清除） ---------------- */
+  const REF_KEY = () => 'la-ide-reflection-' + S.spId;
+  function loadReflectionDraft() {
+    try { return localStorage.getItem(REF_KEY()) || ''; } catch (e) { return ''; }
+  }
+  function saveReflectionDraft(t) {
+    try { t ? localStorage.setItem(REF_KEY(), t) : localStorage.removeItem(REF_KEY()); } catch (e) { /* 忽略 */ }
+  }
+
+  /**
+   * 版本选择弹窗：点击「保存新版本 / 保存并提交」后弹出，选项按当前实际版本动态生成——
+   * 已有 vN：提供「保留为 vN 版本」（keep，覆盖更新当前版本）与「迭代为 vN+1 版本」（iterate，默认选中）；
+   * 尚无版本：仅提供「保存为 v1 版本」。确认后按所选策略执行保存/提交，取消不产生任何变更。
+   * 「保存并提交」弹窗额外提供「写总结反思」：多行编辑（≤2000 字）针对当前待提交版本，
+   * 内容即时暂存（误关弹窗/刷新不丢失），随版本提交一同保存并与该版本绑定。
+   */
+  function openVersionDialog(submit) {
+    if (S.saving || S.running) return;                    // 请求进行中/运行中不弹窗
+    if (document.querySelector('.vs-mask')) return;       // 弹窗已打开时防重复弹出
+    const cur = currentVersionNo();
+    const opts = cur >= 1 ? [
+      { mode: 'keep',    no: cur,     title: '保留为 v' + cur + ' 版本',     desc: '覆盖更新当前版本内容，版本号保持 v' + cur + ' 不变，不新增版本记录' },
+      { mode: 'iterate', no: cur + 1, title: '迭代为 v' + (cur + 1) + ' 版本', desc: '生成新版本 v' + (cur + 1) + '，历史版本完整保留可随时回溯', def: true }
+    ] : [
+      { mode: 'iterate', no: 1, title: '保存为 v1 版本', desc: '首次保存，生成初始版本 v1', def: true }
+    ];
+    const summary = ($('#noteInput').value || '').trim();
+    let draft = submit ? loadReflectionDraft() : '';      // 总结反思草稿（仅提交弹窗使用）
+    const mask = document.createElement('div');
+    mask.className = 'vs-mask';
+    mask.innerHTML = `<div class="vs-dialog" role="dialog" aria-modal="true">
+      <div class="vs-title">${icon(submit ? 'checkcircle' : 'check', 15)} ${submit ? '保存并提交' : '保存新版本'} · 选择版本方式</div>
+      <div class="vs-cur">当前版本：<b>${cur >= 1 ? 'v' + cur : '尚无版本'}</b>${summary ? '<span class="vs-sum"> · 版本说明：' + h(clip(summary, 40)) + '</span>' : ''}</div>
+      <div class="vs-opts">${opts.map((o, i) => `
+        <label class="vs-opt${o.def ? ' on' : ''}">
+          <input type="radio" name="vs-mode" value="${o.mode}"${o.def ? ' checked' : ''}>
+          <span class="vs-radio"></span>
+          <span class="vs-opt-body">
+            <span class="vs-opt-title">${h(o.title)}</span>
+            <span class="vs-opt-desc">${h(o.desc)}</span>
+          </span>
+        </label>`).join('')}</div>
+      ${submit ? `
+      <div class="vs-ref-tip" style="${draft ? '' : 'display:none'}">${icon('sparkles', 12)} 已写总结反思 ${draft.length} 字 · 随本次提交一并保存</div>
+      <div class="vs-editor" style="display:none">
+        <div class="vs-ed-head">${icon('sparkles', 14)} 总结与反思<span class="hint">（选填）</span></div>
+        <div class="vs-ed-guide">针对本次待提交版本的代码完成情况、卡点与收获进行总结反思，内容将绑定本次提交对应的版本、随提交一并保存。输入即自动暂存，关闭弹窗不会丢失。</div>
+        <textarea class="vs-ed-ta" id="vsReflection" maxlength="2000" spellcheck="false"
+          placeholder="例如：本版本完成了菜单与查找功能；卡点是循环边界条件，通过 Debug 打断点定位修正；收获是理解了增强 for 与异常处理，下一步计划补充单元测试。"></textarea>
+        <div class="vs-ed-meta">
+          <span id="vsRefCount">${draft.length} / 2000</span>
+          <span class="vs-ed-auto">草稿自动暂存 · 关闭不丢失</span>
+          <span class="ide-spacer"></span>
+          <button class="ide-tb-btn" data-vs="back">${icon('chevronL', 13)} 返回版本选择</button>
+        </div>
+      </div>` : ''}
+      <div class="vs-actions">
+        ${submit ? `<button class="ide-tb-btn" data-vs="reflect">${icon('sparkles', 13)} 写总结反思</button>` : ''}
+        <button class="ide-tb-btn" data-vs="cancel">取消</button>
+        <button class="ide-tb-btn primary" data-vs="ok">${icon('check', 13)} 确认${submit ? '提交' : '保存'}</button>
+      </div>
+    </div>`;
+    document.body.appendChild(mask);
+    // 草稿指示条刷新（编辑返回 / 重新打开时保持字数与可见性正确）
+    const chip = mask.querySelector('.vs-ref-tip');
+    const refreshChip = () => {
+      if (!chip) return;
+      chip.style.display = draft ? '' : 'none';
+      chip.innerHTML = icon('sparkles', 12) + ` 已写总结反思 ${draft.length} 字 · 随本次提交一并保存`;
+    };
+    // 键盘交互：Enter 确认、Esc 取消；捕获阶段拦截，弹窗期间屏蔽编辑器快捷键（Ctrl+S 不再触发保存）。
+    // 编辑器内 Enter 为换行（textarea 原生行为），不触发确认——仅未聚焦输入框时 Enter 才确认
+    let onKey = null;
+    const close = () => {
+      document.removeEventListener('keydown', onKey, true);
+      mask.remove();
+    };
+    const confirmSave = () => {
+      if (S.saving || S.running) return;                  // 二次确认防重复提交
+      const checked = mask.querySelector('input[name="vs-mode"]:checked');
+      const mode = checked ? checked.value : 'iterate';
+      close();
+      save(submit, mode, submit ? draft : null);
+    };
+    mask.addEventListener('click', e => {
+      if (e.target === mask || e.target.closest('[data-vs="cancel"]')) { close(); return; }  // 点遮罩/取消 = 取消（草稿已暂存不丢失）
+      if (e.target.closest('[data-vs="ok"]')) { confirmSave(); return; }
+      if (e.target.closest('[data-vs="reflect"]')) {      // 展开「写总结反思」编辑面板
+        mask.querySelector('.vs-opts').style.display = 'none';
+        if (chip) chip.style.display = 'none';
+        const ed = mask.querySelector('.vs-editor');
+        ed.style.display = '';
+        const ta = ed.querySelector('#vsReflection');
+        ta.value = draft;
+        ta.focus();
+        return;
+      }
+      if (e.target.closest('[data-vs="back"]')) {        // 返回版本选择（草稿已暂存）
+        mask.querySelector('.vs-editor').style.display = 'none';
+        mask.querySelector('.vs-opts').style.display = '';
+        refreshChip();
+        return;
+      }
+      const opt = e.target.closest('.vs-opt');
+      if (opt) {
+        opt.querySelector('input').checked = true;
+        mask.querySelectorAll('.vs-opt').forEach(x => x.classList.toggle('on', x === opt));
+      }
+    });
+    // 反思输入：即时暂存到 localStorage（防误关丢失）+ 实时字数统计
+    mask.addEventListener('input', e => {
+      if (e.target.id === 'vsReflection') {
+        draft = e.target.value;
+        saveReflectionDraft(draft);
+        const c = mask.querySelector('#vsRefCount');
+        if (c) c.textContent = draft.length + ' / 2000';
+      }
+    });
+    onKey = e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return; }
+      // Enter 确认仅在未聚焦多行输入框时生效（textarea 中 Enter 为换行）
+      if (e.key === 'Enter' && !(submit && mask.querySelector('.vs-editor').style.display !== 'none'
+            && document.activeElement && document.activeElement.id === 'vsReflection')) {
+        e.preventDefault(); e.stopPropagation(); confirmSave();
+      }
+    };
+    mask.tabIndex = -1;
+    mask.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
+    mask.focus();
+  }
+
+  async function save(submit, mode, reflection) {
     if (S.saving || S.running) return;
     const summary = ($('#noteInput').value || '').trim();
     S.saving = true;
     renderToolbar();
     try {
       const r = await API.post('/projects/mine/' + S.spId + '/save',
-        { files: currentFiles(), summary: summary, submit: submit });
+        { files: currentFiles(), summary: summary, submit: submit, mode: mode || 'iterate', reflection: submit ? (reflection || null) : null });
       S.dirty = false;
       $('#noteInput').value = '';
+      // 提交成功：总结反思已随版本落库绑定，清除本地草稿
+      if (submit) saveReflectionDraft('');
       // 刷新版本记录与状态徽章
       const fresh = await API.get('/projects/mine/' + S.spId);
       S.mine = fresh.mine; S.versions = fresh.versions || [];
       renderToolbar(); renderTabs(); renderStatus();
       if (S.bottomTab === 'versions') renderBottom();
-      toast(submit ? '已提交（v' + r.versionCount + '），教师可实时查看'
-        : '已保存并自动生成新版本 v' + r.versionCount, 'ok');
+      const kept = mode === 'keep';
+      const refNote = submit && reflection ? ' · 已附总结反思' : '';
+      toast(submit
+        ? (kept ? '已提交：v' + r.versionCount + ' 版本内容已更新' + refNote : '已提交（新版本 v' + r.versionCount + '），教师可实时查看' + refNote)
+        : (kept ? '已保存：v' + r.versionCount + ' 版本内容已更新' : '已保存并生成新版本 v' + r.versionCount), 'ok');
     } catch (e) {
       toast(e.message, 'warn');
     } finally {
@@ -881,8 +1025,9 @@
       location.href = 'index.html' + p;
     });
     $('#btnRun').addEventListener('click', runCode);
-    $('#btnSave').addEventListener('click', () => save(false));
-    $('#btnSubmit').addEventListener('click', () => save(true));
+    // 保存/提交：先弹出版本选择弹窗（保留当前版本 / 迭代新版本），确认后执行
+    $('#btnSave').addEventListener('click', () => openVersionDialog(false));
+    $('#btnSubmit').addEventListener('click', () => openVersionDialog(true));
     $('#btnNewFile').addEventListener('click', addFile);
     $('#newFileInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addFile(); } });
     $('#btnTreeFold').addEventListener('click', () => { S.layout.treeOn = !S.layout.treeOn; applyLayout(); persistLayout(); });
@@ -927,11 +1072,11 @@
       S.layout.bottomH = Math.max(120, Math.min(max, start.v - dy));
       $('#bottomPanel').style.height = S.layout.bottomH + 'px';
     });
-    // 快捷键：Ctrl+S 保存 / Shift+F10 运行
+    // 快捷键：Ctrl+S 保存（弹版本选择）/ Shift+F10 运行
     document.addEventListener('keydown', e => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
-        save(false);
+        openVersionDialog(false);
       }
       if (e.shiftKey && e.key === 'F10') {
         e.preventDefault();

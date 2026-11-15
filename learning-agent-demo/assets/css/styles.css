@@ -1,4 +1,4 @@
-/* ===========================================================
+﻿/* ===========================================================
    Java 学习智能体 · Demo 样式表
    设计基调：浅色 / 三栏 Agent 工作台（Activity Bar + 面板 + 上下文）
    视觉语言（ColorOS 17 Real Design 方向）：
@@ -886,9 +886,14 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 }
 /* 学习资源在线预览：加宽容器（视频/PDF/文档文本阅读体验），窄屏自动回落 max-width */
 .modal.wide { width: 760px; }
+/* 教师端查看学生代码（版本代码审阅 + AI 评分）：加宽容器提升代码横向展示空间、
+   减少横向滚动；min() 保证中等屏自适应、窄屏回落 100% 不溢出 */
+.modal.xl { width: min(1060px, 92vw); }
 @media (max-width: 820px) {
   .modal.wide { width: 100%; }
   .modal.wide .modal-body { padding: 12px; }
+  .modal.xl { width: 100%; }
+  .modal.xl .modal-body { padding: 12px; }
 }
 @keyframes pop { from { transform: translateY(14px) scale(.975); opacity: .55; } to { transform: none; opacity: 1; } }
 .modal-head { padding: 15px 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 9px; }
@@ -1764,7 +1769,8 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 /* 画布左上角工具栏：导出图片 + 重置（教师端） */
 .kg-toolbar {
   position: absolute; top: 10px; left: 10px; z-index: 5;
-  display: flex; gap: 6px;
+  display: flex; gap: 6px; flex-wrap: wrap;
+  max-width: calc(100% - 20px);
 }
 .kg-export {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1830,6 +1836,24 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .kg-node-label { fill: rgba(232,236,255,.82); font-size: 10.5px; text-anchor: middle; }
 .kg-node-label.big { fill: #fff; font-size: 12px; font-weight: 600; }
 .kg-node-level1 { fill: #fff; font-size: 17px; font-weight: 700; text-anchor: middle; }
+/* 教师端节点拖拽移动：被拖节点半透明、落点目标绿色高亮 */
+.kg-node-dragging { opacity: .35; }
+.kg-drop-target { filter: drop-shadow(0 0 12px rgba(52,211,153,.95)); }
+.kg-drop-target > circle, .kg-drop-target > rect { stroke: #34d399 !important; stroke-width: 3.5 !important; }
+/* 教师端批量管理模式：工具栏按钮激活态 / 勾选提示条 */
+.kg-batch-on { background: rgba(99,102,241,.5) !important; color: #fff !important; border-color: rgba(140,160,240,.7) !important; }
+.kg-toolbar .kg-export.danger { background: rgba(248,113,113,.2); border-color: rgba(248,113,113,.45); color: #fca5a5; }
+.kg-toolbar .kg-export.danger:hover { background: rgba(248,113,113,.45); color: #fff; }
+.kg-toolbar .kg-export[disabled] { opacity: .45; cursor: not-allowed; }
+.kg-batch-hint {
+  position: absolute; left: 10px; bottom: 12px; z-index: 5;
+  display: flex; align-items: center; gap: 6px;
+  max-width: calc(100% - 90px);
+  padding: 6px 10px; border-radius: var(--r);
+  background: rgba(16,22,69,.78); border: 1px solid rgba(140,160,240,.3);
+  color: #aab6e8; font-size: 12px;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
 @media (max-width: 900px) {
   .kg-wrap { flex-direction: column; height: auto; }
   .kg-side { width: auto; flex-direction: row; flex-wrap: wrap; align-items: center; }
@@ -2001,3 +2025,65 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
   .ns-back { padding: 10px 14px; font-size: 14px; min-height: 40px; }
   .pick-list { max-height: 46vh; }
 }
+/* ---------------- 发布/编辑项目弹窗 · 项目迭代路线编辑器 ---------------- */
+.rm-box { display: flex; flex-direction: column; gap: 10px; }
+.rm-item { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px 12px; background: var(--bg-2, #fafbfd); }
+.rm-item-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.rm-item-head .spacer { flex: 1; }
+.rm-no { font-size: 12px; font-weight: 650; color: var(--brand); background: rgba(90, 95, 212, .1); border-radius: 999px; padding: 2px 10px; }
+.rm-item .input { margin-bottom: 8px; }
+.rm-item .textarea { font-size: 12.5px; }
+.rm-foot { display: flex; align-items: center; gap: 10px; }
+.rm-foot .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---------------- 学生端 · 项目迭代路线时间线 ---------------- */
+.rm-timeline { display: flex; flex-direction: column; }
+.rm-node { display: flex; gap: 12px; }
+.rm-rail { display: flex; flex-direction: column; align-items: center; flex: none; }
+.rm-dot { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; background: var(--brand, #5a5fd4); box-shadow: 0 0 0 4px rgba(90, 95, 212, .14); }
+.rm-line { flex: 1; width: 2px; min-height: 18px; background: var(--border, #e4e6ee); margin: 4px 0; border-radius: 2px; }
+.rm-body { padding-bottom: 16px; min-width: 0; flex: 1; }
+.rm-node:last-child .rm-body { padding-bottom: 2px; }
+.rm-t { font-size: 13px; font-weight: 650; color: var(--text); margin-top: 3px; }
+.rm-d { font-size: 12.5px; color: var(--text-2); white-space: pre-wrap; line-height: 1.7; margin-top: 4px; }
+@media (max-width: 640px) {
+  .rm-node { gap: 9px; }
+  .rm-dot { width: 22px; height: 22px; font-size: 11px; }
+  .rm-item-head { flex-wrap: wrap; }
+}
+
+/* ---------------- 保存并发布 · 二次确认面板（班级多选） ---------------- */
+.compose-confirm {
+  position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center;
+  align-items: center; padding: 20px; background: rgba(18, 19, 24, .42);
+  backdrop-filter: blur(2px); animation: fade .18s ease; z-index: 5;
+}
+.compose-confirm-card {
+  width: min(520px, 100%); background: var(--panel); border-radius: 16px;
+  box-shadow: var(--sh-3, 0 12px 40px rgba(0,0,0,.18)); padding: 18px 20px;
+  max-height: calc(100vh - 48px); overflow-y: auto; animation: pop .2s var(--ease-out, ease-out);
+}
+.compose-confirm-head { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 650; color: var(--text); }
+.compose-confirm-classes {
+  display: flex; flex-wrap: wrap; gap: 8px; max-height: 180px; overflow-y: auto; padding: 2px;
+}
+.compose-class-pick {
+  display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+  font-size: 13px; color: var(--text-2); transition: all .15s; user-select: none;
+}
+.compose-class-pick:hover { border-color: var(--brand); }
+.compose-class-pick.on { border-color: var(--brand); background: rgba(90, 95, 212, .08); color: var(--text); font-weight: 600; }
+.compose-class-pick.lock { cursor: not-allowed; opacity: .9; }
+.compose-class-pick input { position: absolute; opacity: 0; pointer-events: none; }
+.ccp-check {
+  width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid var(--text-3, #9aa); flex: none;
+  display: inline-block; position: relative; transition: all .15s;
+}
+.compose-class-pick.on .ccp-check { background: var(--brand, #5a5fd4); border-color: var(--brand, #5a5fd4); }
+.compose-class-pick.on .ccp-check::after {
+  content: ""; position: absolute; left: 4.5px; top: 1.5px; width: 3.5px; height: 7.5px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.compose-confirm .note, .compose-confirm .hint, .compose-confirm-head, .compose-confirm > div { color: var(--text); }
+

@@ -27,6 +27,9 @@ public class CodingProject {
     /** PUBLISHED=已上架（学生可见） OFFLINE=已下架 */
     private String status;
 
+    /** 项目迭代路线 JSON：[{title,desc}]，最多 10 项（选填），教师配置、学生端时间线展示 */
+    private String roadmap;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;

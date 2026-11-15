@@ -288,6 +288,70 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .asa-send:active { transform: scale(.92); }
 .asa-send:disabled { background: var(--ide-panel-2); color: var(--ide-text-3); cursor: not-allowed; box-shadow: none; }
 .asa-tip { font-size: 10.5px; color: var(--ide-text-3); margin-top: 5px; text-align: center; }
+
+/* ---------------- 保存/提交 · 版本选择弹窗 ---------------- */
+.vs-mask {
+  position: fixed; inset: 0; z-index: 200; outline: none;
+  background: rgba(0, 0, 0, .45);
+  display: flex; align-items: center; justify-content: center;
+  animation: vsIn .16s ease;
+}
+.vs-dialog {
+  width: 400px; max-width: calc(100vw - 48px);
+  background: var(--ide-panel); border: 1px solid var(--ide-border); border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .5);
+  padding: 18px 18px 14px; animation: vsPop .18s ease;
+}
+.vs-title { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 14px; color: var(--ide-text); }
+.vs-cur { margin-top: 6px; font-size: 12px; color: var(--ide-text-2); }
+.vs-cur b { color: var(--ide-accent-2); }
+.vs-sum { color: var(--ide-text-3); }
+.vs-opts { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.vs-opt {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+  background: var(--ide-bg); border: 1px solid var(--ide-border); border-radius: 9px;
+  cursor: pointer; transition: all .15s;
+}
+.vs-opt:hover { border-color: #4a4d52; }
+.vs-opt.on { border-color: var(--ide-accent); box-shadow: 0 0 0 3px var(--ide-accent-soft); }
+.vs-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.vs-radio {
+  flex: none; width: 15px; height: 15px; margin-top: 2px; border-radius: 50%;
+  border: 2px solid #565961; transition: all .15s;
+}
+.vs-opt.on .vs-radio { border-color: var(--ide-accent-2); background: radial-gradient(circle, var(--ide-accent-2) 0 4px, transparent 4.5px); }
+.vs-opt-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.vs-opt-title { font-size: 13px; font-weight: 600; color: var(--ide-text); }
+.vs-opt.on .vs-opt-title { color: var(--ide-accent-2); }
+.vs-opt-desc { font-size: 11.5px; line-height: 1.5; color: var(--ide-text-2); }
+.vs-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.vs-actions .ide-tb-btn { height: 30px; padding: 0 16px; }
+@keyframes vsIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vsPop { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: none; } }
+
+/* ---------------- 保存并提交弹窗 · 总结反思编辑区 ---------------- */
+.vs-ref-tip {
+  display: flex; align-items: center; gap: 6px; margin-top: 10px;
+  font-size: 11.5px; color: var(--ide-accent-2);
+  background: var(--ide-accent-soft); border-radius: 7px; padding: 6px 10px;
+}
+.vs-editor { margin-top: 12px; }
+.vs-ed-head { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; color: var(--ide-text); }
+.vs-ed-head .hint { font-weight: 400; }
+.vs-ed-guide {
+  margin-top: 6px; font-size: 11.5px; line-height: 1.6; color: var(--ide-text-2);
+  background: var(--ide-bg); border: 1px solid var(--ide-border); border-radius: 7px; padding: 8px 10px;
+}
+.vs-ed-ta {
+  width: 100%; margin-top: 8px; min-height: 132px; max-height: 220px; resize: vertical;
+  background: var(--ide-bg); border: 1px solid var(--ide-border); border-radius: 8px;
+  color: var(--ide-text); font-size: 12.5px; line-height: 1.65; padding: 10px 12px; outline: none;
+  transition: border .15s;
+}
+.vs-ed-ta:focus { border-color: var(--ide-accent); box-shadow: 0 0 0 3px var(--ide-accent-soft); }
+.vs-ed-ta::placeholder { color: var(--ide-text-3); }
+.vs-ed-meta { display: flex; align-items: center; gap: 10px; margin-top: 6px; font-size: 11px; color: var(--ide-text-3); }
+.vs-ed-auto { color: var(--ide-ok); }
 /* 打字中指示（与 index 页一致） */
 .typing { display: inline-flex; gap: 4px; align-items: center; padding: 3px 0; }
 .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--ide-text-3); animation: ideBlink 1.2s infinite; }
@@ -302,3 +366,7 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 
 /* SVG 图标对齐 */
 .ico { flex: none; vertical-align: middle; }
+
+/* ---------------- IDE 版本记录徽章（反思/评分标记） ---------------- */
+.ide-bottom .badge { flex: none; font-size: 10.5px; font-weight: 650; border-radius: 999px; padding: 2px 8px; background: #323538; border: 1px solid #43454a; color: var(--ide-text-2); }
+.ide-bottom .badge[title*="教师"] { color: #7ee08a; border-color: rgba(73, 156, 84, .5); }
