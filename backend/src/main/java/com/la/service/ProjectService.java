@@ -84,7 +84,7 @@ public class ProjectService {
 
     /** 发布项目 */
     @Transactional
-    public Map<String, Object> publish(Long teacherId, Long classId, String title, String description, String roadmapJson) {
+    public Map<String, Object> publish(Long teacherId, Long classId, String title, String description, String roadmapJson, Integer controlled) {
         requireManageable(teacherId, classId);
         if (title == null || title.isBlank()) {
             throw new BizException("项目标题不能为空");
@@ -95,20 +95,26 @@ public class ProjectService {
         if (description == null || description.isBlank()) {
             throw new BizException("项目需求说明不能为空");
         }
+        String roadmap = sanitizeRoadmap(roadmapJson);
+        boolean ctrl = controlled != null && controlled == 1;
+        if (ctrl && roadmap == null) {
+            throw new BizException("开启「控制版本迭代」需至少配置 1 个迭代版本");
+        }
         CodingProject p = new CodingProject();
         p.setClassId(classId);
         p.setTeacherId(teacherId);
         p.setTitle(title.trim());
         p.setDescription(description.trim());
         p.setStatus("PUBLISHED");
-        p.setRoadmap(sanitizeRoadmap(roadmapJson));
+        p.setRoadmap(roadmap);
+        p.setControlledIteration(ctrl ? 1 : 0);
         codingProjectMapper.insert(p);
         return toProjectDto(codingProjectMapper.selectById(p.getId()));
     }
 
     /** 编辑项目（不改动状态与归属） */
     @Transactional
-    public Map<String, Object> update(Long teacherId, Long projectId, String title, String description, String roadmapJson) {
+    public Map<String, Object> update(Long teacherId, Long projectId, String title, String description, String roadmapJson, Integer controlled) {
         CodingProject p = requireOwnProject(teacherId, projectId);
         if (title != null && !title.isBlank()) {
             if (title.length() > 120) {
@@ -119,7 +125,15 @@ public class ProjectService {
         if (description != null && !description.isBlank()) {
             p.setDescription(description.trim());
         }
-        p.setRoadmap(sanitizeRoadmap(roadmapJson));
+        String roadmap = sanitizeRoadmap(roadmapJson);
+        if (controlled != null) {
+            boolean ctrl = controlled == 1;
+            if (ctrl && roadmap == null) {
+                throw new BizException("开启「控制版本迭代」需至少配置 1 个迭代版本");
+            }
+            p.setControlledIteration(ctrl ? 1 : 0);
+        }
+        p.setRoadmap(roadmap);
         p.setUpdatedAt(LocalDateTime.now());
         codingProjectMapper.updateById(p);
         return toProjectDto(p);
@@ -174,6 +188,7 @@ public class ProjectService {
             row.put("name", u.getRealName());
             row.put("studentNo", u.getStudentNo());
             row.put("status", sp.getStatus());
+            row.put("submittedVersionNo", sp.getSubmittedVersionNo());  // 提交水位：教师端「版本筛选」依据
             row.put("versionCount", vs.size());
             ProjectVersion last = vs.isEmpty() ? null : vs.get(0);
             row.put("lastVersionNo", last == null ? null : last.getVersionNo());
@@ -440,6 +455,10 @@ public class ProjectService {
                 sp.setProjectId(projectId);
                 sp.setStudentId(userId);
                 sp.setStatus("IN_PROGRESS");
+                // 受控迭代项目：创建即进入第 1 个迭代；自由开发项目不使用迭代序号
+                if (p.getControlledIteration() != null && p.getControlledIteration() == 1) {
+                    sp.setCurrentIteration(1);
+                }
                 sp.setCreatedAt(LocalDateTime.now());
                 sp.setUpdatedAt(LocalDateTime.now());
                 studentProjectMapper.insert(sp);
@@ -540,6 +559,13 @@ public class ProjectService {
             // 提交即开放：教师可见版本水位原子刷新为当前版本号——当前版本及全部历史版本即刻对教师可见，
             // 后续「仅保存新版本」产生的版本仍不可见；与版本写入同事务，无延迟、无遗漏、无越界
             sp.setSubmittedVersionNo(v.getVersionNo());
+            // 受控迭代项目：提交即视为完成当前迭代 → 解锁下一迭代（封顶不越界；
+            // 历史存量 sp 的 current_iteration 为 NULL 时按第 1 迭代处理）
+            if (p.getControlledIteration() != null && p.getControlledIteration() == 1) {
+                int iterCount = parseRoadmap(p.getRoadmap()).size();
+                int cur = sp.getCurrentIteration() == null ? 1 : sp.getCurrentIteration();
+                sp.setCurrentIteration(Math.min(cur + 1, Math.max(iterCount, 1)));
+            }
         }
         sp.setUpdatedAt(LocalDateTime.now());
         studentProjectMapper.updateById(sp);
@@ -824,25 +850,31 @@ public class ProjectService {
         dto.put("description", p.getDescription());
         dto.put("status", p.getStatus());
         dto.put("roadmap", parseRoadmap(p.getRoadmap()));
+        dto.put("controlled", p.getControlledIteration() != null && p.getControlledIteration() == 1 ? 1 : 0);
         dto.put("createdAt", p.getCreatedAt() == null ? null : p.getCreatedAt().format(DT));
         dto.put("updatedAt", p.getUpdatedAt() == null ? null : p.getUpdatedAt().format(DT));
         return dto;
     }
 
     /**
-     * 迭代路线清洗：解析 JSON 数组 [{title,desc}] → 过滤全空项 → 限长（标题60/描述2000）→
-     * 上限 10 项；清洗后为空返回 NULL（选填，未配置不占存储）；JSON 非法按未配置处理不拦截发布。
+     * 迭代路线清洗：解析 JSON 数组 [{name,title,desc}] → 过滤全空项 → 限长
+     * （迭代名称20/标题60/描述2000）→ 迭代名称去除非法字符 → 上限 10 项；
+     * 清洗后为空返回 NULL（选填，未配置不占存储）；JSON 非法按未配置处理不拦截发布。
      */
     private String sanitizeRoadmap(String roadmapJson) {
         List<Map<String, String>> items = parseRoadmap(roadmapJson);
         List<Map<String, String>> cleaned = new ArrayList<>();
         for (Map<String, String> it : items) {
+            String name = it.getOrDefault("name", "") == null ? "" : it.getOrDefault("name", "").trim();
             String title = it.getOrDefault("title", "") == null ? "" : it.getOrDefault("title", "").trim();
             String desc = it.getOrDefault("desc", "") == null ? "" : it.getOrDefault("desc", "").trim();
             if (title.isEmpty() && desc.isEmpty()) {
                 continue;  // 全空项不保存
             }
             Map<String, String> row = new LinkedHashMap<>();
+            if (!name.isEmpty()) {
+                row.put("name", sanitizeIterName(name));
+            }
             row.put("title", title.length() > 60 ? title.substring(0, 60) : title);
             row.put("desc", desc.length() > 2000 ? desc.substring(0, 2000) : desc);
             cleaned.add(row);
@@ -858,6 +890,12 @@ public class ProjectService {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /** 迭代名称清洗：≤20 字；剔除路径/引号/尖括号等易引发注入或显示异常的非法字符 */
+    private String sanitizeIterName(String name) {
+        String s = name.replaceAll("[<>:\"\\\\/|?*\\u0000-\\u001F]", "").trim();
+        return s.length() > 20 ? s.substring(0, 20) : s;
     }
 
     /** 迭代路线解析：JSON 字符串 → List<Map>；null/非法/非对象结构一律返回空列表 */
@@ -878,6 +916,7 @@ public class ProjectService {
         dto.put("id", sp.getId());
         dto.put("projectId", sp.getProjectId());
         dto.put("status", sp.getStatus());
+        dto.put("currentIteration", sp.getCurrentIteration());
         dto.put("versionCount", last == null ? 0 : last.getVersionNo());
         dto.put("lastFiles", last == null ? List.of() : parseFiles(last.getFiles()));
         dto.put("lastSummary", last == null ? null : last.getSummary());

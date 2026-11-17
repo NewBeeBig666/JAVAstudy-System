@@ -2027,6 +2027,59 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 }
 /* ---------------- 发布/编辑项目弹窗 · 项目迭代路线编辑器 ---------------- */
 .rm-box { display: flex; flex-direction: column; gap: 10px; }
+/* 发布项目弹窗 · 控制版本迭代开关（需求说明下方、迭代路线上方） */
+.pctrl-row { display: flex; align-items: flex-start; gap: 10px; }
+.pctrl-switch {
+  flex: none; width: 42px; height: 24px; border-radius: 999px; cursor: pointer;
+  background: rgba(120,120,140,.28); border: 1px solid rgba(120,120,140,.4);
+  position: relative; transition: all .2s var(--ease); padding: 0;
+}
+.pctrl-switch .pctrl-knob {
+  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.25); transition: left .2s var(--ease);
+  display: block; font-style: normal;
+}
+.pctrl-switch.on { background: rgba(90,95,212,.65); border-color: rgba(90,95,212,.8); }
+.pctrl-switch.on .pctrl-knob { left: 20px; }
+.pctrl-switch:hover { box-shadow: 0 0 0 3px rgba(90,95,212,.12); }
+.pctrl-switch:active .pctrl-knob { width: 20px; }
+/* 迭代名称就地编辑：标签可点击（带铅笔图标），编辑态替换为紧凑输入框 */
+.rm-no { cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-family: inherit; border: 1px solid transparent; transition: all .15s var(--ease); }
+.rm-no:hover { border-color: rgba(90,95,212,.35); background: rgba(90,95,212,.16); }
+.rm-no svg { opacity: .55; }
+.rm-no.named { background: rgba(90,95,212,.18); }
+.rm-name-input { max-width: 240px; padding: 3px 10px !important; font-size: 12px; font-weight: 650; }
+/* 学生进度「版本筛选」：按钮锚定容器 + 下拉浮层（刷新按钮左侧，本地生成零延迟） */
+.pf-anchor { position: relative; display: inline-flex; }
+.pf-drop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 40;
+  min-width: 220px; max-width: min(320px, 86vw);
+  max-height: 280px; overflow-y: auto;
+  background: var(--panel, #fff); border: 1px solid var(--line, rgba(0,0,0,.1));
+  border-radius: 12px; box-shadow: var(--sh-3, 0 12px 32px rgba(0,0,0,.16));
+  padding: 6px; animation: pop .16s var(--ease-out);
+}
+.pf-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; cursor: pointer;
+  background: transparent; font-size: 12.5px; color: var(--text-2, #333);
+  font-family: inherit; transition: background .12s ease;
+}
+.pf-opt:hover { background: rgba(90,95,212,.08); }
+.pf-opt.cur { background: rgba(90,95,212,.14); color: var(--brand, #5a5fd4); font-weight: 650; }
+.pf-opt-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-opt-cnt { flex: none; font-size: 11.5px; color: var(--text-3, #999); }
+.pf-empty { padding: 12px; font-size: 12.5px; color: var(--text-3, #999); text-align: center; }
+@media (max-width: 720px) {
+  .pf-drop { right: auto; left: 0; }
+}
+
+/* 学生端受控迭代时间线：标题行 + 右侧操作位（开始开发/已完成/未解锁） */
+.rm-t-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rm-t-row .rm-t { flex: 1; min-width: 0; }
+.rm-lock-tag { font-size: 12px; opacity: .7; }
+.rm-dot.done { background: #34a97b; }
+.rm-st-locked .rm-t { color: var(--text-3); }
 .rm-item { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px 12px; background: var(--bg-2, #fafbfd); }
 .rm-item-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .rm-item-head .spacer { flex: 1; }

@@ -72,7 +72,7 @@ class ProjectServiceRoadmapTest {
     @Test
     void publish_withRoadmap_storedAndReturned() {
         stubInsert();
-        Map<String, Object> dto = service.publish(2L, 1L, "路线测试项目", "需求说明", RM_2);
+        Map<String, Object> dto = service.publish(2L, 1L, "路线测试项目", "需求说明", RM_2, null);
 
         verify(codingProjectMapper).insert(argThat((CodingProject p) -> p.getRoadmap() != null
                 && p.getRoadmap().contains("第1周 · 基础搭建")));
@@ -88,7 +88,7 @@ class ProjectServiceRoadmapTest {
     void publish_allEmptyEntries_savedAsNull() {
         stubInsert();
         String rm = "[{\"title\":\"\",\"desc\":\"  \"},{\"title\":\"\",\"desc\":\"\"}]";
-        service.publish(2L, 1L, "路线测试项目", "需求说明", rm);
+        service.publish(2L, 1L, "路线测试项目", "需求说明", rm, null);
 
         verify(codingProjectMapper).insert(argThat((CodingProject p) -> p.getRoadmap() == null));
     }
@@ -98,7 +98,7 @@ class ProjectServiceRoadmapTest {
     void publish_emptyEntryFiltered() {
         stubInsert();
         String rm = "[{\"title\":\"一\",\"desc\":\"任务一\"},{\"title\":\"\",\"desc\":\"\"},{\"title\":\"三\",\"desc\":\"任务三\"}]";
-        service.publish(2L, 1L, "路线测试项目", "需求说明", rm);
+        service.publish(2L, 1L, "路线测试项目", "需求说明", rm, null);
 
         verify(codingProjectMapper).insert(argThat((CodingProject p) ->
                 p.getRoadmap() != null && !p.getRoadmap().contains("二") && p.getRoadmap().contains("三")));
@@ -112,15 +112,15 @@ class ProjectServiceRoadmapTest {
             rm.append("{\"title\":\"阶段").append(i).append("\",\"desc\":\"任务").append(i).append("\"}").append(i < 11 ? "," : "");
         }
         rm.append("]");
-        assertThrows(BizException.class, () -> service.publish(2L, 1L, "路线测试项目", "需求说明", rm.toString()));
+        assertThrows(BizException.class, () -> service.publish(2L, 1L, "路线测试项目", "需求说明", rm.toString(), null));
     }
 
     /** 未配置路线（null）与非法 JSON → 均按未配置处理，发布不受影响（选填容错） */
     @Test
     void publish_nullOrInvalidRoadmap_tolerated() {
         stubInsert();
-        service.publish(2L, 1L, "路线测试项目", "需求说明", null);
-        service.publish(2L, 1L, "路线测试项目", "需求说明", "不是JSON{{{");
+        service.publish(2L, 1L, "路线测试项目", "需求说明", null, null);
+        service.publish(2L, 1L, "路线测试项目", "需求说明", "不是JSON{{{", null);
         verify(codingProjectMapper, org.mockito.Mockito.times(2)).insert(argThat((CodingProject p) -> p.getRoadmap() == null));
     }
 
@@ -138,7 +138,7 @@ class ProjectServiceRoadmapTest {
         when(codingProjectMapper.selectById(9L)).thenReturn(old);
 
         service.update(2L, 9L, "新标题", "新说明",
-                "[{\"title\":\"唯一阶段\",\"desc\":\"合并后的任务\"}]");
+                "[{\"title\":\"唯一阶段\",\"desc\":\"合并后的任务\"}]", null);
         verify(codingProjectMapper).updateById(argThat((CodingProject p) ->
                 "新标题".equals(p.getTitle()) && p.getRoadmap() != null && p.getRoadmap().contains("唯一阶段")));
     }
@@ -156,7 +156,7 @@ class ProjectServiceRoadmapTest {
         old.setRoadmap(RM_2);
         when(codingProjectMapper.selectById(9L)).thenReturn(old);
 
-        service.update(2L, 9L, null, null, "[]");
+        service.update(2L, 9L, null, null, "[]", null);
         verify(codingProjectMapper).updateById(argThat((CodingProject p) -> p.getRoadmap() == null));
     }
 

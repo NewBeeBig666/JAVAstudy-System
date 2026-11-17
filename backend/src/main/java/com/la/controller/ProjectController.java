@@ -35,7 +35,7 @@ public class ProjectController {
         return ApiResponse.ok(projectService.teacherProjects(CurrentUser.id(), classId));
     }
 
-    @Operation(summary = "发布新项目（标题 + 详细需求说明 + 可选迭代路线 roadmap=[{title,desc}]）")
+    @Operation(summary = "发布新项目（标题 + 详细需求说明 + 可选迭代路线 roadmap=[{name,title,desc}]；controlled=1 开启控制版本迭代）")
     @PostMapping("/teacher/projects")
     public ApiResponse<Map<String, Object>> publish(@RequestBody Map<String, Object> body) {
         Object classId = body.get("classId");
@@ -46,17 +46,27 @@ public class ProjectController {
                 Long.valueOf(String.valueOf(classId)),
                 (String) body.get("title"),
                 (String) body.get("description"),
-                toJsonString(body.get("roadmap"))));
+                toJsonString(body.get("roadmap")),
+                toControlled(body.get("controlled"))));
     }
 
-    @Operation(summary = "编辑项目需求（含可选迭代路线 roadmap=[{title,desc}]，未传或空数组则清除）")
+    @Operation(summary = "编辑项目需求（含可选迭代路线 roadmap=[{name,title,desc}] 与 controlled 受控开关，未传开关则不改动；路线未传或空数组则清除）")
     @PutMapping("/teacher/projects/{id}")
     public ApiResponse<Map<String, Object>> update(@PathVariable Long id,
                                                    @RequestBody Map<String, Object> body) {
         return ApiResponse.ok(projectService.update(CurrentUser.id(), id,
                 (String) body.get("title"),
                 (String) body.get("description"),
-                toJsonString(body.get("roadmap"))));
+                toJsonString(body.get("roadmap")),
+                body.containsKey("controlled") ? toControlled(body.get("controlled")) : null));
+    }
+
+    /** 受控开关解析：接受 1/0、true/false；null=未传（编辑时保持不变） */
+    private Integer toControlled(Object v) {
+        if (v == null) {
+            return null;
+        }
+        return "1".equals(String.valueOf(v)) || "true".equalsIgnoreCase(String.valueOf(v)) ? 1 : 0;
     }
 
     /** 请求体中的半结构化字段（数组/对象）统一序列化为 JSON 字符串；null 原样透传 */

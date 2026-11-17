@@ -27,8 +27,11 @@ public class CodingProject {
     /** PUBLISHED=已上架（学生可见） OFFLINE=已下架 */
     private String status;
 
-    /** 项目迭代路线 JSON：[{title,desc}]，最多 10 项（选填），教师配置、学生端时间线展示 */
+    /** 项目迭代路线 JSON：[{name,title,desc}]，最多 10 项（选填），教师配置、学生端时间线展示 */
     private String roadmap;
+
+    /** 控制版本迭代开关：0=自由开发 1=受控迭代（学生端按迭代逐版本解锁，完成当前迭代前不可切换） */
+    private Integer controlledIteration;
 
     private LocalDateTime createdAt;
 

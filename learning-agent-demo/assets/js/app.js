@@ -2362,6 +2362,10 @@
       <div class="card"><div class="card-head">${icon('users', 15)}
         <h3>学生进度</h3>
         <div class="spacer"></div>
+        <span class="pf-anchor">
+          <button class="btn sm ghost" data-act="projectFilterToggle" data-id="${sel.id}" title="按学生已提交的版本筛选进度列表">${icon('search', 13)} ${pfFilterBtnText(sel.id)}</button>
+          <div id="pfDrop" class="pf-drop" style="display:none"></div>
+        </span>
         <button class="btn sm ghost" data-act="projectProgressRefreshMain" data-id="${sel.id}" title="立即刷新学生进度">${icon('refresh', 13)} 刷新</button>
       </div>
       <div class="card-body" style="padding:0 14px 14px">
@@ -2386,6 +2390,10 @@
     State.projectSel = sel.id;
     const mine = sel.mine;
     const st = mine ? (mine.status === 'SUBMITTED' ? '已提交' : '开发中') : null;
+    // 受控迭代模式：教师开启「控制版本迭代」且配置了迭代路线；学生入口收敛到各迭代版本右侧
+    const ctrl = sel.controlled && sel.roadmap && sel.roadmap.length;
+    // 当前所处迭代：未创建=尚未开始（null）；存量数据 currentIteration 为空时按第 1 迭代处理
+    const cur = ctrl ? (mine ? (mine.currentIteration || 1) : null) : null;
     let detailHtml;
     if (mine) {
       ensureProjectViewFetch('s:' + mine.id, () => API.get('/projects/mine/' + mine.id));
@@ -2394,32 +2402,54 @@
     } else {
       detailHtml = `<div class="card"><div class="card-head">${icon('play', 15)}<h3>开始开发</h3></div>
         <div class="card-body" style="padding:12px 14px">
-          <div class="note">你尚未创建该项目。创建后即可在线编写代码，每次保存自动留存新版本，教师可实时查看你的进度与迭代记录。</div>
+          <div class="note">${ctrl
+            ? '本项目按迭代版本分阶段推进：点击上方迭代路线中<b>当前迭代的「开始开发」</b>按钮创建项目并进入该迭代开发；完成当前迭代（保存并提交）后自动解锁下一迭代。'
+            : '你尚未创建该项目。创建后即可在线编写代码，每次保存自动留存新版本，教师可实时查看你的进度与迭代记录。'}</div>
         </div></div>`;
     }
     const body = `<div class="card"><div class="card-head">${icon('code', 15)}
         <h3>${h(sel.title)}</h3>
         ${st ? `<span class="badge ${mine.status === 'SUBMITTED' ? 'ok' : 'brand'}">${st} · v${mine.versionCount}</span>` : '<span class="badge">未开始</span>'}
+        ${ctrl ? `<span class="badge brand" title="教师已开启控制版本迭代：按迭代逐版本解锁开发">受控迭代${cur ? ' · 进行至迭代 ' + cur : ''}</span>` : ''}
         <span class="hint" style="margin-left:4px">教师更新于 ${h(sel.updatedAt || '-')}</span>
         <div class="spacer"></div>
-        ${mine
+        ${!ctrl ? (mine
           ? `<button class="btn primary sm" data-act="projectEditorOpen" data-id="${mine.id}">${icon('edit', 13)} ${mine.status === 'SUBMITTED' ? '继续完善' : '继续开发'}</button>`
-          : `<button class="btn primary sm" data-act="projectStart" data-id="${sel.id}">${icon('play', 13)} 创建项目并开始开发</button>`}
+          : `<button class="btn primary sm" data-act="projectStart" data-id="${sel.id}">${icon('play', 13)} 创建项目并开始开发</button>`) : ''}
       </div>
       <div class="card-body" style="padding:12px 14px">
         <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:6px">项目需求说明</div>
         <div style="font-size:13px;color:var(--text-2);white-space:pre-wrap;max-height:150px;overflow-y:auto;line-height:1.7">${h(sel.description || '')}</div>
-        ${mine ? `<div class="note" style="margin-top:10px">我的开发状态：<b>${st} · 已留存 ${mine.versionCount} 个版本</b>${mine.lastVersionAt ? ' · 最新保存 ' + h(mine.lastVersionAt) : (mine.versionCount ? '' : '（尚未保存过代码）')}<br>每次保存自动生成新版本，可随时回看迭代记录。</div>` : ''}
+        ${mine ? `<div class="note" style="margin-top:10px">我的开发状态：<b>${st} · 已留存 ${mine.versionCount} 个版本</b>${mine.lastVersionAt ? ' · 最新保存 ' + h(mine.lastVersionAt) : (mine.versionCount ? '' : '（尚未保存过代码）')}${ctrl && cur ? ' · 当前进行至「' + h((sel.roadmap[cur - 1] || {}).name || (sel.roadmap[cur - 1] || {}).title || ('迭代 ' + cur)) + '」' : ''}<br>${ctrl ? '按迭代路线推进：在当前迭代中「保存并提交」即完成该迭代，自动解锁下一迭代。' : '每次保存自动生成新版本，可随时回看迭代记录。'}</div>` : ''}
         ${(sel.roadmap && sel.roadmap.length) ? `
-        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin:14px 0 10px">${icon('layers', 15)} 项目迭代路线 <span style="font-weight:400;color:var(--text-3)">· 按阶段推进开发，完成一个迭代后提交对应版本</span></div>
-        <div class="rm-timeline">${sel.roadmap.map((r, i) => `
-          <div class="rm-node">
-            <div class="rm-rail"><span class="rm-dot">${i + 1}</span>${i < sel.roadmap.length - 1 ? '<i class="rm-line"></i>' : ''}</div>
+        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin:14px 0 10px">${icon('layers', 15)} 项目迭代路线 <span style="font-weight:400;color:var(--text-3)">· ${ctrl ? '受控推进：完成当前迭代（保存并提交）后解锁下一迭代' : '按阶段推进开发，完成一个迭代后提交对应版本'}</span></div>
+        <div class="rm-timeline">${sel.roadmap.map((r, i) => {
+          const no = i + 1;
+          let iterState = '';
+          if (ctrl) {
+            if (cur == null) iterState = no === 1 ? 'ready' : 'locked';
+            else if (no < cur) iterState = 'done';
+            else if (no === cur) iterState = 'ready';
+            else iterState = 'locked';
+          }
+          const iterBtn = !ctrl ? '' : (iterState === 'ready'
+            ? (mine
+              ? `<button class="btn primary sm" data-act="projectEditorOpen" data-id="${mine.id}" title="进入当前迭代（迭代 ${no}）的开发工作台">${icon('play', 13)} 开始开发</button>`
+              : `<button class="btn primary sm" data-act="projectStart" data-id="${sel.id}" data-iter="${no}" title="创建项目并开始第 ${no} 个迭代的开发">${icon('play', 13)} 开始开发</button>`)
+            : iterState === 'done'
+              ? '<span class="badge ok">已完成</span>'
+              : '<span class="badge" title="完成当前迭代（保存并提交）后自动解锁">未解锁</span>');
+          return `
+          <div class="rm-node${ctrl ? ' rm-st-' + iterState : ''}">
+            <div class="rm-rail"><span class="rm-dot${ctrl && iterState === 'done' ? ' done' : ''}">${ctrl && iterState === 'done' ? icon('check', 13) : (i + 1)}</span>${i < sel.roadmap.length - 1 ? '<i class="rm-line"></i>' : ''}</div>
             <div class="rm-body">
-              <div class="rm-t">${h(r.title || ('迭代 ' + (i + 1)))}</div>
+              <div class="rm-t-row">
+                <div class="rm-t">${h(r.name || r.title || ('迭代 ' + (i + 1)))}${ctrl && iterState === 'locked' ? ' <span class="rm-lock-tag">🔒</span>' : ''}</div>
+                ${iterBtn}
+              </div>
               ${r.desc ? `<div class="rm-d">${h(r.desc)}</div>` : ''}
             </div>
-          </div>`).join('')}</div>` : ''}
+          </div>`;}).join('')}</div>` : ''}
       </div></div>` + detailHtml;
     return { head, body };
   }
@@ -2522,12 +2552,17 @@
   }
 
   /* ---------------- 发布/编辑项目 · 项目迭代路线编辑器（选填，默认1项，≤10项，可增删排序） ---------------- */
-  // 单个迭代项：阶段标题（选填）+ 需求描述（任务/验收标准/时间节点）；输入经 data-bind="roadmap" 只写数据不重渲染（防丢焦点）
-  function projectRoadmapEditorHtml(items) {
+  // 单个迭代项：迭代名称（点击标签就地编辑）+ 阶段标题（选填）+ 需求描述（任务/验收标准/时间节点）；
+  // 输入经 data-bind="roadmap" 只写数据不重渲染（防丢焦点）
+  function projectRoadmapEditorHtml(items, editIdx) {
     items = items && items.length ? items : [{ title: '', desc: '' }];
     return items.map((it, i) => `<div class="rm-item" data-rm="${i}">
         <div class="rm-item-head">
-          <span class="rm-no">迭代 ${i + 1}</span>
+          ${editIdx === i
+            ? `<input class="input rm-name-input" value="${h(it.name || '')}" placeholder="迭代名称（20 字以内）"
+                 data-bind="roadmap" data-idx="${i}" data-field="name" maxlength="20" autocomplete="off" data-rmname="${i}">`
+            : `<button type="button" class="rm-no${it.name ? ' named' : ''}" data-act="rmNameEdit" data-val="${i}"
+                 title="点击自定义迭代名称（默认显示为「迭代 ${i + 1}」）">${h(it.name || ('迭代 ' + (i + 1)))}${icon('edit', 11)}</button>`}
           <div class="spacer"></div>
           <button type="button" class="btn sm" data-act="rmUp" data-val="${i}" ${i === 0 ? 'disabled' : ''} title="上移一位">上移</button>
           <button type="button" class="btn sm" data-act="rmDown" data-val="${i}" ${i === items.length - 1 ? 'disabled' : ''} title="下移一位">下移</button>
@@ -2545,6 +2580,45 @@
   }
 
   /* ---------------- 教师进度主区内容（项目聚焦视图内联 + 4 秒轮询局部刷新） ---------------- */
+
+  /* ---- 学生进度「版本筛选」：按钮位于刷新左侧；按学生提交水位过滤列表 ----
+   * 筛选状态绑定项目 id（切换项目自动失效）；选项实时取自当前进度数据
+   * （v1 ~ 全体学生提交水位的最大值）；受控项目优先展示迭代自定义名称。 */
+  function pfFilterState(pid) {
+    const f = State.projFilterVer;
+    return (f && String(f.pid) === String(pid)) ? f : { pid: pid, ver: 'all' };
+  }
+  // 下拉选项文案：受控项目第 v 项迭代有自定义名称则优先展示（名称后附版本号便于核对）
+  function pfOptionLabel(g, v) {
+    const rm = g.project && g.project.roadmap && g.project.roadmap[v - 1];
+    const nm = rm && (rm.name || rm.title);
+    return nm ? nm + '（v' + v + '）' : 'v' + v;
+  }
+  function pfFilterBtnText(pid) {
+    const f = pfFilterState(pid);
+    if (f.ver === 'all') return '版本筛选';
+    const d = State.projView && State.projView.key === 't:' + pid ? State.projView : null;
+    const g = d && d.data;
+    return '筛选：' + (g ? pfOptionLabel(g, Number(f.ver)) : 'v' + f.ver);
+  }
+  // 下拉选项 HTML：本地由当前进度数据即时生成（无网络请求，打开零延迟）
+  function pfDropOptionsHtml() {
+    const d = State.projView;
+    const g = d && d.data;
+    if (!g) return '<div class="pf-empty">进度数据加载中，稍后再试</div>';
+    const rows = g.students || [];
+    let maxV = 0;
+    rows.forEach(r => { maxV = Math.max(maxV, r.submittedVersionNo || 0); });
+    if (!maxV) return '<div class="pf-empty">暂无学生提交记录</div>';
+    const cur = pfFilterState(g.project.id).ver;
+    let html = `<button class="pf-opt${cur === 'all' ? ' cur' : ''}" data-act="projectFilterSet" data-val="all">全部版本（不清筛选）</button>`;
+    for (let v = 1; v <= maxV; v++) {
+      html += `<button class="pf-opt${String(cur) === String(v) ? ' cur' : ''}" data-act="projectFilterSet" data-val="${v}" title="仅显示已提交到 ${pfOptionLabel(g, v)} 及以后版本的学生">`
+        + `<span class="pf-opt-name">${h(pfOptionLabel(g, v))}</span>`
+        + `<span class="pf-opt-cnt">${rows.filter(r => (r.submittedVersionNo || 0) >= v).length} 人</span></button>`;
+    }
+    return html;
+  }
   function projectProgressBodyHtml(d) {
     if (d.loading && !d.data) {
       return '<div style="padding:28px;text-align:center;color:var(--text-3);font-size:13px">学生进度加载中…</div>';
@@ -2554,10 +2628,16 @@
         <button class="btn sm" data-act="projectViewRetry">${icon('refresh', 13)} 重试</button>`;
     }
     const g = d.data || {};
-    const rows = g.students || [];
+    const allRows = g.students || [];
+    // 版本筛选：仅显示提交水位 ≥ 选中版本的学生（提交过该版本）；未筛选时展示全部
+    const f = pfFilterState(g.project ? g.project.id : null);
+    const filtering = f.ver !== 'all';
+    const rows = filtering ? allRows.filter(r => (r.submittedVersionNo || 0) >= Number(f.ver)) : allRows;
     return `
       <div class="note" style="margin-bottom:12px">
-        <b>${h((g.project && g.project.title) || '')}</b> · 已参与 <b>${rows.length}</b> 人 · 已提交 <b>${rows.filter(r => r.status === 'SUBMITTED').length}</b> 人 · 进度每 4 秒自动刷新
+        <b>${h((g.project && g.project.title) || '')}</b> · ${filtering
+          ? `版本筛选：<b>${h(pfOptionLabel(g, Number(f.ver)))}</b> · 命中 <b>${rows.length}</b> 人（共 ${allRows.length} 人参与）`
+          : `已参与 <b>${allRows.length}</b> 人 · 已提交 <b>${allRows.filter(r => r.status === 'SUBMITTED').length}</b> 人`} · 进度每 4 秒自动刷新
         <span style="color:var(--text-3)">· 仅统计学生已通过「保存并提交」开放的版本，学生仅保存未提交的版本不对教师可见</span>
       </div>
       ${rows.length ? `<div style="max-height:320px;overflow-y:auto">
@@ -2569,7 +2649,7 @@
           <td>${h(r.lastVersionAt || '—')}</td>
           <td class="num">${r.codeSize ? (r.codeSize / 1024).toFixed(1) + ' KB' : '—'}</td>
           <td style="max-width:200px">${h(r.lastSummary || '—')}</td>
-          <td><button class="btn sm" data-act="projectDetailModal" data-id="${r.studentProjectId}" data-val="${h(r.name)}">${icon('code', 13)} 查看代码</button></td>
+          <td><button class="btn sm" data-act="projectDetailModal" data-id="${r.studentProjectId}" data-val="${h(r.name)}" data-iter="${filtering ? f.ver : ''}" title="${filtering ? '当前筛选版本 ' + h(pfOptionLabel(g, Number(f.ver))) + '：弹窗仅展示该学生对应版本的代码' : '查看该学生全部已开放版本'}">${icon('code', 13)} 查看代码</button></td>
         </tr>`).join('')}</tbody></table>
       </div>` : '<div class="hint" style="padding:8px 2px">学生尚未创建项目：需学生在「项目代码」板块点击「创建项目并开始开发」。</div>'}`;
   }
@@ -2613,7 +2693,12 @@
       if (!State.projView || State.projView.key !== key) return;
       State.projView = { key: key, loading: false, err: null, data: r };
       const box = document.getElementById('projectProgressMain');
-      if (box) box.innerHTML = projectProgressBodyHtml(State.projView);
+      if (box) {
+        box.innerHTML = projectProgressBodyHtml(State.projView);
+        // 轮询数据就绪后同步刷新筛选按钮文案（首载中筛选名称需数据到位后补全）
+        const btn = document.querySelector('[data-act="projectFilterToggle"]');
+        if (btn) btn.innerHTML = icon('search', 13) + ' ' + pfFilterBtnText(pid);
+      }
       else if (State.section === 'projects' && State.role === 'teacher') render();
     } catch (e) {
       const key = 't:' + pid;
@@ -4282,31 +4367,52 @@
         <button class="btn primary" data-act="labGroupsRefresh">${icon('refresh', 14)} 立即刷新</button>`;
 
     } else if (m.type === 'projectCompose') {
-      // 发布 / 编辑项目：标题 + 详细需求说明 + 可选「项目迭代路线」（data-bind 双向写回弹窗数据）
+      // 发布 / 编辑项目：标题 + 详细需求说明 + 控制版本迭代开关 + 可选「项目迭代路线」
+      // （data-bind 双向写回弹窗数据；迭代名称点击标签就地编辑）
       title = d.id ? '编辑项目' : '发布新项目';
       body = `<div class="form-row"><label>项目标题（必填，120 字以内）</label>
           <input class="input" placeholder="如：控制台版学生成绩管理系统" value="${h(d.title || '')}" data-bind="modal" data-key="title" maxlength="120" autocomplete="off"></div>
         <div class="form-row"><label>项目需求说明（必填）</label>
-          <textarea class="textarea" style="min-height:180px" placeholder="详细描述项目需求：功能点、技术要求、验收标准等，学生将按此需求开发…" data-bind="modal" data-key="description">${h(d.description || '')}</textarea></div>
+          <textarea class="textarea" style="min-height:160px" placeholder="详细描述项目需求：功能点、技术要求、验收标准等，学生将按此需求开发…" data-bind="modal" data-key="description">${h(d.description || '')}</textarea></div>
+        <div class="form-row"><label>控制版本迭代</label>
+          <div class="pctrl-row">
+            <button type="button" class="pctrl-switch${d.controlled ? ' on' : ''}" data-act="projectCtrlToggle" title="${d.controlled ? '当前已开启，点击关闭' : '当前已关闭，点击开启'}" role="switch" aria-checked="${d.controlled ? 'true' : 'false'}"><i class="pctrl-knob"></i></button>
+            <span class="hint" style="flex:1">开启后学生端将移除统一的「创建项目并开始开发」入口，改为按迭代逐版本解锁：学生仅可开发当前迭代，完成当前迭代（保存并提交）后才解锁下一迭代；需至少配置 1 个迭代版本。</span>
+          </div></div>
         <div class="form-row"><label>项目迭代路线 <span style="font-weight:400;color:var(--text-3)">（选填，最多 10 个迭代版本）</span></label>
-          <div class="rm-box">${projectRoadmapEditorHtml(d.roadmap)}</div>
-          <div class="hint">按阶段填写各迭代版本要求学生完成的任务、验收标准与时间节点；未填写不影响项目发布，填写后学生端将以时间线形式展示分阶段迭代路径。</div></div>
-        <div class="hint">发布后本班学生将在「项目代码」板块实时收到；支持随时编辑、下架与状态管理。</div>`;
+          <div class="rm-box">${projectRoadmapEditorHtml(d.roadmap, d.rmEditIdx)}</div>
+          <div class="hint">点击「迭代 N」标签可自定义迭代名称（20 字以内）；按阶段填写各迭代版本要求学生完成的任务、验收标准与时间节点；未填写不影响项目发布，填写后学生端将以时间线形式展示分阶段迭代路径。</div></div>
+        <div class="hint">发布后本班学生将在「项目实践」板块实时收到；支持随时编辑、下架与状态管理。</div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn primary" data-act="doProjectSave" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 保存中…' : icon('check', 15) + (d.id ? ' 保存修改' : ' 发布项目')}</button>`;
 
+    } else if (m.type === 'projectCtrlConfirm') {
+      // 控制版本迭代开关二次确认：确认后回到发布弹窗并应用目标状态（取消则原样恢复）
+      title = '控制版本迭代';
+      body = `<div class="note ${d.target ? '' : 'warn'}" style="margin-bottom:12px">${d.target
+        ? '确定要<b>开启「控制版本迭代」</b>吗？'
+        : '确定要<b>关闭「控制版本迭代」</b>吗？'}</div>
+        <div class="hint">${d.target
+          ? '开启后：学生端项目卡片右上角的「创建项目并开始开发」按钮将被移除；每个迭代版本右侧单独提供「开始开发」按钮；学生完成当前迭代（保存并提交）前，无法进入其他迭代版本的开发界面。'
+          : '关闭后：学生恢复自由开发模式——可随时创建项目并自由开发，不再受迭代顺序限制；学生已推进的迭代进度保留，重新开启时继续生效。'}</div>`;
+      foot = `<button class="btn" data-act="projectCtrlCancel">取消</button>
+        <button class="btn ${d.target ? 'primary' : 'danger'}" data-act="projectCtrlApply">${d.target ? icon('check', 15) + ' 确认开启' : icon('x', 15) + ' 确认关闭'}</button>`;
+
     } else if (m.type === 'projectDetail') {
-      // 教师在线查看学生代码：版本迭代记录（最新在前），点「展开代码」加载该版本完整文件
-      title = '代码版本 · ' + (d.name || '');
+      // 教师在线查看学生代码：版本迭代记录（最新在前），点「展开代码」加载该版本完整文件；
+      // 版本筛选联动：筛选状态下仅展示选中版本，且代码区域默认展开（无需手动点开）
+      title = '代码版本 · ' + (d.name || '') + (d.filterVer ? ' · 筛选版本' : '');
       if (d.loading) {
         body = '<div style="padding:24px;text-align:center;color:var(--text-3);font-size:13px">版本记录加载中…</div>';
       } else if (d.err) {
         body = `<div class="empty"><div class="empty-title">版本记录加载失败</div><div class="empty-desc">${h(d.err)}</div>
-          <button class="btn sm" data-act="projectDetailModal" data-id="${d.spId}" data-val="${h(d.name || '')}">${icon('refresh', 13)} 重试</button></div>`;
+          <button class="btn sm" data-act="projectDetailModal" data-id="${d.spId}" data-val="${h(d.name || '')}" data-iter="${d.filterVer || ''}">${icon('refresh', 13)} 重试</button></div>`;
       } else {
         const vs = d.versions || [];
         body = (vs.length
-          ? `<div class="hint" style="margin-bottom:10px">共 ${vs.length} 个版本（最新在前），点击「展开代码」在线查看该版本完整文件。</div>` + vs.map(ver => {
+          ? `<div class="hint" style="margin-bottom:10px">${d.filterVer
+            ? `按「版本筛选」联动：仅展示 <b>${h(d.filterLabel || ('v' + d.filterVer))}</b> 对应版本的代码内容（该学生共开放 ${vs.length} 个匹配版本）。`
+            : `共 ${vs.length} 个版本（最新在前），点击「展开代码」在线查看该版本完整文件。`}</div>` + vs.map(ver => {
               const open = String(d.openId) === String(ver.id);
               return `<div class="card" style="margin-bottom:10px"><div class="card-head">${icon('layers', 14)}
                 <h3>v${ver.versionNo}</h3>
@@ -4334,7 +4440,7 @@
               </div>` : ''}
               </div>`;
             }).join('')
-          : '<div class="empty"><div class="empty-title">暂无对学生开放的可见版本</div><div class="empty-desc">学生每次「保存并提交」时，当前版本及全部历史版本才会开放给教师查看；仅「保存新版本」的迭代不对教师开放。</div></div>');
+          : `<div class="empty"><div class="empty-title">${d.filterVer ? '该学生在筛选版本 ' + h(d.filterLabel || ('v' + d.filterVer)) + ' 下暂无可见版本' : '暂无对学生开放的可见版本'}</div><div class="empty-desc">学生每次「保存并提交」时，当前版本及全部历史版本才会开放给教师查看；仅「保存新版本」的迭代不对教师开放。</div></div>`);
       }
       foot = `<button class="btn" data-act="closeModal">关闭</button>`;
 
@@ -4610,7 +4716,7 @@
       </div>`;
       foot = '<button class="btn primary" data-act="closeModal">关闭</button>';
     }
-    return `<div class="mask"><div class="modal${m.type === 'resPreview' ? ' wide' : (m.type === 'projectDetail' ? ' xl' : '')}">
+    return `<div class="mask"><div class="modal${m.type === 'resPreview' || m.type === 'projectCompose' ? ' wide' : (m.type === 'projectDetail' ? ' xl' : '')}">
       <div class="modal-head">${icon('sparkles', 16)}<h3>${h(title)}</h3><div class="spacer"></div>
         <button class="icon-btn" data-act="closeModal">${icon('x', 16)}</button></div>
       <div class="modal-body">${body}</div>
@@ -4951,7 +5057,9 @@
     </div>`;
   }
 
-  /* 保存并发布 · 二次确认面板（盖在组卷编辑器上）：确认文案 + 发布班级多选（默认当前看板班级） */
+  /* 保存并发布 · 二次确认面板（盖在组卷编辑器上）：确认文案 + 发布班级多选
+     （新建默认勾选当前看板班级；编辑/重新进入默认勾选作业原归属班级——
+     两种场景均可自由勾选全部可选班级，与看板选中状态完全解耦） */
   // 班级 chips / 计数 / 按钮行为独立片段：勾选切换时仅局部重绘对应容器，
   // 不整层 renderOverlays 重建面板——避免确认卡片 pop 入场动画重放造成闪屏
   function composeConfirmClassesHtml(cf) {
@@ -4959,11 +5067,12 @@
     const sel = cf.selected || [];
     return cls.length ? cls.map(x => {
       const on = sel.indexOf(x.id) >= 0;
-      return `<div class="compose-class-pick${on ? ' on' : ''}${cf.editing || cf.busy ? ' lock' : ''}"
-        ${cf.editing || cf.busy ? '' : 'data-act="composeConfirmToggle" data-val="' + h(x.id) + '"'}
-        title="${cf.editing ? '编辑作业不改变归属班级' : (on ? '点击取消选择' : '点击选择该班级')}">
+      return `<div class="compose-class-pick${on ? ' on' : ''}${cf.busy ? ' lock' : ''}"
+        ${cf.busy ? '' : 'data-act="composeConfirmToggle" data-val="' + h(x.id) + '"'}
+        title="${cf.busy ? '发布进行中' : (on ? '点击取消选择' : '点击选择该班级')}">
         <span class="ccp-check"></span><span>${h(x.name)}</span>
-        ${on ? '<span class="badge brand" style="margin-left:auto">已选</span>' : ''}
+        ${on === true && cf.origin === x.id ? '<span class="badge ok" style="margin-left:auto" title="该作业当前归属班级">原班</span>'
+          : (on ? '<span class="badge brand" style="margin-left:auto">已选</span>' : '')}
       </div>`;
     }).join('') : '<div class="hint">暂无可授课班级</div>';
   }
@@ -4994,9 +5103,9 @@
         <div class="compose-confirm-card">
         <div class="compose-confirm-head">${icon('send', 15)} 确认发布作业</div>
         <div class="note" style="margin:12px 0 10px">即将发布作业 <b>「${h(c.title || '未命名作业')}」</b>，${cf.editing
-          ? '将保存修改并发布至原归属班级，学生端实时收到。'
+          ? '将保存本次修改并发布：原归属班级默认勾选，可自由增选其他班级（作业将复制发布到新选班级）。'
           : '选择需发布的班级后确认，作业将关联所选班级逐一发布，学生端实时收到。'}</div>
-        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">发布班级${cf.editing ? ' <span style="font-weight:400;color:var(--text-3)">（编辑作业不改变归属班级）</span>' : ' <span style="font-weight:400;color:var(--text-3)">（可多选）</span>'}</div>
+        <div style="font-size:12.5px;font-weight:650;color:var(--text-2);margin-bottom:8px">发布班级 <span style="font-weight:400;color:var(--text-3)">（可多选${cf.editing ? ' · 默认保留原归属班级' : ''}）</span></div>
         <div class="compose-confirm-classes" id="composeConfirmClasses">${composeConfirmClassesHtml(cf)}</div>
         <div class="hint" id="composeConfirmCount" style="margin-top:10px">${composeConfirmCountHtml(cf)}</div>
         <div id="composeConfirmActions" style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">${composeConfirmActionsHtml(cf)}</div>
@@ -5655,7 +5764,12 @@
     c.busy = true; renderOverlays();
     try {
       const payload = composePayload(c, status);
-      payload.classId = State.filters.classId != null ? Number(State.filters.classId) : null;
+      // 归属班级注入：编辑（含保存草稿后重新进入）一律按作业原归属班级保存，
+      // 与学情看板当前选中班级完全解耦——看板切换不再影响作业归属；
+      // 新建作业草稿仍默认发到当前看板班级
+      payload.classId = (c.id != null && c.classId != null)
+        ? Number(c.classId)
+        : (State.filters.classId != null ? Number(State.filters.classId) : null);
       const r = await API.post('/teacher/compose', payload);
       State.compose = null; renderOverlays();
       // 发布后按当前选中班级刷新（与 classPick 切换同一口径，避免跳到默认班级列表）
@@ -8213,25 +8327,27 @@
       renderOverlays();
     },
     composeSave() { composeSubmit('DRAFT'); },
-    // 保存并发布：先走原表单必填校验（不通过不弹窗），再弹二次确认弹窗选择发布班级
+    // 保存并发布：先走原表单必填校验（不通过不弹窗），再弹二次确认弹窗选择发布班级。
+    // 默认选中与看板解耦：编辑（含保存草稿后重新进入）默认勾选作业原归属班级，
+    // 新建默认勾选当前学情看板班级；两种场景班级列表均为全部可选班级且可自由勾选
     composePublish() {
       const c = State.compose;
       if (!c || c.busy || (c.confirm && c.confirm.busy)) return;
       if (!composeValidate(c)) return;                        // 需求6：必填校验失败不弹确认窗
       const classes = (DB.classes || []).map(x => ({ id: String(x.id), name: x.name || ('班级 ' + x.id) }));
-      // 默认选中：编辑作业固定原归属班级（不可改）；新建默认勾选当前学情看板左侧栏已选班级
       const editing = c.id != null;
+      const origin = editing && c.classId != null ? String(c.classId) : null;
       const def = editing
-        ? (c.classId != null ? c.classId : (State.filters.classId != null ? String(State.filters.classId) : null))
+        ? (origin != null ? origin : (State.filters.classId != null ? String(State.filters.classId) : (classes[0] ? classes[0].id : null)))
         : (State.filters.classId != null ? String(State.filters.classId) : (classes[0] ? classes[0].id : null));
-      c.confirm = { selected: def != null ? [def] : [], classes, editing, busy: false };
+      c.confirm = { selected: def != null ? [def] : [], classes, editing, origin, busy: false };
       renderOverlays();
     },
-    // 确认弹窗班级多选切换（编辑作业不改变归属班级，选择器为禁用态）：
+    // 确认弹窗班级多选切换：
     // 局部刷新 chips/计数/按钮，不整层重渲染——修复勾选切换时确认卡片动画重放导致的闪屏
     composeConfirmToggle(v) {
       const cf = State.compose && State.compose.confirm;
-      if (!cf || cf.editing || cf.busy) return;
+      if (!cf || cf.busy) return;
       const i = cf.selected.indexOf(String(v));
       if (i >= 0) cf.selected.splice(i, 1);
       else cf.selected.push(String(v));
@@ -8244,7 +8360,9 @@
       c.confirm = null;                                      // 关闭弹窗，保留编辑状态不做任何修改
       renderOverlays();
     },
-    // 确认发布：校验至少 1 个班级 → 逐班关联当前作业内容发布；部分失败保留编辑器仅重发失败班级
+    // 确认发布：校验至少 1 个班级 → 逐班关联当前作业内容发布；部分失败保留编辑器仅重发失败班级。
+    // 编辑（含保存草稿后重新进入）：原归属班走带 id 更新原作业（保存本次修改），其余勾选班级
+    // 不带 id 复制发布（避免同一 id 被多次改挂不同班级）；原班未勾选时同样先保存原作业再发布新班
     async composeConfirmOk() {
       const c = State.compose;
       const cf = c && c.confirm;
@@ -8253,11 +8371,26 @@
       cf.busy = true;
       composeConfirmRefresh();                               // 局部切换为发布中态（不重放卡片动画）
       const payload = composePayload(c, 'ONGOING');
-      if (c.id != null) payload.id = Number(c.id);
+      const editing = c.id != null;
+      const originCls = editing && c.classId != null ? String(c.classId) : null;
       const failed = [];
-      for (const classId of cf.selected) {
+      // ① 编辑态：先把本次修改保存回原作业（归属保持原班，不随勾选变化）——保存失败立即中断
+      if (editing) {
+        const target = originCls != null ? originCls : cf.selected[0];
         try {
-          const p = Object.assign({}, payload, { classId: Number(classId) });
+          await API.post('/teacher/compose', Object.assign({}, payload, { id: Number(c.id), classId: Number(target) }));
+        } catch (e) {
+          cf.busy = false;
+          composeConfirmRefresh();
+          toast('保存原作业修改失败：' + e.message + '（可重试）');
+          return;
+        }
+      }
+      // ② 逐班发布：原班已由①带 id 更新（跳过避免重复）；其余勾选班级不带 id 复制发布
+      for (const classId of cf.selected) {
+        if (editing && originCls != null && String(classId) === originCls) continue;
+        try {
+          const p = Object.assign({}, payload, { id: null, classId: Number(classId) });
           await API.post('/teacher/compose', p);
         } catch (e) {
           failed.push({ classId, msg: e.message });
@@ -8675,17 +8808,66 @@
     /* ---------------- 项目代码板块 ---------------- */
     // 教师端
     projectComposeModal() {
-      State.modal = { type: 'projectCompose', data: { title: '', description: '', roadmap: [{ title: '', desc: '' }], busy: false } };
+      State.modal = { type: 'projectCompose', data: { title: '', description: '', roadmap: [{ title: '', desc: '' }], controlled: 0, busy: false } };
       renderOverlays();
     },
     projectEditModal(v, id) {
       const p = (DB.teacherProjects || []).find(x => String(x.id) === String(id));
       if (!p) return;
-      // 编辑回填迭代路线：已配置则逐项回填，未配置默认 1 个空项（保持与发布弹窗一致的初始形态）
+      // 编辑回填迭代路线（含自定义迭代名称）与受控开关：已配置则逐项回填，未配置默认 1 个空项
       const rm = (p.roadmap && p.roadmap.length)
-        ? p.roadmap.map(x => ({ title: x.title || '', desc: x.desc || '' }))
-        : [{ title: '', desc: '' }];
-      State.modal = { type: 'projectCompose', data: { id: p.id, title: p.title || '', description: p.description || '', roadmap: rm, busy: false } };
+        ? p.roadmap.map(x => ({ name: x.name || '', title: x.title || '', desc: x.desc || '' }))
+        : [{ name: '', title: '', desc: '' }];
+      State.modal = { type: 'projectCompose', data: { id: p.id, title: p.title || '', description: p.description || '', roadmap: rm, controlled: p.controlled ? 1 : 0, busy: false } };
+      renderOverlays();
+    },
+    /* 迭代名称就地编辑：点击标签 → 输入框（data-bind 即时写回，自动保存）；失焦/回车校验提交 */
+    rmNameEdit(v) {
+      const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
+      if (!d || !d.roadmap) return;
+      const i = Number(v);
+      if (!d.roadmap[i]) return;
+      d.rmEditIdx = i;
+      renderOverlays();
+      setTimeout(() => {
+        const inp = document.querySelector('.modal [data-rmname="' + i + '"]');
+        if (inp) { inp.focus(); inp.select(); }
+      }, 50);
+    },
+    rmNameCommit(i) {
+      const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
+      if (!d || !d.roadmap) return;
+      // 仅编辑态收尾时生效：Enter 提交后紧随的 focusout 二次触发直接忽略，避免重复重渲染闪烁
+      if (d.rmEditIdx == null || Number(d.rmEditIdx) !== Number(i)) { return; }
+      const it = d.roadmap[Number(i)];
+      if (!it) return;
+      let name = (it.name || '').trim();
+      // 非法字符校验：与后端一致，剔除路径/引号/尖括号等
+      if (/[<>:"\\\/|?*]/.test(name)) { toast('迭代名称含非法字符（不可包含 < > : " / \\ | ? *）', 'warn'); return; }
+      if (name.length > 20) { name = name.slice(0, 20); }
+      it.name = name.length ? name : '';   // 空名称回落默认「迭代 N」
+      d.rmEditIdx = null;
+      renderOverlays();
+    },
+    /* 控制版本迭代开关：先二次确认，再回到发布弹窗应用目标状态 */
+    projectCtrlToggle() {
+      const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
+      if (!d) return;
+      State.modal = { type: 'projectCtrlConfirm', data: { target: d.controlled ? 0 : 1, projData: d } };
+      renderOverlays();
+    },
+    projectCtrlApply() {
+      const d = State.modal && State.modal.type === 'projectCtrlConfirm' ? State.modal.data : null;
+      if (!d || !d.projData) return;
+      d.projData.controlled = d.target;
+      State.modal = { type: 'projectCompose', data: d.projData };
+      renderOverlays();
+      toast(d.target ? '已开启「控制版本迭代」，发布后生效' : '已关闭「控制版本迭代」，发布后生效', 'ok');
+    },
+    projectCtrlCancel() {
+      const d = State.modal && State.modal.type === 'projectCtrlConfirm' ? State.modal.data : null;
+      if (!d || !d.projData) { State.modal = null; renderOverlays(); return; }
+      State.modal = { type: 'projectCompose', data: d.projData };
       renderOverlays();
     },
     async doProjectSave() {
@@ -8693,14 +8875,23 @@
       const d = m && m.type === 'projectCompose' ? m.data : null;
       if (!d || d.busy) return;
       if (!(d.title || '').trim() || !(d.description || '').trim()) { toast('请填写项目标题与需求说明', 'warn'); return; }
+      if (d.rmEditIdx != null) Actions.rmNameCommit(d.rmEditIdx);   // 名称编辑中：先就地提交
+      // 迭代路线选填：全空项不提交；非空项（名称/标题/描述有内容）随项目绑定保存
+      const roadmap = (d.roadmap || [])
+        .map(x => {
+          const row = {};
+          const nm = (x.name || '').trim();
+          if (nm) row.name = nm;
+          row.title = (x.title || '').trim();
+          row.desc = (x.desc || '').trim();
+          return row;
+        })
+        .filter(x => x.name || x.title || x.desc);
+      if (d.controlled && !roadmap.length) { toast('开启「控制版本迭代」需至少配置 1 个迭代版本（填写阶段标题或任务描述）', 'warn'); return; }
+      const payload = { title: d.title, description: d.description, roadmap: roadmap.length ? roadmap : null, controlled: d.controlled ? 1 : 0 };
       d.busy = true;
       renderOverlays();
       try {
-        // 迭代路线选填：全空项不提交；非空项（标题或描述有内容）随项目绑定保存
-        const roadmap = (d.roadmap || [])
-          .map(x => ({ title: (x.title || '').trim(), desc: (x.desc || '').trim() }))
-          .filter(x => x.title || x.desc);
-        const payload = { title: d.title, description: d.description, roadmap: roadmap.length ? roadmap : null };
         if (d.id) {
           await API.put('/teacher/projects/' + d.id, payload);
           toast('项目已更新', 'ok');
@@ -8717,13 +8908,14 @@
         renderOverlays();
       }
     },
-    // 迭代路线编辑：添加（≤10）/ 删除（>1 时显示）/ 上移下移排序
+    // 迭代路线编辑：添加（≤10）/ 删除（>1 时显示）/ 上移下移排序；编辑态统一先收起避免索引错位
     rmAdd() {
       const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
       if (!d) return;
       d.roadmap = d.roadmap || [];
       if (d.roadmap.length >= 10) { toast('最多支持 10 个迭代版本', 'warn'); return; }
-      d.roadmap.push({ title: '', desc: '' });
+      d.rmEditIdx = null;
+      d.roadmap.push({ name: '', title: '', desc: '' });
       renderOverlays();
     },
     rmDel(v) {
@@ -8731,6 +8923,7 @@
       if (!d || !d.roadmap) return;
       const i = Number(v);
       if (d.roadmap.length <= 1) return;                 // 仅保留 1 个时不允许删除
+      d.rmEditIdx = null;
       d.roadmap.splice(i, 1);
       renderOverlays();
     },
@@ -8739,6 +8932,7 @@
       if (!d || !d.roadmap) return;
       const i = Number(v);
       if (i <= 0) return;
+      d.rmEditIdx = null;
       [d.roadmap[i - 1], d.roadmap[i]] = [d.roadmap[i], d.roadmap[i - 1]];
       renderOverlays();
     },
@@ -8747,6 +8941,7 @@
       if (!d || !d.roadmap) return;
       const i = Number(v);
       if (i >= d.roadmap.length - 1) return;
+      d.rmEditIdx = null;
       [d.roadmap[i], d.roadmap[i + 1]] = [d.roadmap[i + 1], d.roadmap[i]];
       renderOverlays();
     },
@@ -8806,21 +9001,56 @@
       toast('项目目录已刷新', 'ok');
     },
     async projectProgressRefreshMain(v) { await refreshProjectProgress(v); },
+    /* 版本筛选下拉：选项由当前进度数据本地生成（零网络请求，打开即时）；
+       开关互斥，再点一次或点选后关闭 */
+    projectFilterToggle(v) {
+      const drop = document.getElementById('pfDrop');
+      if (!drop) return;
+      if (drop.style.display !== 'none') { drop.style.display = 'none'; return; }
+      drop.innerHTML = pfDropOptionsHtml();
+      drop.style.display = '';
+    },
+    /* 选中版本 → 记录筛选状态（绑定项目 id）→ 关闭下拉 → 局部刷新进度区（毫秒级，无整页重渲染） */
+    projectFilterSet(v) {
+      const d = State.projView && State.projView.data;
+      if (!d || !d.project) return;
+      State.projFilterVer = { pid: d.project.id, ver: v === 'all' ? 'all' : Number(v) };
+      const drop = document.getElementById('pfDrop');
+      if (drop) drop.style.display = 'none';
+      // 卡片头按钮文案 + 进度列表同步局部刷新（保留滚动位置与轮询节奏）
+      const btn = document.querySelector('[data-act="projectFilterToggle"]');
+      if (btn) btn.innerHTML = icon('search', 13) + ' ' + pfFilterBtnText(d.project.id);
+      const box = document.getElementById('projectProgressMain');
+      if (box) box.innerHTML = projectProgressBodyHtml(State.projView);
+      if (v === 'all') toast('已清除版本筛选，显示全部学生', 'ok');
+      else toast('已按版本筛选：' + pfOptionLabel(d, Number(v)), 'ok');
+    },
     // 进度/代码加载失败重试：清空聚焦视图缓存后重渲染（视图自动重新拉取）
     projectViewRetry() {
       State.projView = null;
       render();
     },
-    // 教师查看学生代码版本：v=学生姓名 id=studentProjectId
-    async projectDetailModal(v, id) {
-      State.modal = { type: 'projectDetail', data: { spId: id, name: v || '', loading: true, err: null, versions: [], openId: null, detail: null } };
+    // 教师查看学生代码版本：v=学生姓名 id=studentProjectId el.dataset.iter=版本筛选所选版本（可空）
+    // 筛选联动：传入选中版本时弹窗仅展示该学生的对应版本，且代码区域打开即默认展开加载
+    async projectDetailModal(v, id, el) {
+      const iterRaw = el && el.dataset ? el.dataset.iter : '';
+      const iter = iterRaw && iterRaw !== 'all' ? Number(iterRaw) : null;
+      const g = State.projView && State.projView.data ? State.projView.data : null;
+      const iterLabel = iter && g ? pfOptionLabel(g, iter) : (iter ? 'v' + iter : '');
+      State.modal = { type: 'projectDetail', data: { spId: id, name: v || '', loading: true, err: null, versions: [], openId: null, detail: null, filterVer: iter, filterLabel: iterLabel } };
       renderOverlays();
       try {
         const vs = await API.get('/teacher/student-projects/' + id + '/versions');
         const m = State.modal;
         if (!m || m.type !== 'projectDetail' || String(m.data.spId) !== String(id)) return;
-        m.data.versions = vs || [];
+        m.data.versions = (vs || []).filter(x => !iter || String(x.versionNo) === String(iter));
         m.data.loading = false;
+        // 筛选模式：代码区域默认完全展开——复用版本展开逻辑（设置 openId + 拉取版本详情）
+        if (iter && m.data.versions.length) {
+          renderOverlays();
+          Actions.projectVersionShow(m.data.versions[0].id);
+          return;
+        }
         renderOverlays();
       } catch (e) {
         const m = State.modal;
@@ -9463,6 +9693,22 @@
     renderOverlays();
   }
 
+  /* ---------------- 发布项目弹窗 · 迭代名称就地编辑的收尾 ----------------
+     失焦（focusout，含点击弹窗其他区域）或回车（Enter）时校验并提交；
+     data-bind="roadmap" 已在输入过程即时写回弹窗数据（自动保存），此处仅收起编辑态。 */
+  document.addEventListener('focusout', e => {
+    const t = e.target;
+    if (t && t.dataset && t.dataset.rmname !== undefined) Actions.rmNameCommit(t.dataset.rmname);
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const t = e.target;
+    if (t && t.dataset && t.dataset.rmname !== undefined) {
+      e.preventDefault();
+      Actions.rmNameCommit(t.dataset.rmname);
+    }
+  });
+
   /* ---------------- 对话区滚动控制 ----------------
    * followTail：是否跟随最新消息（默认 true）。
    * - 新消息 / 流式增量 / 卡片推送渲染后自动滚到底部；
@@ -9671,6 +9917,11 @@
 
   /* ---------------- 事件委托 ---------------- */
   document.addEventListener('click', e => {
+    // 学生进度「版本筛选」下拉：点击按钮与下拉之外的区域时收起（互不干扰其他交互）
+    if (!e.target.closest || (!e.target.closest('#pfDrop') && !e.target.closest('[data-act="projectFilterToggle"]'))) {
+      const pf = document.getElementById('pfDrop');
+      if (pf && pf.style.display !== 'none') pf.style.display = 'none';
+    }
     // 知识图谱拖拽刚结束（位移超阈值）：本次 click 为拖拽余波，跳过以免误触节点/气泡跳转
     if (State._kgDragged) return;
     const el = e.target;

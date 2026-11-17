@@ -28,6 +28,12 @@ public class StudentProject {
      */
     private Integer submittedVersionNo;
 
+    /**
+     * 当前所处迭代序号（1-based，NULL=尚未开始）：受控模式下「保存并提交」成功后自动
+     * 推进至下一迭代；完成当前迭代前其余迭代对学生锁定
+     */
+    private Integer currentIteration;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
