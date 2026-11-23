@@ -145,14 +145,14 @@ class ProjectServiceControlledIterationTest {
                 x.getCurrentIteration() != null && x.getCurrentIteration() == 1));
     }
 
-    /** 受控项目提交：当前迭代完成 → 解锁并推进至下一迭代（1→2） */
+    /** 受控项目提交：当前迭代完成 → 解锁并推进至下一迭代（1→2）；版本落在当前迭代版本上 */
     @Test
     void save_submitOnControlled_advancesToNextIteration() {
         when(studentProjectMapper.selectById(9L)).thenReturn(sp(1));
         when(codingProjectMapper.selectById(5L)).thenReturn(cp(true));
-        when(projectVersionMapper.selectOne(any())).thenReturn(version(2));
+        when(projectVersionMapper.selectOne(any())).thenReturn(version(1));
 
-        service.save(15L, 9L, FILES, "提交迭代1", true, "iterate", "第一版反思");
+        service.save(15L, 9L, FILES, "提交迭代1", true, "keep", "第一版反思");
 
         verify(studentProjectMapper).updateById(argThat((StudentProject x) -> x.getCurrentIteration() == 2));
     }
@@ -162,11 +162,63 @@ class ProjectServiceControlledIterationTest {
     void save_submitOnLastIteration_capsAtRoadmapSize() {
         when(studentProjectMapper.selectById(9L)).thenReturn(sp(2));
         when(codingProjectMapper.selectById(5L)).thenReturn(cp(true));
-        when(projectVersionMapper.selectOne(any())).thenReturn(version(5));
+        when(projectVersionMapper.selectOne(any())).thenReturn(version(2));
 
-        service.save(15L, 9L, FILES, "最终提交", true, "iterate", null);
+        service.save(15L, 9L, FILES, "最终提交", true, "keep", null);
 
         verify(studentProjectMapper).updateById(argThat((StudentProject x) -> x.getCurrentIteration() == 2));
+    }
+
+    /** 受控项目最终迭代首次提交（iterate）：新建最终版本并封顶（v2 路线 → v2 提交） */
+    @Test
+    void save_submitFinalIterationFirstTime_iteratesAndCaps() {
+        when(studentProjectMapper.selectById(9L)).thenReturn(sp(2));
+        when(codingProjectMapper.selectById(5L)).thenReturn(cp(true));
+        when(projectVersionMapper.selectOne(any())).thenReturn(version(1));
+
+        service.save(15L, 9L, FILES, "最终迭代首版", true, "iterate", null);
+
+        verify(projectVersionMapper).insert(argThat((ProjectVersion v) -> v.getVersionNo() == 2));
+        verify(studentProjectMapper).updateById(argThat((StudentProject x) -> x.getCurrentIteration() == 2));
+    }
+
+    /** 受控 keep 新迭代首次保存：自动转为迭代，创建当前迭代版本（v1 阶段完成进入 v2 后首存） */
+    @Test
+    void save_controlledKeepOnNewIteration_autoIterates() {
+        when(studentProjectMapper.selectById(9L)).thenReturn(sp(2));
+        when(codingProjectMapper.selectById(5L)).thenReturn(cp(true));
+        when(projectVersionMapper.selectOne(any())).thenReturn(version(1));
+
+        service.save(15L, 9L, FILES, "v2 阶段首存", false, "keep", null);
+
+        verify(projectVersionMapper).insert(argThat((ProjectVersion v) -> v.getVersionNo() == 2));
+        verify(studentProjectMapper).updateById(argThat((StudentProject x) -> x.getCurrentIteration() == 2));
+    }
+
+    /** 受控 iterate 越界防护：版本水位已达当前迭代时禁止再迭代（防直调 API 产生路线外版本） */
+    @Test
+    void save_controlledIterateBeyondCurrent_throws() {
+        when(studentProjectMapper.selectById(9L)).thenReturn(sp(1));
+        when(codingProjectMapper.selectById(5L)).thenReturn(cp(true));
+        when(projectVersionMapper.selectOne(any())).thenReturn(version(1));
+
+        BizException e = assertThrows(BizException.class,
+                () -> service.save(15L, 9L, FILES, "越界", false, "iterate", null));
+        assertTrue(e.getMessage().contains("当前迭代为 v1"));
+        verify(projectVersionMapper, org.mockito.Mockito.never()).insert(any(ProjectVersion.class));
+    }
+
+    /** 受控项目尚无版本时 keep：按 v1 新建（首存自动落到当前迭代版本） */
+    @Test
+    void save_controlledKeepNoVersion_createsV1() {
+        when(studentProjectMapper.selectById(9L)).thenReturn(sp(1));
+        when(codingProjectMapper.selectById(5L)).thenReturn(cp(true));
+        when(projectVersionMapper.selectOne(any())).thenReturn(null);
+
+        Map<String, Object> r = service.save(15L, 9L, FILES, "首存", false, "keep", null);
+
+        verify(projectVersionMapper).insert(argThat((ProjectVersion v) -> v.getVersionNo() == 1));
+        assertEquals(Integer.valueOf(1), r.get("versionCount"));
     }
 
     /** 非受控项目提交：不产生迭代推进（currentIteration 保持原状/为空） */
@@ -182,14 +234,14 @@ class ProjectServiceControlledIterationTest {
         assertEquals(Integer.valueOf(1), r.get("versionCount"));
     }
 
-    /** 仅保存不提交：受控项目不推进迭代（当前迭代未完成） */
+    /** 仅保存不提交：受控项目不推进迭代（覆盖更新当前迭代版本） */
     @Test
     void save_withoutSubmit_keepsIterationUnchanged() {
         when(studentProjectMapper.selectById(9L)).thenReturn(sp(1));
         when(codingProjectMapper.selectById(5L)).thenReturn(cp(true));
-        when(projectVersionMapper.selectOne(any())).thenReturn(version(2));
+        when(projectVersionMapper.selectOne(any())).thenReturn(version(1));
 
-        service.save(15L, 9L, FILES, "s", false, "iterate", null);
+        service.save(15L, 9L, FILES, "s", false, "keep", null);
 
         verify(studentProjectMapper).updateById(argThat((StudentProject x) -> x.getCurrentIteration() == 1));
     }

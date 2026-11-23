@@ -44,5 +44,11 @@ public class ProjectVersion {
     /** 代码总字节数 */
     private Integer codeSize;
 
+    /** 教师打回标记 0/1：打回后学生重新编辑提交该版本（版本号不变），提交后复位 0 */
+    private Integer rejected;
+
+    /** 打回理由（教师打回时填写，≤500 字，学生端可见） */
+    private String rejectReason;
+
     private LocalDateTime createdAt;
 }

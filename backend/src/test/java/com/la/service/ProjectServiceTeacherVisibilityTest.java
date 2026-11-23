@@ -166,9 +166,12 @@ class ProjectServiceTeacherVisibilityTest {
         when(studentProjectMapper.selectById(9L)).thenReturn(sp(null));
         when(codingProjectMapper.selectById(5L)).thenReturn(cp());
 
-        List<Map<String, Object>> vs = service.studentVersions(2L, 9L);
+        Map<String, Object> r = service.studentVersions(2L, 9L);
 
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> vs = (List<Map<String, Object>>) r.get("versions");
         assertTrue(vs.isEmpty());
+        assertEquals(Integer.valueOf(0), r.get("controlled"));
         verify(projectVersionMapper, never()).selectList(any());
     }
 
@@ -281,8 +284,10 @@ class ProjectServiceTeacherVisibilityTest {
         v2.setReflection("卡点已解决，理解了循环边界。");
         when(projectVersionMapper.selectList(any())).thenReturn(List.of(v2, version(1)));
 
-        List<Map<String, Object>> vs = service.studentVersions(2L, 9L);
+        Map<String, Object> r = service.studentVersions(2L, 9L);
 
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> vs = (List<Map<String, Object>>) r.get("versions");
         assertEquals(2, vs.size());
         assertEquals("卡点已解决，理解了循环边界。", vs.get(0).get("reflection"));
         assertNull(vs.get(1).get("reflection"));

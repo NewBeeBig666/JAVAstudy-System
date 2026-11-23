@@ -28,6 +28,7 @@
     plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
     x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     layers: '<path d="m12 2 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>',
+    lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
     trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
     code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>'
   };
@@ -373,11 +374,13 @@
     } else {
       const vs = S.versions || [];
       body.innerHTML = vs.length
-        ? vs.map(v => `<div class="ver-item"><span class="ver-no">v${v.versionNo}</span>
+        ? vs.map(v => `<div class="ver-item"${v.rejected ? ' style="flex-wrap:wrap"' : ''}><span class="ver-no">v${v.versionNo}</span>
+            ${v.rejected ? '<span class="badge" style="flex:none;color:#ff9f8e;border-color:rgba(214,86,74,.55)" title="教师已打回该版本">已打回</span>' : ''}
             ${v.reflection ? '<span class="badge" style="flex:none" title="该版本附有总结反思">反思</span>' : ''}
             ${v.score && v.score.finalScore != null ? `<span class="badge" style="flex:none;color:#499c54" title="版本评分（${v.score.teacherAdjusted ? '教师已调整' : 'AI 初评'}）">评分 ${v.score.finalScore}</span>` : ''}
             <span class="ver-summary">${h(v.summary || '—')}</span>
-            <span class="ver-meta">${v.codeSize >= 1024 ? (v.codeSize / 1024).toFixed(1) + ' KB' : v.codeSize + ' B'} · ${h(v.createdAt || '')}</span></div>`).join('')
+            <span class="ver-meta">${v.codeSize >= 1024 ? (v.codeSize / 1024).toFixed(1) + ' KB' : v.codeSize + ' B'} · ${h(v.createdAt || '')}</span>
+            ${v.rejected ? `<span style="flex:1 0 100%;font-size:11px;line-height:1.6;color:#ff9f8e">打回理由：${h(v.rejectReason || '（未填写）')} · 请修改后重新「保存并提交」本版本（版本号不变），提交后自动解除打回状态</span>` : ''}</div>`).join('')
         : '<div class="out-line out-hint">暂无版本 · 保存时可选择「迭代新版本」或「保留当前版本」，版本记录将显示在这里</div>';
     }
     $('#btnClearOut').style.display = S.bottomTab === 'output' ? '' : 'none';
@@ -868,11 +871,18 @@
    * 尚无版本：仅提供「保存为 v1 版本」。确认后按所选策略执行保存/提交，取消不产生任何变更。
    * 「保存并提交」弹窗额外提供「写总结反思」：多行编辑（≤2000 字）针对当前待提交版本，
    * 内容即时暂存（误关弹窗/刷新不丢失），随版本提交一同保存并与该版本绑定。
+   * 受控迭代项目（教师开启「控制版本迭代」）：不提供版本方式选择——版本自动固定为
+   * 教师配置的当前开发版本（mine.currentIteration）：新迭代首次保存自动创建该版本，
+   * 之后覆盖更新；完成「保存并提交」后进入下一迭代阶段，版本数与迭代路线总数严格对齐。
    */
   function openVersionDialog(submit) {
     if (S.saving || S.running) return;                    // 请求进行中/运行中不弹窗
     if (document.querySelector('.vs-mask')) return;       // 弹窗已打开时防重复弹出
     const cur = currentVersionNo();
+    // 受控迭代：版本固定为当前迭代阶段，无版本选择入口
+    const ctrl = S.project && S.project.controlled === 1;
+    const curIter = ctrl ? ((S.mine && S.mine.currentIteration) || 1) : 0;
+    const ctrlMode = ctrl ? (cur < curIter ? 'iterate' : 'keep') : null;
     const opts = cur >= 1 ? [
       { mode: 'keep',    no: cur,     title: '保留为 v' + cur + ' 版本',     desc: '覆盖更新当前版本内容，版本号保持 v' + cur + ' 不变，不新增版本记录' },
       { mode: 'iterate', no: cur + 1, title: '迭代为 v' + (cur + 1) + ' 版本', desc: '生成新版本 v' + (cur + 1) + '，历史版本完整保留可随时回溯', def: true }
@@ -884,9 +894,13 @@
     const mask = document.createElement('div');
     mask.className = 'vs-mask';
     mask.innerHTML = `<div class="vs-dialog" role="dialog" aria-modal="true">
-      <div class="vs-title">${icon(submit ? 'checkcircle' : 'check', 15)} ${submit ? '保存并提交' : '保存新版本'} · 选择版本方式</div>
-      <div class="vs-cur">当前版本：<b>${cur >= 1 ? 'v' + cur : '尚无版本'}</b>${summary ? '<span class="vs-sum"> · 版本说明：' + h(clip(summary, 40)) + '</span>' : ''}</div>
-      <div class="vs-opts">${opts.map((o, i) => `
+      <div class="vs-title">${icon(submit ? 'checkcircle' : 'check', 15)} ${submit ? '保存并提交' : '保存新版本'}${ctrl ? ' · 当前迭代 v' + curIter : ' · 选择版本方式'}</div>
+      <div class="vs-cur">当前版本：<b>${cur >= 1 ? 'v' + cur : '尚无版本'}</b>${ctrl ? '<span class="vs-sum"> · 受控迭代：当前开发版本 <b>v' + curIter + '</b></span>' : ''}${summary ? '<span class="vs-sum"> · 版本说明：' + h(clip(summary, 40)) + '</span>' : ''}</div>
+      <div class="vs-opts">${ctrl
+        ? `<div class="vs-ctrl-fixed">${icon('lock', 13)} 本次将${cur < curIter ? '创建' : '更新'}版本 <b>v${curIter}</b>（当前迭代版本）
+             <span>本项目按迭代路线受控推进：版本由教师端配置的当前开发阶段决定，无其他版本可选；完成「保存并提交」后自动进入下一迭代阶段。</span>
+           </div>`
+        : opts.map((o, i) => `
         <label class="vs-opt${o.def ? ' on' : ''}">
           <input type="radio" name="vs-mode" value="${o.mode}"${o.def ? ' checked' : ''}>
           <span class="vs-radio"></span>
@@ -906,7 +920,7 @@
           <span id="vsRefCount">${draft.length} / 2000</span>
           <span class="vs-ed-auto">草稿自动暂存 · 关闭不丢失</span>
           <span class="ide-spacer"></span>
-          <button class="ide-tb-btn" data-vs="back">${icon('chevronL', 13)} 返回版本选择</button>
+          <button class="ide-tb-btn" data-vs="back">${icon('chevronL', 13)} ${ctrl ? '返回' : '返回版本选择'}</button>
         </div>
       </div>` : ''}
       <div class="vs-actions">
@@ -932,8 +946,8 @@
     };
     const confirmSave = () => {
       if (S.saving || S.running) return;                  // 二次确认防重复提交
-      const checked = mask.querySelector('input[name="vs-mode"]:checked');
-      const mode = checked ? checked.value : 'iterate';
+      // 受控迭代：版本方式由当前迭代阶段自动决定（无选择入口）；非受控读取单选结果
+      const mode = ctrl ? ctrlMode : (mask.querySelector('input[name="vs-mode"]:checked') || {}).value || 'iterate';
       close();
       save(submit, mode, submit ? draft : null);
     };
@@ -1004,9 +1018,17 @@
       if (S.bottomTab === 'versions') renderBottom();
       const kept = mode === 'keep';
       const refNote = submit && reflection ? ' · 已附总结反思' : '';
-      toast(submit
-        ? (kept ? '已提交：v' + r.versionCount + ' 版本内容已更新' + refNote : '已提交（新版本 v' + r.versionCount + '），教师可实时查看' + refNote)
-        : (kept ? '已保存：v' + r.versionCount + ' 版本内容已更新' : '已保存并生成新版本 v' + r.versionCount), 'ok');
+      if (S.project && S.project.controlled === 1) {
+        // 受控迭代：版本始终落在当前迭代版本上；提交后提示迭代推进/封顶状态
+        const next = r.currentIteration || 1;
+        toast(submit
+          ? ('已提交当前迭代 v' + r.versionCount + '，教师可实时查看' + (next > r.versionCount ? ' · 已进入下一迭代 v' + next : ' · 已到达最终迭代') + refNote)
+          : ('已保存至当前迭代版本 v' + r.versionCount), 'ok');
+      } else {
+        toast(submit
+          ? (kept ? '已提交：v' + r.versionCount + ' 版本内容已更新' + refNote : '已提交（新版本 v' + r.versionCount + '），教师可实时查看' + refNote)
+          : (kept ? '已保存：v' + r.versionCount + ' 版本内容已更新' : '已保存并生成新版本 v' + r.versionCount), 'ok');
+      }
     } catch (e) {
       toast(e.message, 'warn');
     } finally {

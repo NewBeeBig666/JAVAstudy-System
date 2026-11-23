@@ -2505,10 +2505,10 @@
           <table class="table"><thead><tr><th>版本</th><th>本版本说明</th><th class="num">代码量</th><th>保存时间</th><th>提交状态</th><th>评分</th></tr></thead>
           <tbody>${versions.map(v => `<tr>
             <td><b>v${v.versionNo}</b></td>
-            <td style="max-width:260px">${h(v.summary || '—')}</td>
+            <td style="max-width:260px">${h(v.summary || '—')}${v.rejected ? `<div class="hint" style="color:var(--danger);margin-top:2px;white-space:pre-wrap">打回理由：${h(v.rejectReason || '（未填写）')}</div>` : ''}</td>
             <td class="num">${(v.codeSize || 0) >= 1024 ? ((v.codeSize || 0) / 1024).toFixed(1) + ' KB' : (v.codeSize || 0) + ' B'}</td>
             <td>${h(v.createdAt || '—')}</td>
-            <td style="white-space:nowrap"><span class="badge ${v.submitted ? 'ok' : ''}" title="${v.submitted ? '已随「保存并提交」对教师开放' : '尚未提交：仅本人可见，点击「保存并提交」后开放'}">${v.submitted ? '已提交' : '未提交'}</span></td>
+            <td style="white-space:nowrap"><span class="badge ${v.submitted ? 'ok' : ''}" title="${v.submitted ? '已随「保存并提交」对教师开放' : '尚未提交：仅本人可见，点击「保存并提交」后开放'}">${v.submitted ? '已提交' : '未提交'}</span>${v.rejected ? ` <span class="badge danger" title="教师已打回该版本：请修改后重新提交本版本（版本号不变），提交后自动解除打回状态">已打回</span>` : ''}</td>
             <td style="white-space:nowrap">${v.score && v.score.finalScore != null
               ? `<button class="btn sm" data-act="versionScoreModal" data-id="${v.id}" data-val="${v.versionNo}" title="查看评分详情" style="padding:0 8px;font-weight:650">${v.score.finalScore}分 · ${v.score.teacherAdjusted ? '教师' : 'AI初评'}</button>`
               : '<span class="hint">—</span>'}</td>
@@ -2523,6 +2523,8 @@
     const s = (d.detail && String(d.detail.id) === String(ver.id)) ? d.detail.score : null;
     if (!s) return '<div class="hint" style="margin-top:10px">评分随代码加载后展示。</div>';
     const editing = String(d.editingScore) === String(ver.id);
+    // 「打回代码」按钮权限：仅受控迭代项目 + 当前版本为最新已提交版本（latestId）且未处于打回状态
+    const canReject = !!(d.controlled && !ver.rejected && d.latestId != null && String(d.latestId) === String(ver.id));
     const aiBlock = s.aiScore != null
       ? `<div class="note" style="margin-bottom:8px"><b>AI 初评：${s.aiScore} 分</b><div style="white-space:pre-wrap;margin-top:4px;line-height:1.7">${h(s.aiComment || '')}</div></div>` : '';
     const teacherBlock = s.teacherAdjusted
@@ -2544,10 +2546,13 @@
         </div>`;
     }
     return `${aiBlock}${teacherBlock}
-      <div style="display:flex;gap:8px;margin-top:8px">
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
+        ${canReject ? `<button class="btn sm danger" data-act="projectRejectModal" data-id="${ver.id}" data-val="${ver.versionNo}" title="打回该版本：学生需修改后重新提交（版本号不变）">${icon('x', 13)} 打回代码</button>` : ''}
         <button class="btn sm" data-act="projectScoreEdit" data-id="${ver.id}" ${d.scoring ? 'disabled' : ''}>${icon('edit', 13)} 调整评分</button>
         <button class="btn sm" data-act="projectAiScore" data-id="${ver.id}" ${d.scoring ? 'disabled' : ''}>${d.scoring ? '<span class="spinner"></span> AI 评分生成中…' : icon('sparkles', 13) + (s.aiScore != null ? ' 重新 AI 评分' : ' AI 评分')}</button>
-        <span class="hint" style="align-self:center">AI 按项目需求与迭代路线自动评估；调整保存后学生端实时可见</span>
+        <span class="hint" style="align-self:center">${canReject
+          ? '打回后学生回到该版本迭代重做，重新提交（版本号不变）后自动解除打回状态'
+          : 'AI 按项目需求与迭代路线自动评估；调整保存后学生端实时可见'}</span>
       </div>`;
   }
 
@@ -2577,6 +2582,22 @@
           <button type="button" class="btn sm" data-act="rmAdd" ${items.length >= 10 ? 'disabled' : ''}>${icon('plus', 13)} 添加迭代版本</button>
           <span class="hint">${items.length} / 10 个迭代版本${items.length >= 10 ? ' · 已达上限' : ''}</span>
         </div>`;
+  }
+
+  /* 迭代路线编辑器局部刷新：增删/排序/名称编辑态切换时仅重绘 #rmBox 容器，
+   * 不整层 renderOverlays 重建弹窗——弹窗入场动画不重放（无闪屏）、
+   * 弹窗滚动位置与页面滚动位置完全保持（不回顶、不偏移），输入焦点不丢失；
+   * focusIdx 提供时刷新后自动聚焦到该迭代的名称输入框并全选 */
+  function refreshRmEditor(focusIdx) {
+    const m = State.modal;
+    const d = m && m.type === 'projectCompose' ? m.data : null;
+    const box = document.querySelector('.modal #rmBox');
+    if (!d || !box) { if (m) renderOverlays(); return; }   // 容器不在（异常兜底）：整层刷新
+    box.innerHTML = projectRoadmapEditorHtml(d.roadmap, d.rmEditIdx);
+    if (focusIdx != null) {
+      const inp = box.querySelector('[data-rmname="' + focusIdx + '"]');
+      if (inp) { inp.focus(); inp.select(); }
+    }
   }
 
   /* ---------------- 教师进度主区内容（项目聚焦视图内联 + 4 秒轮询局部刷新） ---------------- */
@@ -4380,7 +4401,7 @@
             <span class="hint" style="flex:1">开启后学生端将移除统一的「创建项目并开始开发」入口，改为按迭代逐版本解锁：学生仅可开发当前迭代，完成当前迭代（保存并提交）后才解锁下一迭代；需至少配置 1 个迭代版本。</span>
           </div></div>
         <div class="form-row"><label>项目迭代路线 <span style="font-weight:400;color:var(--text-3)">（选填，最多 10 个迭代版本）</span></label>
-          <div class="rm-box">${projectRoadmapEditorHtml(d.roadmap, d.rmEditIdx)}</div>
+          <div class="rm-box" id="rmBox">${projectRoadmapEditorHtml(d.roadmap, d.rmEditIdx)}</div>
           <div class="hint">点击「迭代 N」标签可自定义迭代名称（20 字以内）；按阶段填写各迭代版本要求学生完成的任务、验收标准与时间节点；未填写不影响项目发布，填写后学生端将以时间线形式展示分阶段迭代路径。</div></div>
         <div class="hint">发布后本班学生将在「项目实践」板块实时收到；支持随时编辑、下架与状态管理。</div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
@@ -4417,6 +4438,7 @@
               return `<div class="card" style="margin-bottom:10px"><div class="card-head">${icon('layers', 14)}
                 <h3>v${ver.versionNo}</h3>
                 <span class="badge">${ver.fileCount || 0} 个文件</span>
+                ${ver.rejected ? '<span class="badge danger" title="' + h(ver.rejectReason || '') + '">已打回</span>' : ''}
                 ${ver.reflection ? '<span class="badge brand" title="该版本附有学生总结反思">总结反思</span>' : ''}
                 ${ver.score && ver.score.finalScore != null ? `<span class="badge ${ver.score.teacherAdjusted ? 'ok' : ''}" title="${ver.score.teacherAdjusted ? '教师已调整评分' : 'AI 初评'}">评分 ${ver.score.finalScore}</span>` : ''}
                 <span class="badge">${(ver.codeSize || 0) >= 1024 ? ((ver.codeSize || 0) / 1024).toFixed(1) + ' KB' : (ver.codeSize || 0) + ' B'}</span>
@@ -4425,6 +4447,7 @@
                 <button class="btn sm" data-act="projectVersionShow" data-val="${ver.id}">${open ? icon('chevronD', 13) + ' 收起' : icon('code', 13) + ' 展开代码'}</button>
               </div>
               ${open ? `<div class="card-body" style="padding:12px 14px">
+                ${ver.rejected ? `<div class="note warn" style="margin-bottom:10px"><b>已打回，等待学生重做：</b><div style="white-space:pre-wrap;margin-top:4px;line-height:1.7">${h(ver.rejectReason || '（未填写理由）')}</div><div class="hint" style="margin-top:4px">学生修改后重新提交该版本（版本号不变），提交后打回状态自动解除。</div></div>` : ''}
                 ${ver.summary ? `<div class="note" style="margin-bottom:10px">本版本说明：${h(ver.summary)}</div>` : ''}
                 ${ver.reflection ? `<div class="note" style="margin-bottom:10px;border-left:3px solid #5a5fd4"><b>总结与反思：</b><div style="white-space:pre-wrap;margin-top:4px;line-height:1.7">${h(ver.reflection)}</div></div>` : ''}
                 ${(d.detail && String(d.detail.id) === String(ver.id))
@@ -4462,6 +4485,17 @@
         该操作将同时删除 <b>${d.studentCount}</b> 名学生的全部项目代码与迭代版本，<b>删除后不可恢复</b>。</div>`;
       foot = `<button class="btn" data-act="closeModal" ${d.busy ? 'disabled' : ''}>取消</button>
         <button class="btn danger" data-act="doProjectDelete" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 删除中…' : icon('trash', 15) + ' 确认删除'}</button>`;
+
+    } else if (m.type === 'projectReject') {
+      // 教师打回代码二次确认：说明打回后果 + 多行文本填写打回理由（学生可见，1-500 字）
+      title = '打回代码 · v' + (d.verNo || '');
+      body = `<div class="note warn" style="margin-bottom:12px">确定打回 <b>${h(d.name || '')}</b> 的 <b>v${d.verNo}</b> 版本代码吗？</div>
+        <div class="hint" style="margin-bottom:12px">打回后：学生当前迭代回退至 v${d.verNo} 重做，其后未提交的草稿一并作废；学生修改后需<b>重新提交 v${d.verNo} 版本（版本号不变）</b>，提交后打回状态自动解除，学生将同时收到站内通知。</div>
+        <div class="form-row"><label>打回理由（学生可见，1-500 字）</label>
+          <textarea class="textarea" style="min-height:96px" maxlength="500" placeholder="请说明打回原因与修改要求，如：菜单功能未完整实现，缺少删除与查询；请补充后重新提交。"
+            data-bind="modal" data-key="reason">${h(d.reason || '')}</textarea></div>`;
+      foot = `<button class="btn" data-act="projectRejectCancel" ${d.busy ? 'disabled' : ''}>取消</button>
+        <button class="btn danger" data-act="doProjectReject" ${d.busy ? 'disabled' : ''}>${d.busy ? '<span class="spinner"></span> 打回中…' : icon('x', 15) + ' 确认打回'}</button>`;
 
     } else if (m.type === 'coTeacher') {
       // 班级共同管理教师面板：每次打开重新拉取（loading→数据/错误三态）
@@ -8828,11 +8862,7 @@
       const i = Number(v);
       if (!d.roadmap[i]) return;
       d.rmEditIdx = i;
-      renderOverlays();
-      setTimeout(() => {
-        const inp = document.querySelector('.modal [data-rmname="' + i + '"]');
-        if (inp) { inp.focus(); inp.select(); }
-      }, 50);
+      refreshRmEditor(i);
     },
     rmNameCommit(i) {
       const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
@@ -8847,7 +8877,7 @@
       if (name.length > 20) { name = name.slice(0, 20); }
       it.name = name.length ? name : '';   // 空名称回落默认「迭代 N」
       d.rmEditIdx = null;
-      renderOverlays();
+      refreshRmEditor();
     },
     /* 控制版本迭代开关：先二次确认，再回到发布弹窗应用目标状态 */
     projectCtrlToggle() {
@@ -8908,7 +8938,8 @@
         renderOverlays();
       }
     },
-    // 迭代路线编辑：添加（≤10）/ 删除（>1 时显示）/ 上移下移排序；编辑态统一先收起避免索引错位
+    // 迭代路线编辑：添加（≤10）/ 删除（>1 时显示）/ 上移下移排序；编辑态统一先收起避免索引错位。
+    // 全部走 refreshRmEditor 局部刷新：不重建弹窗，无闪屏、无滚动重置
     rmAdd() {
       const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
       if (!d) return;
@@ -8916,7 +8947,7 @@
       if (d.roadmap.length >= 10) { toast('最多支持 10 个迭代版本', 'warn'); return; }
       d.rmEditIdx = null;
       d.roadmap.push({ name: '', title: '', desc: '' });
-      renderOverlays();
+      refreshRmEditor();
     },
     rmDel(v) {
       const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
@@ -8925,7 +8956,7 @@
       if (d.roadmap.length <= 1) return;                 // 仅保留 1 个时不允许删除
       d.rmEditIdx = null;
       d.roadmap.splice(i, 1);
-      renderOverlays();
+      refreshRmEditor();
     },
     rmUp(v) {
       const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
@@ -8934,7 +8965,7 @@
       if (i <= 0) return;
       d.rmEditIdx = null;
       [d.roadmap[i - 1], d.roadmap[i]] = [d.roadmap[i], d.roadmap[i - 1]];
-      renderOverlays();
+      refreshRmEditor();
     },
     rmDown(v) {
       const d = State.modal && State.modal.type === 'projectCompose' ? State.modal.data : null;
@@ -8943,7 +8974,7 @@
       if (i >= d.roadmap.length - 1) return;
       d.rmEditIdx = null;
       [d.roadmap[i], d.roadmap[i + 1]] = [d.roadmap[i + 1], d.roadmap[i]];
-      renderOverlays();
+      refreshRmEditor();
     },
     async projectToggleStatus(v, id) {
       try {
@@ -9037,13 +9068,18 @@
       const iter = iterRaw && iterRaw !== 'all' ? Number(iterRaw) : null;
       const g = State.projView && State.projView.data ? State.projView.data : null;
       const iterLabel = iter && g ? pfOptionLabel(g, iter) : (iter ? 'v' + iter : '');
-      State.modal = { type: 'projectDetail', data: { spId: id, name: v || '', loading: true, err: null, versions: [], openId: null, detail: null, filterVer: iter, filterLabel: iterLabel } };
+      State.modal = { type: 'projectDetail', data: { spId: id, name: v || '', loading: true, err: null, versions: [], openId: null, detail: null, controlled: false, filterVer: iter, filterLabel: iterLabel } };
       renderOverlays();
       try {
-        const vs = await API.get('/teacher/student-projects/' + id + '/versions');
+        const vr = await API.get('/teacher/student-projects/' + id + '/versions');
         const m = State.modal;
         if (!m || m.type !== 'projectDetail' || String(m.data.spId) !== String(id)) return;
-        m.data.versions = (vs || []).filter(x => !iter || String(x.versionNo) === String(iter));
+        // 接口返回 {controlled, versions}：controlled=受控迭代项目（「打回代码」按钮权限依据）
+        m.data.controlled = !!(vr && vr.controlled === 1);
+        const vrAll = (vr && vr.versions) || [];
+        // 最新已提交版本 id（接口按版本号降序，取首项；筛选模式下仍以未过滤清单判定打回权限）
+        m.data.latestId = vrAll.length ? vrAll[0].id : null;
+        m.data.versions = vrAll.filter(x => !iter || String(x.versionNo) === String(iter));
         m.data.loading = false;
         // 筛选模式：代码区域默认完全展开——复用版本展开逻辑（设置 openId + 拉取版本详情）
         if (iter && m.data.versions.length) {
@@ -9139,6 +9175,39 @@
         renderOverlays();
       } catch (e) {
         toast(e.message, 'warn');
+      }
+    },
+    /* ---- 教师打回代码（仅受控迭代项目 · 最新已提交版本）---- */
+    // 打回二次确认弹窗：v=版本号 id=版本id；携带上下文（学生项目/筛选态），确认/取消后回版本详情弹窗
+    projectRejectModal(v, id) {
+      const m = State.modal;
+      if (!m || m.type !== 'projectDetail') return;
+      const d = m.data;
+      State.modal = { type: 'projectReject', data: { spId: d.spId, name: d.name, verId: id, verNo: v, reason: '', busy: false, filterVer: d.filterVer, filterLabel: d.filterLabel } };
+      renderOverlays();
+    },
+    // 取消打回：重开版本详情弹窗（保留版本筛选联动）
+    projectRejectCancel() {
+      const m = State.modal;
+      if (!m || m.type !== 'projectReject') return;
+      Actions.projectDetailModal(m.data.name, m.data.spId, { dataset: { iter: String(m.data.filterVer || '') } });
+    },
+    // 确认打回：校验理由（1-500 字）→ 服务端标记打回+回退迭代+通知学生 → 回版本详情弹窗
+    async doProjectReject() {
+      const m = State.modal;
+      if (!m || m.type !== 'projectReject' || m.data.busy) return;
+      const reason = String(m.data.reason || '').trim();
+      if (!reason) { toast('请填写打回理由（1-500 字）', 'warn'); return; }
+      m.data.busy = true;
+      renderOverlays();
+      try {
+        await API.post('/teacher/project-versions/' + m.data.verId + '/reject', { reason: reason });
+        toast('已打回 v' + m.data.verNo + ' 版本，学生将收到通知并重做该版本', 'ok');
+        Actions.projectDetailModal(m.data.name, m.data.spId, { dataset: { iter: String(m.data.filterVer || '') } });
+      } catch (e) {
+        m.data.busy = false;
+        toast(e.message, 'warn');
+        renderOverlays();
       }
     },
     // 学生端：查看某版本评分详情（数据取自当前项目详情已加载的版本列表）

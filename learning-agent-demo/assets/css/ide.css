@@ -324,6 +324,15 @@ button { cursor: pointer; border: none; background: none; padding: 0; }
 .vs-opt-title { font-size: 13px; font-weight: 600; color: var(--ide-text); }
 .vs-opt.on .vs-opt-title { color: var(--ide-accent-2); }
 .vs-opt-desc { font-size: 11.5px; line-height: 1.5; color: var(--ide-text-2); }
+/* 受控迭代：版本固定提示卡（无版本选择入口） */
+.vs-ctrl-fixed {
+  display: flex; flex-direction: column; gap: 5px; padding: 11px 13px;
+  background: var(--ide-bg); border: 1px solid var(--ide-accent, #4f7cff); border-radius: 9px;
+  font-size: 13px; font-weight: 600; color: var(--ide-text);
+}
+.vs-ctrl-fixed b { color: var(--ide-accent-2); }
+.vs-ctrl-fixed svg { vertical-align: -2px; margin-right: 4px; }
+.vs-ctrl-fixed span { font-size: 11.5px; font-weight: 400; line-height: 1.55; color: var(--ide-text-2); }
 .vs-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .vs-actions .ide-tb-btn { height: 30px; padding: 0 16px; }
 @keyframes vsIn { from { opacity: 0; } to { opacity: 1; } }

@@ -21,6 +21,7 @@ import com.la.mapper.ProjectVersionMapper;
 import com.la.mapper.StudentProjectMapper;
 import com.la.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,6 +43,7 @@ import java.util.stream.Collectors;
 /**
  * 「项目代码」板块：教师发布编程项目 / 学生创建项目并多版本留存 / 教师实时查看进度与代码
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ProjectService {
@@ -52,6 +54,7 @@ public class ProjectService {
     private final UserMapper userMapper;
     private final ClassMapper classMapper;
     private final ClassCoTeacherMapper classCoTeacherMapper;
+    private final NotificationService notificationService;
     private final ObjectMapper objectMapper;
     private final LlmClient llmClient;
     private final DeepSeekProperties deepSeekProperties;
@@ -204,10 +207,13 @@ public class ProjectService {
         return result;
     }
 
-    /** 教师在线查看：某学生项目的版本列表（仅水位之内已开放版本，轻量不含代码正文） */
-    public List<Map<String, Object>> studentVersions(Long teacherId, Long studentProjectId) {
+    /** 教师在线查看：某学生项目的版本列表（仅水位之内已开放版本，轻量不含代码正文）。
+     *  返回 {controlled, versions}：controlled=项目是否受控迭代（前端「打回代码」按钮权限依据）；
+     *  版本行含 rejected/rejectReason 打回状态（学生重新提交后复位）。 */
+    public Map<String, Object> studentVersions(Long teacherId, Long studentProjectId) {
         StudentProject sp = requireViewableStudentProject(teacherId, studentProjectId);
-        List<Map<String, Object>> result = new ArrayList<>();
+        CodingProject p = codingProjectMapper.selectById(sp.getProjectId());
+        List<Map<String, Object>> versions = new ArrayList<>();
         for (ProjectVersion v : visibleVersions(sp)) {
             Map<String, Object> dto = new LinkedHashMap<>();
             dto.put("id", v.getId());
@@ -217,10 +223,65 @@ public class ProjectService {
             dto.put("score", scoreDto(v));
             dto.put("codeSize", v.getCodeSize());
             dto.put("fileCount", parseFiles(v.getFiles()).size());
+            dto.put("rejected", v.getRejected() != null && v.getRejected() == 1 ? 1 : 0);
+            dto.put("rejectReason", v.getRejectReason());
             dto.put("createdAt", v.getCreatedAt().format(DT));
-            result.add(dto);
+            versions.add(dto);
         }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("controlled", p != null && p.getControlledIteration() != null && p.getControlledIteration() == 1 ? 1 : 0);
+        result.put("versions", versions);
         return result;
+    }
+
+    /**
+     * 教师打回代码版本（仅受控迭代项目）：将学生最新已提交版本标记为打回并填写理由。
+     * 打回语义 = 回退迭代重做：学生当前迭代回退到被打回版本号，该版本之上的未提交草稿
+     * 一并作废删除（重做后基于合格版本重新迭代），被打回版本保持已提交可见状态；
+     * 学生重新编辑后「保存并提交」该版本（版本号不变）即视为重做完成——rejected 复位、迭代恢复推进。
+     * 同时向学生推送站内通知。服务端强校验：仅最新已提交版本可打回（防止打回历史版本造成版本链错乱）。
+     */
+    @Transactional
+    public void rejectVersion(Long teacherId, Long versionId, String reason) {
+        ProjectVersion v = projectVersionMapper.selectById(versionId);
+        if (v == null) {
+            throw new BizException("代码版本不存在");
+        }
+        StudentProject sp = requireViewableStudentProject(teacherId, v.getStudentProjectId());
+        CodingProject p = codingProjectMapper.selectById(sp.getProjectId());
+        if (p == null || p.getControlledIteration() == null || p.getControlledIteration() != 1) {
+            throw new BizException("仅开启「控制版本迭代」的项目支持打回代码");
+        }
+        Integer watermark = sp.getSubmittedVersionNo();
+        if (watermark == null || !watermark.equals(v.getVersionNo())) {
+            throw new BizException("仅可打回学生的最新已提交版本");
+        }
+        String r = reason == null ? "" : reason.trim();
+        if (r.isEmpty()) {
+            throw new BizException("请填写打回理由");
+        }
+        if (r.length() > 500) {
+            throw new BizException("打回理由不能超过 500 字");
+        }
+        // ① 作废打回版本之上的未提交草稿（version_no > 水位必为未提交草稿），重做后重新迭代
+        projectVersionMapper.delete(new LambdaQueryWrapper<ProjectVersion>()
+                .eq(ProjectVersion::getStudentProjectId, sp.getId())
+                .gt(ProjectVersion::getVersionNo, v.getVersionNo()));
+        // ② 标记打回状态与理由
+        v.setRejected(1);
+        v.setRejectReason(r);
+        projectVersionMapper.updateById(v);
+        // ③ 迭代回退：学生重做该版本（受控保存自动覆盖更新该版本号，版本号不变）
+        sp.setCurrentIteration(v.getVersionNo());
+        sp.setUpdatedAt(LocalDateTime.now());
+        studentProjectMapper.updateById(sp);
+        // ④ 站内通知学生
+        notificationService.push(sp.getStudentId(),
+                "你的项目「" + p.getTitle() + "」v" + v.getVersionNo()
+                        + " 版本代码已被教师打回：" + shortenFor(r, 80)
+                        + "，请修改后重新提交该版本", "PROJECT");
+        log.info("[项目打回] teacher={} sp={} version={} reasonLen={}",
+                teacherId, sp.getId(), v.getVersionNo(), r.length());
     }
 
     /** 教师在线查看：某版本完整代码文件（仅水位之内的版本，未开放版本一律拒绝） */
@@ -241,6 +302,8 @@ public class ProjectService {
         dto.put("summary", v.getSummary());
         dto.put("reflection", v.getReflection());
         dto.put("codeSize", v.getCodeSize());
+        dto.put("rejected", v.getRejected() != null && v.getRejected() == 1 ? 1 : 0);
+        dto.put("rejectReason", v.getRejectReason());
         dto.put("createdAt", v.getCreatedAt().format(DT));
         dto.put("files", parseFiles(v.getFiles()));
         dto.put("score", scoreDto(v));
@@ -515,6 +578,19 @@ public class ProjectService {
                 .eq(ProjectVersion::getStudentProjectId, sp.getId())
                 .orderByDesc(ProjectVersion::getVersionNo)
                 .last("LIMIT 1 FOR UPDATE"));
+        // 受控迭代项目：版本号严格受当前迭代约束，保证学生版本数与迭代路线总数对齐——
+        // ① 新迭代尚未建版本时 keep 自动转为迭代（保存/提交一律落到当前迭代版本）；
+        // ② iterate 不得超出当前迭代阶段（防绕过前端直调 API 产生路线外版本）；
+        // ③ 已到最终迭代时仅可覆盖更新当前版本，提交不再推进（封顶），版本数不越界
+        int lastNo = last == null ? 0 : last.getVersionNo();
+        if (p.getControlledIteration() != null && p.getControlledIteration() == 1) {
+            int curIter = sp.getCurrentIteration() == null ? 1 : sp.getCurrentIteration();
+            if ("keep".equals(mode) && lastNo < curIter) {
+                mode = "iterate";
+            } else if (!"keep".equals(mode) && lastNo >= curIter) {
+                throw new BizException("当前迭代为 v" + curIter + "：仅可保存为该版本，完成「保存并提交」后才解锁下一迭代");
+            }
+        }
         int size = files.stream().mapToInt(f -> (f.get("content") == null ? "" : f.get("content"))
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8).length + f.get("path").getBytes().length).sum();
         ProjectVersion v;
@@ -532,6 +608,11 @@ public class ProjectService {
             v.setCreatedAt(LocalDateTime.now());
             if (Boolean.TRUE.equals(submit)) {
                 v.setReflection(ref);
+                // 打回重做提交：重做完成，打回状态与理由复位（学生端不再显示打回提醒）
+                if (v.getRejected() != null && v.getRejected() == 1) {
+                    v.setRejected(0);
+                    v.setRejectReason(null);
+                }
             }
             projectVersionMapper.updateById(v);
         } else {
@@ -601,6 +682,8 @@ public class ProjectService {
             dto.put("createdAt", v.getCreatedAt().format(DT));
             dto.put("submitted", watermark != null && v.getVersionNo() <= watermark);
             dto.put("reflection", v.getReflection());
+            dto.put("rejected", v.getRejected() != null && v.getRejected() == 1 ? 1 : 0);
+            dto.put("rejectReason", v.getRejectReason());
             dto.put("score", scoreDto(v));
             return dto;
         }).collect(Collectors.toList()));

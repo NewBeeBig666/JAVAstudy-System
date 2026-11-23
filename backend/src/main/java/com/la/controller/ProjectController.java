@@ -102,10 +102,20 @@ public class ProjectController {
         return ApiResponse.ok(projectService.progress(CurrentUser.id(), id));
     }
 
-    @Operation(summary = "学生项目的版本迭代记录")
+    @Operation(summary = "学生项目的版本迭代记录（含受控标志 controlled 与各版本打回状态）")
     @GetMapping("/teacher/student-projects/{spId}/versions")
-    public ApiResponse<List<Map<String, Object>>> studentVersions(@PathVariable Long spId) {
+    public ApiResponse<Map<String, Object>> studentVersions(@PathVariable Long spId) {
         return ApiResponse.ok(projectService.studentVersions(CurrentUser.id(), spId));
+    }
+
+    @Operation(summary = "打回代码版本（仅受控迭代项目）：标记打回+理由，回退迭代重做，通知学生；学生重新提交同版本号后复位")
+    @PostMapping("/teacher/project-versions/{versionId}/reject")
+    public ApiResponse<Void> rejectVersion(@PathVariable Long versionId,
+                                           @RequestBody Map<String, Object> body) {
+        Object reason = body.get("reason");
+        projectService.rejectVersion(CurrentUser.id(), versionId,
+                reason == null ? null : String.valueOf(reason));
+        return ApiResponse.ok(null);
     }
 
     @Operation(summary = "版本完整代码在线查看")

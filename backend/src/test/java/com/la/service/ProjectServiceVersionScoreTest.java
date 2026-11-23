@@ -188,8 +188,10 @@ class ProjectServiceVersionScoreTest {
         v3.setAiScore(90);
         when(projectVersionMapper.selectList(any())).thenReturn(List.of(v3, version(2)));
 
-        List<Map<String, Object>> vs = service.studentVersions(2L, 9L);
+        Map<String, Object> r = service.studentVersions(2L, 9L);
 
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> vs = (List<Map<String, Object>>) r.get("versions");
         @SuppressWarnings("unchecked")
         Map<String, Object> score = (Map<String, Object>) vs.get(0).get("score");
         assertEquals(Integer.valueOf(90), score.get("finalScore"));
