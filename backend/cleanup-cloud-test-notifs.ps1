@@ -47,7 +47,7 @@ try {
 
     # ③ 执行清理（密码经 MYSQL_PWD 环境变量传递，避免命令行告警中断远程调用）
     $env:MYSQL_PWD = $dbPwd
-    $sql = "DELETE FROM notification WHERE content LIKE '%云端验证v124%' OR content LIKE '%云端诊断v124%'; SELECT ROW_COUNT() AS deleted;"
+    $sql = "DELETE FROM notification WHERE content LIKE '%云端验证v124%' OR content LIKE '%云端诊断v124%' OR content LIKE '%云端验证v125%'; SELECT ROW_COUNT() AS deleted;"
     $out = & $mysql "-u$dbUser" learning_agent -e $sql 2>$null
     $env:MYSQL_PWD = $null
     if ($LASTEXITCODE -ne 0) { return "FAIL: mysql exit=$LASTEXITCODE" }
