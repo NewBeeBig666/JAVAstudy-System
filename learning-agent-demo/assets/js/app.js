@@ -2523,8 +2523,9 @@
     const s = (d.detail && String(d.detail.id) === String(ver.id)) ? d.detail.score : null;
     if (!s) return '<div class="hint" style="margin-top:10px">评分随代码加载后展示。</div>';
     const editing = String(d.editingScore) === String(ver.id);
-    // 「打回代码」按钮权限：仅受控迭代项目 + 当前版本为最新已提交版本（latestId）且未处于打回状态
-    const canReject = !!(d.controlled && !ver.rejected && d.latestId != null && String(d.latestId) === String(ver.id));
+    // 「打回代码」按钮权限（链式规则）：仅受控迭代项目 + 当前版本为「已提交版本中版本号最大的
+    // 未打回版本」（rejectableId）——打回后其紧邻上一版本自动获得入口，严格逆序、不可跳过
+    const canReject = !!(d.controlled && !ver.rejected && d.rejectableId != null && String(d.rejectableId) === String(ver.id));
     const aiBlock = s.aiScore != null
       ? `<div class="note" style="margin-bottom:8px"><b>AI 初评：${s.aiScore} 分</b><div style="white-space:pre-wrap;margin-top:4px;line-height:1.7">${h(s.aiComment || '')}</div></div>` : '';
     const teacherBlock = s.teacherAdjusted
@@ -9077,8 +9078,10 @@
         // 接口返回 {controlled, versions}：controlled=受控迭代项目（「打回代码」按钮权限依据）
         m.data.controlled = !!(vr && vr.controlled === 1);
         const vrAll = (vr && vr.versions) || [];
-        // 最新已提交版本 id（接口按版本号降序，取首项；筛选模式下仍以未过滤清单判定打回权限）
-        m.data.latestId = vrAll.length ? vrAll[0].id : null;
+        // 链式打回权限：可打回 = 已提交版本中版本号最大的未打回版本（接口按版本号降序，取首个未打回；
+        // 打回后其紧邻上一版本自动获得入口，严格逆序、不可跳过）。筛选模式下仍以未过滤清单判定权限
+        const rejectable = vrAll.find(x => !x.rejected);
+        m.data.rejectableId = rejectable ? rejectable.id : null;
         m.data.versions = vrAll.filter(x => !iter || String(x.versionNo) === String(iter));
         m.data.loading = false;
         // 筛选模式：代码区域默认完全展开——复用版本展开逻辑（设置 openId + 拉取版本详情）

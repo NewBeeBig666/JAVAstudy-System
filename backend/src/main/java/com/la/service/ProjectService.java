@@ -237,10 +237,13 @@ public class ProjectService {
 
     /**
      * 教师打回代码版本（仅受控迭代项目）：将学生最新已提交版本标记为打回并填写理由。
-     * 打回语义 = 回退迭代重做：学生当前迭代回退到被打回版本号，该版本之上的未提交草稿
+     * 打回语义 = 回退迭代重做：学生当前迭代回退到被打回版本号，水位之上的未提交草稿
      * 一并作废删除（重做后基于合格版本重新迭代），被打回版本保持已提交可见状态；
      * 学生重新编辑后「保存并提交」该版本（版本号不变）即视为重做完成——rejected 复位、迭代恢复推进。
-     * 同时向学生推送站内通知。服务端强校验：仅最新已提交版本可打回（防止打回历史版本造成版本链错乱）。
+     * 同时向学生推送站内通知。
+     * 链式打回规则：仅「已提交版本中版本号最大的未打回版本」可打回——初始仅最新提交版本可打回；
+     * 每打回一个版本，其紧邻的上一历史版本自动获得打回入口，教师按版本提交逆序依次打回，
+     * 不可跳过中间版本直接打回更早版本；全部已提交版本均被打回后无版本可再打回。
      */
     @Transactional
     public void rejectVersion(Long teacherId, Long versionId, String reason) {
@@ -254,8 +257,23 @@ public class ProjectService {
             throw new BizException("仅开启「控制版本迭代」的项目支持打回代码");
         }
         Integer watermark = sp.getSubmittedVersionNo();
-        if (watermark == null || !watermark.equals(v.getVersionNo())) {
-            throw new BizException("仅可打回学生的最新已提交版本");
+        if (watermark == null || v.getVersionNo() > watermark) {
+            throw new BizException("该版本尚未提交：学生点击「保存并提交」后版本才会对教师可见");
+        }
+        // 可打回版本 = 已提交版本中版本号最大的未打回版本（列表按版本号降序，取首个未打回）
+        List<ProjectVersion> submitted = projectVersionMapper.selectList(new LambdaQueryWrapper<ProjectVersion>()
+                .eq(ProjectVersion::getStudentProjectId, sp.getId())
+                .le(ProjectVersion::getVersionNo, watermark)
+                .orderByDesc(ProjectVersion::getVersionNo));
+        ProjectVersion rejectable = submitted.stream()
+                .filter(x -> x.getRejected() == null || x.getRejected() != 1)
+                .findFirst().orElse(null);
+        if (rejectable == null) {
+            throw new BizException("该学生的全部已提交版本均已被打回，暂无可打回版本");
+        }
+        if (!rejectable.getId().equals(v.getId())) {
+            throw new BizException("仅可按版本逆序依次打回：当前可打回版本为 v" + rejectable.getVersionNo()
+                    + "，请先完成较新版本的打回");
         }
         String r = reason == null ? "" : reason.trim();
         if (r.isEmpty()) {
@@ -264,15 +282,16 @@ public class ProjectService {
         if (r.length() > 500) {
             throw new BizException("打回理由不能超过 500 字");
         }
-        // ① 作废打回版本之上的未提交草稿（version_no > 水位必为未提交草稿），重做后重新迭代
+        // ① 作废水位之上的未提交草稿（version_no > 水位必为未提交草稿；链式打回时被提交的历史版本行不受影响）
         projectVersionMapper.delete(new LambdaQueryWrapper<ProjectVersion>()
                 .eq(ProjectVersion::getStudentProjectId, sp.getId())
-                .gt(ProjectVersion::getVersionNo, v.getVersionNo()));
+                .gt(ProjectVersion::getVersionNo, watermark));
         // ② 标记打回状态与理由
         v.setRejected(1);
         v.setRejectReason(r);
         projectVersionMapper.updateById(v);
-        // ③ 迭代回退：学生重做该版本（受控保存自动覆盖更新该版本号，版本号不变）
+        // ③ 迭代回退至被打回版本（即当前最深打回版本）：学生从该版本起重做
+        //    （受控保存 keep 覆盖更新该版本号，版本号不变；若上方仍有被打回版本，逐版本向上依次重做）
         sp.setCurrentIteration(v.getVersionNo());
         sp.setUpdatedAt(LocalDateTime.now());
         studentProjectMapper.updateById(sp);
@@ -584,6 +603,10 @@ public class ProjectService {
         // ② iterate 不得超出当前迭代阶段（防绕过前端直调 API 产生路线外版本）；
         // ③ 已到最终迭代时仅可覆盖更新当前版本，提交不再推进（封顶），版本数不越界
         int lastNo = last == null ? 0 : last.getVersionNo();
+        // 链式打回重做目标：最新版本号 > 当前迭代（= 当前最深被打回版本）说明存在待重做的历史版本，
+        // keep 覆盖目标须切换为版本号最小的被打回版本行（而非最新版本行），学生从最深打回版本起
+        // 逐版本向上重做（keep 覆盖 + 提交复位），保证重做始终落在被打回版本上、版本号不变
+        ProjectVersion redoTarget = null;
         if (p.getControlledIteration() != null && p.getControlledIteration() == 1) {
             int curIter = sp.getCurrentIteration() == null ? 1 : sp.getCurrentIteration();
             if ("keep".equals(mode) && lastNo < curIter) {
@@ -591,14 +614,21 @@ public class ProjectService {
             } else if (!"keep".equals(mode) && lastNo >= curIter) {
                 throw new BizException("当前迭代为 v" + curIter + "：仅可保存为该版本，完成「保存并提交」后才解锁下一迭代");
             }
+            if ("keep".equals(mode) && last != null && lastNo > curIter) {
+                redoTarget = projectVersionMapper.selectOne(new LambdaQueryWrapper<ProjectVersion>()
+                        .eq(ProjectVersion::getStudentProjectId, sp.getId())
+                        .eq(ProjectVersion::getRejected, 1)
+                        .orderByAsc(ProjectVersion::getVersionNo)
+                        .last("LIMIT 1 FOR UPDATE"));
+            }
         }
         int size = files.stream().mapToInt(f -> (f.get("content") == null ? "" : f.get("content"))
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8).length + f.get("path").getBytes().length).sum();
         ProjectVersion v;
         if ("keep".equals(mode) && last != null) {
-            // 保留当前版本：覆盖更新最新版本，版本号保持不变（尚无版本时按 v1 新建）；
-            // 仅保存（非提交）不触碰反思字段——已有总结反思原样保留
-            v = last;
+            // 保留当前版本：覆盖更新当前重做目标版本（链式打回重做时为最深被打回版本，常规为最新版本），
+            // 版本号保持不变（尚无版本时按 v1 新建）；仅保存（非提交）不触碰反思字段——已有总结反思原样保留
+            v = redoTarget != null ? redoTarget : last;
             try {
                 v.setFiles(objectMapper.writeValueAsString(files));
             } catch (Exception e) {
@@ -648,14 +678,22 @@ public class ProjectService {
                 sp.setStatus("SUBMITTED");
             }
             // 提交即开放：教师可见版本水位原子刷新为当前版本号——当前版本及全部历史版本即刻对教师可见，
-            // 后续「仅保存新版本」产生的版本仍不可见；与版本写入同事务，无延迟、无遗漏、无越界
-            sp.setSubmittedVersionNo(v.getVersionNo());
-            // 受控迭代项目：提交即视为完成当前迭代 → 解锁下一迭代（封顶不越界；
-            // 历史存量 sp 的 current_iteration 为 NULL 时按第 1 迭代处理）
+            // 后续「仅保存新版本」产生的版本仍不可见；与版本写入同事务，无延迟、无遗漏、无越界。
+            // 水位只升不降：链式打回重做历史版本（版本号 < 水位）时，其后已提交版本的教师可见性保持不变
+            int wmBefore = sp.getSubmittedVersionNo() == null ? 0 : sp.getSubmittedVersionNo();
+            sp.setSubmittedVersionNo(Math.max(wmBefore, v.getVersionNo()));
             if (p.getControlledIteration() != null && p.getControlledIteration() == 1) {
-                int iterCount = parseRoadmap(p.getRoadmap()).size();
-                int cur = sp.getCurrentIteration() == null ? 1 : sp.getCurrentIteration();
-                sp.setCurrentIteration(Math.min(cur + 1, Math.max(iterCount, 1)));
+                if (redoTarget != null) {
+                    // 链式打回重做提交：打回链逆序连续（f+1..水位在打回时已全部打回），
+                    // 完成最深版本 f 的重做后，迭代停在紧邻的下一个待重做版本 f+1（封顶兜底不越界）
+                    sp.setCurrentIteration(Math.min(v.getVersionNo() + 1, Math.max(parseRoadmap(p.getRoadmap()).size(), 1)));
+                } else {
+                    // 受控迭代项目：提交即视为完成当前迭代 → 解锁下一迭代（封顶不越界；
+                    // 历史存量 sp 的 current_iteration 为 NULL 时按第 1 迭代处理）
+                    int iterCount = parseRoadmap(p.getRoadmap()).size();
+                    int cur = sp.getCurrentIteration() == null ? 1 : sp.getCurrentIteration();
+                    sp.setCurrentIteration(Math.min(cur + 1, Math.max(iterCount, 1)));
+                }
             }
         }
         sp.setUpdatedAt(LocalDateTime.now());
@@ -679,7 +717,17 @@ public class ProjectService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("project", toProjectDto(p));
         ProjectVersion last = vs.isEmpty() ? null : vs.get(0);
-        result.put("mine", studentProjectDto(sp, last));
+        // 链式打回重做中：编辑基准切换为版本号最小的被打回版本（最深打回版本）——
+        // 学生打开 IDE 基于该版本代码重做，逐版本向上依次完成；非重做状态基准仍为最新版本
+        ProjectVersion base = last;
+        if (sp.getSubmittedVersionNo() != null) {
+            base = vs.stream()
+                    .filter(x -> x.getRejected() != null && x.getRejected() == 1
+                            && x.getVersionNo() <= sp.getSubmittedVersionNo())
+                    .min(Comparator.comparingInt(ProjectVersion::getVersionNo))
+                    .orElse(last);
+        }
+        result.put("mine", studentProjectDto(sp, last, base));
         // 版本迭代记录逐版本附带提交状态：version_no <= 提交水位 即为「已提交」（已随提交对教师开放），
         // 水位之后为「未提交」；从未提交（水位 NULL）时全部为未提交——状态与可见性规则同源，杜绝状态错配
         Integer watermark = sp.getSubmittedVersionNo();
@@ -1005,15 +1053,23 @@ public class ProjectService {
     }
 
     private Map<String, Object> studentProjectDto(StudentProject sp, ProjectVersion last) {
+        return studentProjectDto(sp, last, last);
+    }
+
+    /**
+     * last = 实际最新版本（决定版本总数）；base = 编辑基准版本（链式打回重做时为最深被打回版本，
+     * 学生端 IDE 以 base 的代码为编辑底稿；常规场景 base = last）
+     */
+    private Map<String, Object> studentProjectDto(StudentProject sp, ProjectVersion last, ProjectVersion base) {
         Map<String, Object> dto = new LinkedHashMap<>();
         dto.put("id", sp.getId());
         dto.put("projectId", sp.getProjectId());
         dto.put("status", sp.getStatus());
         dto.put("currentIteration", sp.getCurrentIteration());
         dto.put("versionCount", last == null ? 0 : last.getVersionNo());
-        dto.put("lastFiles", last == null ? List.of() : parseFiles(last.getFiles()));
-        dto.put("lastSummary", last == null ? null : last.getSummary());
-        dto.put("lastVersionAt", last == null ? null : last.getCreatedAt().format(DT));
+        dto.put("lastFiles", base == null ? List.of() : parseFiles(base.getFiles()));
+        dto.put("lastSummary", base == null ? null : base.getSummary());
+        dto.put("lastVersionAt", base == null ? null : base.getCreatedAt().format(DT));
         dto.put("updatedAt", sp.getUpdatedAt() == null ? null : sp.getUpdatedAt().format(DT));
         return dto;
     }
