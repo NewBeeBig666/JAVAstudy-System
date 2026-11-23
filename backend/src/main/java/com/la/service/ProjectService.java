@@ -1,6 +1,7 @@
 package com.la.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -606,15 +607,24 @@ public class ProjectService {
             v.setSummary(summary == null ? null : summary.trim());
             v.setCodeSize(size);
             v.setCreatedAt(LocalDateTime.now());
+            boolean wasRejected = v.getRejected() != null && v.getRejected() == 1;
             if (Boolean.TRUE.equals(submit)) {
                 v.setReflection(ref);
                 // 打回重做提交：重做完成，打回状态与理由复位（学生端不再显示打回提醒）
-                if (v.getRejected() != null && v.getRejected() == 1) {
+                if (wasRejected) {
                     v.setRejected(0);
                     v.setRejectReason(null);
                 }
             }
             projectVersionMapper.updateById(v);
+            // MyBatis-Plus updateById 默认跳过 null 字段（NOT_NULL 策略）：
+            // reject_reason 置空必须走显式 set null 的条件更新，否则理由残留、学生端仍显示打回提醒
+            if (Boolean.TRUE.equals(submit) && wasRejected) {
+                projectVersionMapper.update(null, new LambdaUpdateWrapper<ProjectVersion>()
+                        .eq(ProjectVersion::getId, v.getId())
+                        .set(ProjectVersion::getRejected, 0)
+                        .set(ProjectVersion::getRejectReason, null));
+            }
         } else {
             // 迭代新版本（原自动留存逻辑）：版本号 = 最新版本号 + 1，无历史版本时为 v1；
             // 总结反思仅随提交写入新版本，仅保存的版本反思为空

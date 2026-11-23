@@ -1,5 +1,7 @@
 package com.la.service;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.la.entity.CodingProject;
 import com.la.entity.ProjectVersion;
@@ -11,6 +13,8 @@ import com.la.mapper.CodingProjectMapper;
 import com.la.mapper.ProjectVersionMapper;
 import com.la.mapper.StudentProjectMapper;
 import com.la.mapper.UserMapper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -27,6 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -50,6 +55,13 @@ class ProjectServiceRejectTest {
     @Spy  private ObjectMapper objectMapper = new ObjectMapper();
 
     @InjectMocks private ProjectService service;
+
+    /** 初始化 ProjectVersion 表元数据：单测环境无 MyBatis-Plus 启动流程，
+     *  LambdaUpdateWrapper 解析列名依赖该缓存（否则 can not find lambda cache） */
+    @BeforeAll
+    static void initTableInfo() {
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), ""), ProjectVersion.class);
+    }
 
     private static final String FILES = "[{\"path\":\"Main.java\",\"content\":\"public class Main { public static void main(String[] a) {} }\"}]";
     private static final String ROADMAP = "[{\"name\":\"环境搭建\",\"title\":\"第1周\",\"desc\":\"完成菜单\"},{\"name\":\"\",\"title\":\"第2周\",\"desc\":\"完成增删改查\"}]";
@@ -179,6 +191,8 @@ class ProjectServiceRejectTest {
         // 覆盖更新同一版本（无新建）且打回状态复位；提交水位保持 v2，迭代封顶 v2
         verify(projectVersionMapper).updateById(argThat((ProjectVersion v) ->
                 v.getVersionNo() == 2 && v.getRejected() == 0 && v.getRejectReason() == null));
+        // reject_reason 显式置空的条件更新必须触发（updateById 默认跳过 null 字段，理由才会残留）
+        verify(projectVersionMapper).update(isNull(), any());
         verify(projectVersionMapper, never()).insert(any(ProjectVersion.class));
         verify(studentProjectMapper).updateById(argThat((StudentProject x) ->
                 x.getSubmittedVersionNo() == 2 && x.getCurrentIteration() == 2));
@@ -197,6 +211,8 @@ class ProjectServiceRejectTest {
         service.save(15L, 9L, FILES, "修改中", false, "keep", null);
 
         assertEquals(Integer.valueOf(1), v2.getRejected());
+        // 未提交不触发打回状态清零的条件更新
+        verify(projectVersionMapper, never()).update(isNull(), any());
         verify(studentProjectMapper).updateById(argThat((StudentProject x) -> x.getCurrentIteration() == 2));
     }
 }
